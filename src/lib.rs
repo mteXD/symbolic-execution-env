@@ -36,26 +36,12 @@ enum Instruction {
     SetGreaterThanOrEqual,
 }
 
-enum InstructionType {
-    OneOperand(),
-    TwoOperand,
-}
-
-struct Program {
-    instructions: Vec<Instruction>,
-}
-
-impl Program {
-    fn new(instructions: Vec<Instruction>) -> Self {
-        Program { instructions }
-    }
-}
-
 struct Machine {
     // pc_register: usize,
     cells: Vec<i64>,
     cells_amount: usize,
     next_cell: usize,
+    program: Vec<Instruction>,
 }
 
 // #[derive(Debug)]
@@ -82,14 +68,19 @@ fn bool_to_i64(value: bool) -> i64 {
 }
 
 impl Machine {
-    pub fn new(cells_amount: usize) -> Self {
+    pub fn new(cells_amount: usize, program: Vec<Instruction>) -> Self {
         Machine {
             // pc_register: 0,
             // cells: Vec::with_capacity(cells_amount),
             cells: Vec::new(),
             cells_amount,
             next_cell: 0,
+            program,
         }
+    }
+
+    pub fn load_program(&mut self, program: Vec<Instruction>) {
+        self.program = program;
     }
 
     // TODO: Result<(), ()> is a placeholder for error handling.
@@ -119,14 +110,6 @@ impl Machine {
             self.pop()?;
         }
         Ok(())
-    }
-
-    fn peek(&self) -> Result<i64, MachineError> {
-        if let Some(&value) = self.cells.last() {
-            Ok(value)
-        } else {
-            Err(MachineError::StackUnderflow)
-        }
     }
 
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
@@ -230,24 +213,27 @@ impl Machine {
         Ok(())
     }
 
-    pub fn run(&mut self, program: &Program) -> Result<i64, MachineError> {
-        self.run_until(program, program.instructions.len())
+    pub fn run(&mut self, program: &Vec<Instruction>) -> Result<Option<&i64>, MachineError> {
+        self.run_until(program, program.len())
     }
 
-    pub fn run_until(&mut self, program: &Program, limit: usize) -> Result<i64, MachineError> {
+    pub fn run_until(
+        &mut self,
+        program: &Vec<Instruction>,
+        limit: usize,
+    ) -> Result<Option<&i64>, MachineError> {
         program
-            .instructions
             .iter()
             .take(limit)
             .try_for_each(|instruction| self.evaluate_instruction(instruction))?;
 
-        self.peek()
+        Ok(self.cells.last())
     }
 }
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine::new(64) // Default to 64 cells
+        Machine::new(64, Vec::new()) // Default to 64 cells
     }
 }
 
@@ -258,67 +244,79 @@ mod tests {
     #[test]
     fn test_push_pop() {
         let mut machine = Machine::default();
-        machine.push(42).unwrap();
-        machine.push(7).unwrap();
-        assert_eq!(machine.cells[0], 42);
-        assert_eq!(machine.cells[1], 7);
+        let prog = vec![
+            Instruction::Push(1),
+            Instruction::Push(2),
+            Instruction::Push(3),
+        ];
+        machine.run(&prog).unwrap();
+        assert_eq!(machine.cells[0], 1);
+        assert_eq!(machine.cells[1], 2);
+        assert_eq!(machine.cells[2], 3);
+        assert_eq!(machine.next_cell, 3);
+
+        let prog = vec![Instruction::Pop(1)];
+        let val = machine.run(&prog).unwrap();
+        assert_eq!(val, Some(&2));
         assert_eq!(machine.next_cell, 2);
 
-        let val = machine.pop().unwrap();
-        assert_eq!(val, 7);
-        assert_eq!(machine.next_cell, 1);
-
-        let val = machine.pop().unwrap();
-        assert_eq!(val, 42);
+        let prog = vec![Instruction::Pop(2)];
+        let val = machine.run(&prog).unwrap();
+        assert_eq!(val, None);
         assert_eq!(machine.next_cell, 0);
 
-        let prog = Program::new(vec![Instruction::Push(5), Instruction::Push(15)]);
-        machine.run(&prog).unwrap();
-        assert_eq!(machine.cells[0], 5);
-        assert_eq!(machine.cells[1], 15);
-        assert_eq!(machine.next_cell, 2);
+        let prog = vec![Instruction::Pop(1)];
+        let result = machine.run(&prog);
+        assert!(matches!(result, Err(MachineError::StackUnderflow)));
+    }
+
+    #[test]
+    fn test_read() {
+        let mut machine = Machine::default();
+        let program = vec![
+            Instruction::Push(100),
+            Instruction::Push(200),
+            Instruction::Read(0),
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&100));
+        assert_eq!(machine.next_cell, 3);
+        assert_eq!(machine.cells[0], 100);
+        assert_eq!(machine.cells[1], 200);
     }
 
     #[test]
     fn test_arith() {
         let mut machine = Machine::default();
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(-30),
-                Instruction::Add,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(-30),
+            Instruction::Add,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, -20);
+        assert_eq!(last, Some(&-20));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(3),
-                Instruction::Mul,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(3),
+            Instruction::Mul,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 30);
+        assert_eq!(last, Some(&30));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(2),
-                Instruction::Div,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(2),
+            Instruction::Div,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 5);
+        assert_eq!(last, Some(&5));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(0),
-                Instruction::Div,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(0),
+            Instruction::Div,
+        ];
         let result = machine.run(&program);
         assert!(matches!(result, Err(MachineError::DivisionByZero)));
     }
@@ -326,138 +324,128 @@ mod tests {
     #[test]
     fn test_bitwise() {
         let mut machine = Machine::default();
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(0b1100),
-                Instruction::Push(0b1010),
-                Instruction::And,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(0b1100),
+            Instruction::Push(0b1010),
+            Instruction::And,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 0b1000);
+        assert_eq!(last, Some(&0b1000));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(0b1100),
-                Instruction::Push(0b1010),
-                Instruction::Or,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(0b1100),
+            Instruction::Push(0b1010),
+            Instruction::Or,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 0b1110);
+        assert_eq!(last, Some(&0b1110));
 
-        let program = Program {
-            instructions: vec![Instruction::Push(0b1100), Instruction::Not],
-        };
+        let program = vec![Instruction::Push(0b1100), Instruction::Not];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, !0b1100);
+        assert_eq!(last, Some(&(!0b1100)));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(0b1100),
-                Instruction::Push(0b1010),
-                Instruction::Xor,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(0b1100),
+            Instruction::Push(0b1010),
+            Instruction::Xor,
+        ];
+
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 0b0110);
+        assert_eq!(last, Some(&0b0110));
     }
 
     #[test]
     fn test_comparisons() {
         let mut machine = Machine::default();
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(20),
-                Instruction::SetLessThan,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(20),
+            Instruction::SetLessThan,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(20),
-                Instruction::Push(10),
-                Instruction::SetGreaterThan,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(20),
+            Instruction::Push(10),
+            Instruction::SetGreaterThan,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(10),
-                Instruction::SetEqual,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(10),
+            Instruction::SetEqual,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(20),
-                Instruction::SetNotEqual,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(20),
+            Instruction::SetNotEqual,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(10),
-                Instruction::Push(10),
-                Instruction::SetLessThanOrEqual,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(10),
+            Instruction::SetLessThanOrEqual,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(20),
-                Instruction::Push(10),
-                Instruction::SetGreaterThanOrEqual,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(20),
+            Instruction::Push(10),
+            Instruction::SetGreaterThanOrEqual,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 1);
+        assert_eq!(last, Some(&1));
     }
 
     #[test]
     fn test_shift() {
         let mut machine = Machine::default();
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(0b0001),
-                Instruction::Push(2),
-                Instruction::ShiftLeftLogical,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(0b0001),
+            Instruction::Push(2),
+            Instruction::ShiftLeftLogical,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 0b0100);
+        assert_eq!(last, Some(&0b0100));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(0b0100),
-                Instruction::Push(2),
-                Instruction::ShiftRightLogical,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(0b0100),
+            Instruction::Push(2),
+            Instruction::ShiftRightLogical,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, 0b0001);
+        assert_eq!(last, Some(&0b0001));
 
-        let program = Program {
-            instructions: vec![
-                Instruction::Push(-8), // 0b11111111111111111111111111111000 in 32-bit
-                Instruction::Push(2),
-                Instruction::ShiftRightArithmetic,
-            ],
-        };
+        let program = vec![
+            Instruction::Push(-8), // 0b11111111111111111111111111111000 in 32-bit
+            Instruction::Push(2),
+            Instruction::ShiftRightArithmetic,
+        ];
         let last = machine.run(&program).unwrap();
-        assert_eq!(last, -2); // 0b
+        assert_eq!(last, Some(&-2)); // 0b
+    }
+
+    #[test]
+    fn math_with_read() {
+        let mut machine = Machine::default();
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(50),
+            Instruction::Push(70),
+            Instruction::Add, // 50 + 70 = 120
+            Instruction::Read(0),
+            Instruction::Div, // 120 / 10 = 12
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&12));
     }
 }
