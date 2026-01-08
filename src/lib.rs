@@ -8,7 +8,7 @@
 
 use std::fmt::Debug;
 
-enum Instruction {
+pub enum Instruction {
     // Basic instructions = memory instructions
     Push(i64),   // Push a new value into the next available cell
     Pop(usize),  // Pop n cells to free them up
@@ -36,7 +36,7 @@ enum Instruction {
     SetGreaterThanOrEqual,
 }
 
-struct Machine {
+pub struct Machine {
     // pc_register: usize,
     cells: Vec<i64>,
     cells_amount: usize,
@@ -45,7 +45,7 @@ struct Machine {
 }
 
 // #[derive(Debug)]
-enum MachineError {
+pub enum MachineError {
     StackOverflow,
     StackUnderflow,
     InvalidRegister,
@@ -83,7 +83,6 @@ impl Machine {
         self.program = program;
     }
 
-    // TODO: Result<(), ()> is a placeholder for error handling.
     fn push(&mut self, value: i64) -> Result<(), MachineError> {
         self.cells.push(value);
         self.next_cell += 1;
@@ -213,13 +212,13 @@ impl Machine {
         Ok(())
     }
 
-    pub fn run(&mut self, program: &Vec<Instruction>) -> Result<Option<&i64>, MachineError> {
+    pub fn run(&mut self, program: &[Instruction]) -> Result<Option<&i64>, MachineError> {
         self.run_until(program, program.len())
     }
 
     pub fn run_until(
         &mut self,
-        program: &Vec<Instruction>,
+        program: &[Instruction],
         limit: usize,
     ) -> Result<Option<&i64>, MachineError> {
         program
@@ -447,5 +446,21 @@ mod tests {
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&12));
+    }
+
+    #[test]
+    fn test_run_until() {
+        let mut machine = Machine::default();
+        let program = vec![
+            Instruction::Push(10),
+            Instruction::Push(20),
+            Instruction::Add,
+            Instruction::Push(5),
+            Instruction::Mul,
+        ];
+        let last = machine.run_until(&program, 3).unwrap();
+        assert_eq!(last, Some(&30)); // After first 3 instructions: 10 + 20 = 30
+        let last = machine.run_until(&program, 5).unwrap();
+        assert_eq!(last, Some(&150)); // After all instructions: 30 * 5 = 150
     }
 }
