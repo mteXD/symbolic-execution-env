@@ -8,6 +8,9 @@
 
 use std::fmt::Debug;
 
+type Register = usize;
+type Immediate = i64;
+
 pub enum Instruction {
     // Basic instructions = memory instructions
     Push(i64),   // Push a new value into the next available cell
@@ -15,25 +18,26 @@ pub enum Instruction {
     Read(usize), // Read from a specific cell; cell must exist
     Nop,
     // Arithmetic instructions
-    Add,
-    Mul,
-    Div,
+    Add(Register, Register),
+    AddI(Register, Immediate),
+    Mul(Register, Register),
+    Div(Register, Register),
     // Bitwise instructions
-    And,
-    Or,
-    Not,
-    Xor,
+    And(Register, Register),
+    Or(Register, Register),
+    Not(Register),
+    Xor(Register, Register),
     // Shifting
-    ShiftLeftLogical,
-    ShiftRightLogical,
-    ShiftRightArithmetic,
+    ShiftLeftLogical(Register, Register),
+    ShiftRightLogical(Register, Register),
+    ShiftRightArithmetic(Register, Register),
     // Comparison (set); Good enough for early stage of development
-    SetEqual,
-    SetNotEqual,
-    SetLessThan,
-    SetLessThanOrEqual,
-    SetGreaterThan,
-    SetGreaterThanOrEqual,
+    SetEqual(Register, Register),
+    SetNotEqual(Register, Register),
+    SetLessThan(Register, Register),
+    SetLessThanOrEqual(Register, Register),
+    SetGreaterThan(Register, Register),
+    SetGreaterThanOrEqual(Register, Register),
 }
 
 pub struct Machine {
@@ -111,6 +115,13 @@ impl Machine {
         Ok(())
     }
 
+    fn read(&self, reg: Register) -> Result<&i64, MachineError> {
+        match self.cells.get(reg) {
+            Some(value) => Ok(value),
+            None => Err(MachineError::InvalidRegister),
+        }
+    }
+
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
         match instruction {
             Instruction::Push(value) => {
@@ -125,86 +136,88 @@ impl Machine {
                 }
                 self.push(self.cells[*reg])?;
             }
-            Instruction::Add => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::Add(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a + b)?;
             }
-            Instruction::Mul => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::AddI(r, imm) => {
+                let a = self.read(*r)?;
+                self.push(a + imm)?;
+            }
+            Instruction::Mul(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a * b)?;
             }
-            Instruction::Div => {
-                let b = self.pop()?;
-                let a = self.pop()?;
-                if b == 0 {
-                    return Err(MachineError::DivisionByZero);
-                }
-                self.push(a / b)?;
+            Instruction::Div(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
+                let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
+                self.push(div)?;
             }
-            Instruction::And => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::And(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a & b)?;
             }
-            Instruction::Or => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::Or(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a | b)?;
             }
-            Instruction::Not => {
-                let a = self.pop()?;
+            Instruction::Not(r) => {
+                let a = self.read(*r)?;
                 self.push(!a)?;
             }
-            Instruction::Xor => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::Xor(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a ^ b)?;
             }
-            Instruction::ShiftLeftLogical => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::ShiftLeftLogical(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a << b)?;
             }
-            Instruction::ShiftRightLogical => {
-                let b = self.pop()?;
-                let a = self.pop()?;
-                self.push(((a as u64) >> b) as i64)?;
+            Instruction::ShiftRightLogical(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
+                self.push(((*a as u64) >> b) as i64)?;
             }
-            Instruction::ShiftRightArithmetic => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::ShiftRightArithmetic(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(a >> b)?;
             }
-            Instruction::SetEqual => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetEqual(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a == b))?;
             }
-            Instruction::SetNotEqual => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetNotEqual(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a != b))?;
             }
-            Instruction::SetLessThan => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetLessThan(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a < b))?;
             }
-            Instruction::SetLessThanOrEqual => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetLessThanOrEqual(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a <= b))?;
             }
-            Instruction::SetGreaterThan => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetGreaterThan(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a > b))?;
             }
-            Instruction::SetGreaterThanOrEqual => {
-                let b = self.pop()?;
-                let a = self.pop()?;
+            Instruction::SetGreaterThanOrEqual(r1, r2) => {
+                let a = self.read(*r1)?;
+                let b = self.read(*r2)?;
                 self.push(bool_to_i64(a >= b))?;
             }
             Instruction::Nop => {}
@@ -239,6 +252,22 @@ impl Default for Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! test_binop {
+        ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
+            #[test]
+            fn $name() {
+                let mut machine = Machine::default();
+                let program = vec![
+                    Instruction::Push($a),
+                    Instruction::Push($b),
+                    Instruction::$op(0, 1),
+                ];
+                let last = machine.run(&program).unwrap();
+                assert_eq!(last, Some(&$expected));
+            }
+        };
+    }
 
     #[test]
     fn test_push_pop() {
@@ -284,165 +313,55 @@ mod tests {
         assert_eq!(machine.cells[1], 200);
     }
 
+    test_binop!(test_add, 10, 20, Add => 30);
+    test_binop!(test_add_neg, 10, -30, Add => -20);
+    test_binop!(test_mul, 10, 20, Mul => 200);
+    test_binop!(test_div, 20, 5, Div => 4);
+
     #[test]
-    fn test_arith() {
+    fn test_div_bad() {
         let mut machine = Machine::default();
         let program = vec![
             Instruction::Push(10),
-            Instruction::Push(-30),
-            Instruction::Add,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&-20));
-
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(3),
-            Instruction::Mul,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&30));
-
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(2),
-            Instruction::Div,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&5));
-
-        let program = vec![
-            Instruction::Push(10),
             Instruction::Push(0),
-            Instruction::Div,
+            Instruction::Div(0, 1),
         ];
         let result = machine.run(&program);
         assert!(matches!(result, Err(MachineError::DivisionByZero)));
     }
 
+    test_binop!(test_and, 0b1100, 0b1010, And => 0b1000);
+    test_binop!(test_or, 0b1100, 0b1010, Or => 0b1110);
+    test_binop!(test_xor, 0b1100, 0b1010, Xor => 0b0110);
+
     #[test]
-    fn test_bitwise() {
+    fn test_not() {
         let mut machine = Machine::default();
-        let program = vec![
-            Instruction::Push(0b1100),
-            Instruction::Push(0b1010),
-            Instruction::And,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&0b1000));
-
-        let program = vec![
-            Instruction::Push(0b1100),
-            Instruction::Push(0b1010),
-            Instruction::Or,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&0b1110));
-
-        let program = vec![Instruction::Push(0b1100), Instruction::Not];
+        let program = vec![Instruction::Push(0b1100), Instruction::Not(0)];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&(!0b1100)));
-
-        let program = vec![
-            Instruction::Push(0b1100),
-            Instruction::Push(0b1010),
-            Instruction::Xor,
-        ];
-
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&0b0110));
     }
 
-    #[test]
-    fn test_comparisons() {
-        let mut machine = Machine::default();
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(20),
-            Instruction::SetLessThan,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
+    test_binop!(test_slt, 10, 20, SetLessThan => 1);
+    test_binop!(test_sgt, 20, 10, SetGreaterThan => 1);
+    test_binop!(test_seq, 10, 10, SetEqual => 1);
+    test_binop!(test_sne, 10, 20, SetNotEqual => 1);
+    test_binop!(test_sle, 10, 10, SetLessThanOrEqual => 1);
+    test_binop!(test_sge, 20, 10, SetGreaterThanOrEqual => 1);
 
-        let program = vec![
-            Instruction::Push(20),
-            Instruction::Push(10),
-            Instruction::SetGreaterThan,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
-
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(10),
-            Instruction::SetEqual,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
-
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(20),
-            Instruction::SetNotEqual,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
-
-        let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(10),
-            Instruction::SetLessThanOrEqual,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
-
-        let program = vec![
-            Instruction::Push(20),
-            Instruction::Push(10),
-            Instruction::SetGreaterThanOrEqual,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&1));
-    }
-
-    #[test]
-    fn test_shift() {
-        let mut machine = Machine::default();
-        let program = vec![
-            Instruction::Push(0b0001),
-            Instruction::Push(2),
-            Instruction::ShiftLeftLogical,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&0b0100));
-
-        let program = vec![
-            Instruction::Push(0b0100),
-            Instruction::Push(2),
-            Instruction::ShiftRightLogical,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&0b0001));
-
-        let program = vec![
-            Instruction::Push(-8), // 0b11111111111111111111111111111000 in 32-bit
-            Instruction::Push(2),
-            Instruction::ShiftRightArithmetic,
-        ];
-        let last = machine.run(&program).unwrap();
-        assert_eq!(last, Some(&-2)); // 0b
-    }
+    test_binop!(test_sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
+    test_binop!(test_srl, 0b0100, 2, ShiftRightLogical => 0b0001);
+    test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
 
     #[test]
     fn math_with_read() {
         let mut machine = Machine::default();
         let program = vec![
-            Instruction::Push(10),
             Instruction::Push(50),
             Instruction::Push(70),
-            Instruction::Add, // 50 + 70 = 120
-            Instruction::Read(0),
-            Instruction::Div, // 120 / 10 = 12
+            Instruction::Push(10),
+            Instruction::Add(0, 1), // 50 + 70 = 120
+            Instruction::Div(3, 2), // 120 / 10 = 12
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&12));
@@ -454,12 +373,14 @@ mod tests {
         let program = vec![
             Instruction::Push(10),
             Instruction::Push(20),
-            Instruction::Add,
+            Instruction::Add(0, 1),
             Instruction::Push(5),
-            Instruction::Mul,
+            Instruction::Mul(2, 3),
         ];
         let last = machine.run_until(&program, 3).unwrap();
         assert_eq!(last, Some(&30)); // After first 3 instructions: 10 + 20 = 30
+
+        let mut machine = Machine::default();
         let last = machine.run_until(&program, 5).unwrap();
         assert_eq!(last, Some(&150)); // After all instructions: 30 * 5 = 150
     }
