@@ -20,9 +20,10 @@ mod tests {
     use crate::{
         instructions::{
             BinaryOp,
-            Instruction::{AluBinary, AluUnaryImm, AluUnaryReg},
+            Instruction::{AluBinary, AluUnaryImm, AluUnaryReg, AluNullary},
             UnaryOpImm::Push,
             UnaryOpReg,
+            NullaryOp::Nop,
         },
         machine::Machine,
         types::MachineError,
@@ -83,6 +84,14 @@ mod tests {
     test_binop!(test_sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
     test_binop!(test_srl, 0b0100, 2, ShiftRightLogical => 0b0001);
     test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
+
+    #[test]
+    fn nop() {
+        let mut machine = Machine::default();
+        let program = vec![AluNullary(Nop)];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, None);
+    }
 
     #[test]
     fn math_with_read() {
