@@ -14,15 +14,12 @@ use std::fmt::Debug;
 type Register = u16;
 type Immediate = i64;
 
-
 pub enum MachineError {
     StackOverflow,
     StackUnderflow,
     InvalidRegister,
     DivisionByZero,
 }
-
-trait Operator {}
 
 pub enum NullaryOp {
     Nop,
@@ -67,21 +64,143 @@ pub enum Instruction {
     AluBinary(BinaryOp, Register, Register),
 }
 
-impl UnaryOpImm {
-    pub fn eval(&self, machine: &mut Machine, imm: Immediate) -> Result<(), MachineError> {
+trait Operator {
+    type ArgType;
+
+    fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError>;
+}
+
+impl Operator for NullaryOp {
+    type ArgType = ();
+
+    fn eval(&self, _: &mut Machine, _: ()) -> Result<(), MachineError> {
         match self {
-            UnaryOpImm::Push => {
-                machine.push(imm)?;
+            NullaryOp::Nop => {}
+        }
+        Ok(())
+    }
+}
+impl Operator for UnaryOpReg {
+    type ArgType = Register;
+
+    fn eval(&self, machine: &mut Machine, arg: Register) -> Result<(), MachineError> {
+        use UnaryOpReg::*;
+        match self {
+            Not => {
+                let val = machine.read(arg)?;
+                machine.push(!*val)?;
+            }
+            Read => {
+                let val = machine.read(arg)?;
+                machine.push(*val)?;
+            }
+            Pop => {
+                machine.multi_pop(arg)?;
             }
         }
         Ok(())
     }
 }
+impl Operator for UnaryOpImm {
+    type ArgType = Immediate;
 
-impl Operator for NullaryOp {}
-impl Operator for UnaryOpReg {}
-impl Operator for UnaryOpImm {}
-impl Operator for BinaryOp {}
+    fn eval(&self, machine: &mut Machine, arg: Immediate) -> Result<(), MachineError> {
+        match self {
+            UnaryOpImm::Push => {
+                machine.push(arg)?;
+            }
+        }
+        Ok(())
+    }
+}
+impl Operator for BinaryOp {
+    type ArgType = (Register, Register);
+
+    fn eval(&self, machine: &mut Machine, arg: (Register, Register)) -> Result<(), MachineError> {
+        let (reg1, reg2) = arg;
+        use BinaryOp::*;
+
+        match self {
+            Add => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a + b)?;
+            }
+            Mul => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a * b)?;
+            }
+            Div => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
+                machine.push(div)?;
+            }
+            And => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a & b)?;
+            }
+            Or => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a | b)?;
+            }
+            Xor => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a ^ b)?;
+            }
+            ShiftLeftLogical => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a << b)?
+            }
+            ShiftRightLogical => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(((*a as u64) >> b) as i64)?;
+            }
+            ShiftRightArithmetic => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(a >> b)?;
+            }
+            SetEqual => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a == b))?;
+            }
+            SetNotEqual => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a != b))?;
+            }
+            SetLessThan => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a < b))?;
+            }
+            SetLessThanOrEqual => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a <= b))?;
+            }
+            SetGreaterThan => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a > b))?;
+            }
+            SetGreaterThanOrEqual => {
+                let a = machine.read(reg1)?;
+                let b = machine.read(reg2)?;
+                machine.push(bool_to_i64(a >= b))?;
+            }
+        }
+        Ok(())
+    }
+}
 
 impl Debug for MachineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,105 +254,10 @@ impl Machine {
         use Instruction::*;
 
         match instruction {
-            AluNullary(nullop) => match nullop {
-                NullaryOp::Nop => {}
-            },
-            AluUnaryImm(unop_imm, imm) => match unop_imm {
-                UnaryOpImm::Push => {
-                    self.push(*imm)?;
-                }
-            },
-            AluUnaryReg(unop_reg, reg) => match unop_reg {
-                UnaryOpReg::Not => {
-                    let val = self.read(*reg)?;
-                    self.push(!*val)?;
-                }
-                UnaryOpReg::Read => {
-                    let val = self.read(*reg)?;
-                    self.push(*val)?;
-                }
-                UnaryOpReg::Pop => {
-                    self.multi_pop(*reg)?;
-                }
-            },
-            AluBinary(binop, reg1, reg2) => match binop {
-                BinaryOp::Add => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a + b)?;
-                }
-                BinaryOp::Mul => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a * b)?;
-                }
-                BinaryOp::Div => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
-                    self.push(div)?;
-                }
-                BinaryOp::And => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a & b)?;
-                }
-                BinaryOp::Or => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a | b)?;
-                }
-                BinaryOp::Xor => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a ^ b)?;
-                }
-                BinaryOp::ShiftLeftLogical => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a << b)?;
-                }
-                BinaryOp::ShiftRightLogical => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(((*a as u64) >> b) as i64)?;
-                }
-                BinaryOp::ShiftRightArithmetic => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(a >> b)?;
-                }
-                BinaryOp::SetEqual => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a == b))?;
-                }
-                BinaryOp::SetNotEqual => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a != b))?;
-                }
-                BinaryOp::SetLessThan => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a < b))?;
-                }
-                BinaryOp::SetLessThanOrEqual => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a <= b))?;
-                }
-                BinaryOp::SetGreaterThan => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a > b))?;
-                }
-                BinaryOp::SetGreaterThanOrEqual => {
-                    let a = self.read(*reg1)?;
-                    let b = self.read(*reg2)?;
-                    self.push(bool_to_i64(a >= b))?;
-                }
-            },
+            AluNullary(nullop) => nullop.eval(self, ())?,
+            AluUnaryImm(unop_imm, imm) => unop_imm.eval(self, *imm)?,
+            AluUnaryReg(unop_reg, reg) => unop_reg.eval(self, *reg)?,
+            AluBinary(binop, reg1, reg2) => binop.eval(self, (*reg1, *reg2))?,
         }
 
         Ok(())
@@ -270,7 +294,7 @@ fn bool_to_i64(value: bool) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Instruction::{AluUnaryImm, AluUnaryReg, AluBinary};
+    use Instruction::{AluBinary, AluUnaryImm, AluUnaryReg};
     use UnaryOpImm::Push;
 
     macro_rules! test_binop {
@@ -355,10 +379,7 @@ mod tests {
     #[test]
     fn test_not() {
         let mut machine = Machine::default();
-        let program = vec![
-            AluUnaryImm(Push, 0b1100),
-            AluUnaryReg(UnaryOpReg::Not, 0),
-        ];
+        let program = vec![AluUnaryImm(Push, 0b1100), AluUnaryReg(UnaryOpReg::Not, 0)];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&(!0b1100)));
     }
