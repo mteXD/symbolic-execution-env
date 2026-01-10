@@ -8,36 +8,12 @@
 
 use std::fmt::Debug;
 
-type Register = usize;
-// type Immediate = i64;
+// pub struct Register(pub usize);
+// pub struct Immediate(pub i64);
 
-pub enum Instruction {
-    // Basic instructions = memory instructions
-    Push(i64),   // Push a new value into the next available cell
-    Pop(usize),  // Pop n cells to free them up
-    Read(usize), // Read from a specific cell; cell must exist
-    Nop,
-    // Arithmetic instructions
-    Add(Register, Register),
-    Mul(Register, Register),
-    Div(Register, Register),
-    // Bitwise instructions
-    And(Register, Register),
-    Or(Register, Register),
-    Not(Register),
-    Xor(Register, Register),
-    // Shifting
-    ShiftLeftLogical(Register, Register),
-    ShiftRightLogical(Register, Register),
-    ShiftRightArithmetic(Register, Register),
-    // Comparison (set); Good enough for early stage of development
-    SetEqual(Register, Register),
-    SetNotEqual(Register, Register),
-    SetLessThan(Register, Register),
-    SetLessThanOrEqual(Register, Register),
-    SetGreaterThan(Register, Register),
-    SetGreaterThanOrEqual(Register, Register),
-}
+type Register = u16;
+type Immediate = i64;
+
 
 pub enum MachineError {
     StackOverflow,
@@ -45,6 +21,67 @@ pub enum MachineError {
     InvalidRegister,
     DivisionByZero,
 }
+
+trait Operator {}
+
+pub enum NullaryOp {
+    Nop,
+}
+
+pub enum UnaryOpReg {
+    Not,
+    Read,
+    Pop,
+}
+
+pub enum UnaryOpImm {
+    Push,
+}
+
+pub enum BinaryOp {
+    // Arithmetic instructions
+    Add,
+    Mul,
+    Div,
+    // Bitwise instructions
+    And,
+    Or,
+    Xor,
+    // Shifting
+    ShiftLeftLogical,
+    ShiftRightLogical,
+    ShiftRightArithmetic,
+    // Comparison ; Good enough for early stage of development
+    SetEqual,
+    SetNotEqual,
+    SetLessThan,
+    SetLessThanOrEqual,
+    SetGreaterThan,
+    SetGreaterThanOrEqual,
+}
+
+pub enum Instruction {
+    AluNullary(NullaryOp),
+    AluUnaryImm(UnaryOpImm, Immediate),
+    AluUnaryReg(UnaryOpReg, Register),
+    AluBinary(BinaryOp, Register, Register),
+}
+
+impl UnaryOpImm {
+    pub fn eval(&self, machine: &mut Machine, imm: Immediate) -> Result<(), MachineError> {
+        match self {
+            UnaryOpImm::Push => {
+                machine.push(imm)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Operator for NullaryOp {}
+impl Operator for UnaryOpReg {}
+impl Operator for UnaryOpImm {}
+impl Operator for BinaryOp {}
 
 impl Debug for MachineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,9 +101,7 @@ pub struct Machine {
 
 impl Machine {
     pub fn new() -> Self {
-        Machine {
-            cells: Vec::new(),
-        }
+        Machine { cells: Vec::new() }
     }
 
     fn push(&mut self, value: i64) -> Result<(), MachineError> {
@@ -82,7 +117,7 @@ impl Machine {
         }
     }
 
-    fn multi_pop(&mut self, n: usize) -> Result<(), MachineError> {
+    fn multi_pop(&mut self, n: Register) -> Result<(), MachineError> {
         for _ in 0..n {
             self.pop()?;
         }
@@ -90,106 +125,117 @@ impl Machine {
     }
 
     fn read(&self, reg: Register) -> Result<&i64, MachineError> {
-        match self.cells.get(reg) {
+        match self.cells.get::<usize>(reg.into()) {
             Some(value) => Ok(value),
             None => Err(MachineError::InvalidRegister),
         }
     }
 
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
+        use Instruction::*;
+
         match instruction {
-            Instruction::Push(value) => {
-                self.push(*value)?;
-            }
-            Instruction::Pop(n) => {
-                self.multi_pop(*n)?;
-            }
-            Instruction::Read(reg) => {
-                let val = self.read(*reg)?;
-                self.push(*val)?;
-            }
-            Instruction::Add(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a + b)?;
-            }
-            Instruction::Mul(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a * b)?;
-            }
-            Instruction::Div(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
-                self.push(div)?;
-            }
-            Instruction::And(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a & b)?;
-            }
-            Instruction::Or(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a | b)?;
-            }
-            Instruction::Not(r) => {
-                let a = self.read(*r)?;
-                self.push(!a)?;
-            }
-            Instruction::Xor(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a ^ b)?;
-            }
-            Instruction::ShiftLeftLogical(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a << b)?;
-            }
-            Instruction::ShiftRightLogical(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(((*a as u64) >> b) as i64)?;
-            }
-            Instruction::ShiftRightArithmetic(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(a >> b)?;
-            }
-            Instruction::SetEqual(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a == b))?;
-            }
-            Instruction::SetNotEqual(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a != b))?;
-            }
-            Instruction::SetLessThan(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a < b))?;
-            }
-            Instruction::SetLessThanOrEqual(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a <= b))?;
-            }
-            Instruction::SetGreaterThan(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a > b))?;
-            }
-            Instruction::SetGreaterThanOrEqual(r1, r2) => {
-                let a = self.read(*r1)?;
-                let b = self.read(*r2)?;
-                self.push(bool_to_i64(a >= b))?;
-            }
-            Instruction::Nop => {}
+            AluNullary(nullop) => match nullop {
+                NullaryOp::Nop => {}
+            },
+            AluUnaryImm(unop_imm, imm) => match unop_imm {
+                UnaryOpImm::Push => {
+                    self.push(*imm)?;
+                }
+            },
+            AluUnaryReg(unop_reg, reg) => match unop_reg {
+                UnaryOpReg::Not => {
+                    let val = self.read(*reg)?;
+                    self.push(!*val)?;
+                }
+                UnaryOpReg::Read => {
+                    let val = self.read(*reg)?;
+                    self.push(*val)?;
+                }
+                UnaryOpReg::Pop => {
+                    self.multi_pop(*reg)?;
+                }
+            },
+            AluBinary(binop, reg1, reg2) => match binop {
+                BinaryOp::Add => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a + b)?;
+                }
+                BinaryOp::Mul => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a * b)?;
+                }
+                BinaryOp::Div => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
+                    self.push(div)?;
+                }
+                BinaryOp::And => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a & b)?;
+                }
+                BinaryOp::Or => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a | b)?;
+                }
+                BinaryOp::Xor => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a ^ b)?;
+                }
+                BinaryOp::ShiftLeftLogical => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a << b)?;
+                }
+                BinaryOp::ShiftRightLogical => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(((*a as u64) >> b) as i64)?;
+                }
+                BinaryOp::ShiftRightArithmetic => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(a >> b)?;
+                }
+                BinaryOp::SetEqual => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a == b))?;
+                }
+                BinaryOp::SetNotEqual => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a != b))?;
+                }
+                BinaryOp::SetLessThan => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a < b))?;
+                }
+                BinaryOp::SetLessThanOrEqual => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a <= b))?;
+                }
+                BinaryOp::SetGreaterThan => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a > b))?;
+                }
+                BinaryOp::SetGreaterThanOrEqual => {
+                    let a = self.read(*reg1)?;
+                    let b = self.read(*reg2)?;
+                    self.push(bool_to_i64(a >= b))?;
+                }
+            },
         }
+
         Ok(())
     }
 
@@ -224,6 +270,8 @@ fn bool_to_i64(value: bool) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Instruction::{AluUnaryImm, AluUnaryReg, AluBinary};
+    use UnaryOpImm::Push;
 
     macro_rules! test_binop {
         ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
@@ -231,9 +279,9 @@ mod tests {
             fn $name() {
                 let mut machine = Machine::default();
                 let program = vec![
-                    Instruction::Push($a),
-                    Instruction::Push($b),
-                    Instruction::$op(0, 1),
+                    AluUnaryImm(Push, $a),
+                    AluUnaryImm(Push, $b),
+                    AluBinary(BinaryOp::$op, 0, 1),
                 ];
                 let last = machine.run(&program).unwrap();
                 assert_eq!(last, Some(&$expected));
@@ -243,26 +291,28 @@ mod tests {
 
     #[test]
     fn test_push_pop() {
+        use UnaryOpReg::Pop;
+
         let mut machine = Machine::default();
         let prog = vec![
-            Instruction::Push(1),
-            Instruction::Push(2),
-            Instruction::Push(3),
+            AluUnaryImm(Push, 1),
+            AluUnaryImm(Push, 2),
+            AluUnaryImm(Push, 3),
         ];
         machine.run(&prog).unwrap();
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
 
-        let prog = vec![Instruction::Pop(1)];
+        let prog = vec![AluUnaryReg(Pop, 1)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, Some(&2));
 
-        let prog = vec![Instruction::Pop(2)];
+        let prog = vec![AluUnaryReg(Pop, 2)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, None);
 
-        let prog = vec![Instruction::Pop(1)];
+        let prog = vec![AluUnaryReg(Pop, 1)];
         let result = machine.run(&prog);
         assert!(matches!(result, Err(MachineError::StackUnderflow)));
     }
@@ -271,9 +321,9 @@ mod tests {
     fn test_read() {
         let mut machine = Machine::default();
         let program = vec![
-            Instruction::Push(100),
-            Instruction::Push(200),
-            Instruction::Read(0),
+            AluUnaryImm(Push, 100),
+            AluUnaryImm(Push, 200),
+            AluUnaryReg(UnaryOpReg::Read, 0),
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&100));
@@ -290,9 +340,9 @@ mod tests {
     fn test_div_bad() {
         let mut machine = Machine::default();
         let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(0),
-            Instruction::Div(0, 1),
+            AluUnaryImm(Push, 10),
+            AluUnaryImm(Push, 0),
+            AluBinary(BinaryOp::Div, 0, 1),
         ];
         let result = machine.run(&program);
         assert!(matches!(result, Err(MachineError::DivisionByZero)));
@@ -305,7 +355,10 @@ mod tests {
     #[test]
     fn test_not() {
         let mut machine = Machine::default();
-        let program = vec![Instruction::Push(0b1100), Instruction::Not(0)];
+        let program = vec![
+            AluUnaryImm(Push, 0b1100),
+            AluUnaryReg(UnaryOpReg::Not, 0),
+        ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&(!0b1100)));
     }
@@ -325,11 +378,11 @@ mod tests {
     fn math_with_read() {
         let mut machine = Machine::default();
         let program = vec![
-            Instruction::Push(50),
-            Instruction::Push(70),
-            Instruction::Push(10),
-            Instruction::Add(0, 1), // 50 + 70 = 120
-            Instruction::Div(3, 2), // 120 / 10 = 12
+            AluUnaryImm(Push, 50),
+            AluUnaryImm(Push, 70),
+            AluUnaryImm(Push, 10),
+            AluBinary(BinaryOp::Add, 0, 1), // 50 + 70 = 120
+            AluBinary(BinaryOp::Div, 3, 2), // 120 / 10 = 12
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&12));
@@ -339,11 +392,11 @@ mod tests {
     fn test_run_until() {
         let mut machine = Machine::default();
         let program = vec![
-            Instruction::Push(10),
-            Instruction::Push(20),
-            Instruction::Add(0, 1),
-            Instruction::Push(5),
-            Instruction::Mul(2, 3),
+            AluUnaryImm(Push, 10),
+            AluUnaryImm(Push, 20),
+            AluBinary(BinaryOp::Add, 0, 1),
+            AluUnaryImm(Push, 5),
+            AluBinary(BinaryOp::Mul, 2, 3),
         ];
         let last = machine.run_until(&program, 3).unwrap();
         assert_eq!(last, Some(&30)); // After first 3 instructions: 10 + 20 = 30
