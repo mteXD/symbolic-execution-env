@@ -9,7 +9,7 @@
 use std::fmt::Debug;
 
 type Register = usize;
-type Immediate = i64;
+// type Immediate = i64;
 
 pub enum Instruction {
     // Basic instructions = memory instructions
@@ -19,7 +19,6 @@ pub enum Instruction {
     Nop,
     // Arithmetic instructions
     Add(Register, Register),
-    AddI(Register, Immediate),
     Mul(Register, Register),
     Div(Register, Register),
     // Bitwise instructions
@@ -40,15 +39,6 @@ pub enum Instruction {
     SetGreaterThanOrEqual(Register, Register),
 }
 
-pub struct Machine {
-    // pc_register: usize,
-    cells: Vec<i64>,
-    cells_amount: usize,
-    next_cell: usize,
-    program: Vec<Instruction>,
-}
-
-// #[derive(Debug)]
 pub enum MachineError {
     StackOverflow,
     StackUnderflow,
@@ -58,47 +48,34 @@ pub enum MachineError {
 
 impl Debug for MachineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MachineError::StackOverflow => write!(f, "Stack Overflow"),
-            MachineError::StackUnderflow => write!(f, "Stack Underflow"),
-            MachineError::InvalidRegister => write!(f, "Invalid Register"),
-            MachineError::DivisionByZero => write!(f, "Division By Zero"),
-        }
+        let text = match self {
+            MachineError::StackOverflow => "Stack Overflow",
+            MachineError::StackUnderflow => "Stack Underflow",
+            MachineError::InvalidRegister => "Invalid Register",
+            MachineError::DivisionByZero => "Division By Zero",
+        };
+        write!(f, "{}", text)
     }
 }
 
-fn bool_to_i64(value: bool) -> i64 {
-    if value { 1 } else { 0 }
+pub struct Machine {
+    cells: Vec<i64>,
 }
 
 impl Machine {
-    pub fn new(cells_amount: usize, program: Vec<Instruction>) -> Self {
+    pub fn new() -> Self {
         Machine {
-            // pc_register: 0,
-            // cells: Vec::with_capacity(cells_amount),
             cells: Vec::new(),
-            cells_amount,
-            next_cell: 0,
-            program,
         }
-    }
-
-    pub fn load_program(&mut self, program: Vec<Instruction>) {
-        self.program = program;
     }
 
     fn push(&mut self, value: i64) -> Result<(), MachineError> {
         self.cells.push(value);
-        self.next_cell += 1;
-        if self.next_cell > self.cells_amount {
-            return Err(MachineError::StackOverflow);
-        }
         Ok(())
     }
 
     fn pop(&mut self) -> Result<i64, MachineError> {
         if let Some(value) = self.cells.pop() {
-            self.next_cell -= 1;
             Ok(value)
         } else {
             Err(MachineError::StackUnderflow)
@@ -106,9 +83,6 @@ impl Machine {
     }
 
     fn multi_pop(&mut self, n: usize) -> Result<(), MachineError> {
-        if n > self.next_cell {
-            return Err(MachineError::StackUnderflow);
-        }
         for _ in 0..n {
             self.pop()?;
         }
@@ -131,19 +105,13 @@ impl Machine {
                 self.multi_pop(*n)?;
             }
             Instruction::Read(reg) => {
-                if *reg >= self.next_cell {
-                    return Err(MachineError::InvalidRegister);
-                }
-                self.push(self.cells[*reg])?;
+                let val = self.read(*reg)?;
+                self.push(*val)?;
             }
             Instruction::Add(r1, r2) => {
                 let a = self.read(*r1)?;
                 let b = self.read(*r2)?;
                 self.push(a + b)?;
-            }
-            Instruction::AddI(r, imm) => {
-                let a = self.read(*r)?;
-                self.push(a + imm)?;
             }
             Instruction::Mul(r1, r2) => {
                 let a = self.read(*r1)?;
@@ -245,8 +213,12 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine::new(64, Vec::new()) // Default to 64 cells
+        Machine::new() // Default to 64 cells
     }
+}
+
+fn bool_to_i64(value: bool) -> i64 {
+    i64::from(value)
 }
 
 #[cfg(test)]
@@ -281,17 +253,14 @@ mod tests {
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
-        assert_eq!(machine.next_cell, 3);
 
         let prog = vec![Instruction::Pop(1)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, Some(&2));
-        assert_eq!(machine.next_cell, 2);
 
         let prog = vec![Instruction::Pop(2)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, None);
-        assert_eq!(machine.next_cell, 0);
 
         let prog = vec![Instruction::Pop(1)];
         let result = machine.run(&prog);
@@ -308,7 +277,6 @@ mod tests {
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&100));
-        assert_eq!(machine.next_cell, 3);
         assert_eq!(machine.cells[0], 100);
         assert_eq!(machine.cells[1], 200);
     }
