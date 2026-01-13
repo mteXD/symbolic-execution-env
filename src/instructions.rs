@@ -187,5 +187,5 @@ impl Operator for BinaryOp {
 }
 
 fn from_bool<T: From<bool>>(value: bool) -> T {
-    T::from(value)
+    value.into()
 }
