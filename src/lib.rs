@@ -27,6 +27,7 @@ mod tests {
         types::MachineError,
     };
 
+    #[macro_export]
     macro_rules! add_instr {
         ($op:ident) => {
             AluNullary(NullaryOp::$op)
@@ -43,6 +44,8 @@ mod tests {
             AluBinary(BinaryOp::$op, $a, $b)
         };
     }
+
+    pub(crate) use add_instr;
 
     macro_rules! test_binop {
         ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {

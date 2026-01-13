@@ -72,16 +72,17 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine::new() // Default to 64 cells
+        Machine::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
+        tests::add_instr,
         instructions::{
             Instruction::{AluUnaryImm, AluUnaryReg},
-            UnaryOpImm::Push,
+            UnaryOpImm,
             UnaryOpReg,
         },
         machine::Machine,
@@ -90,28 +91,26 @@ mod tests {
 
     #[test]
     fn test_push_pop() {
-        use UnaryOpReg::Pop;
-
         let mut machine = Machine::default();
         let prog = vec![
-            AluUnaryImm(Push, 1),
-            AluUnaryImm(Push, 2),
-            AluUnaryImm(Push, 3),
+            add_instr!(Push, 1),
+            add_instr!(Push, 2),
+            add_instr!(Push, 3),
         ];
         machine.run(&prog).unwrap();
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
 
-        let prog = vec![AluUnaryReg(Pop, 1)];
+        let prog = vec![add_instr!(R Pop, 1)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, Some(&2));
 
-        let prog = vec![AluUnaryReg(Pop, 2)];
+        let prog = vec![add_instr!(R Pop, 2)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, None);
 
-        let prog = vec![AluUnaryReg(Pop, 1)];
+        let prog = vec![add_instr!(R Pop, 1)];
         let result = machine.run(&prog);
         assert!(matches!(result, Err(MachineError::StackUnderflow)));
     }
@@ -120,9 +119,9 @@ mod tests {
     fn test_read() {
         let mut machine = Machine::default();
         let program = vec![
-            AluUnaryImm(Push, 100),
-            AluUnaryImm(Push, 200),
-            AluUnaryReg(UnaryOpReg::Read, 0),
+            add_instr!(Push, 100),
+            add_instr!(Push, 200),
+            add_instr!(R Read, 0),
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&100));

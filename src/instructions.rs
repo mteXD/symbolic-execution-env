@@ -9,16 +9,19 @@ pub enum NullaryOp {
     Nop,
 }
 
+#[allow(dead_code)]
 pub enum UnaryOpReg {
     Not,
     Read,
     Pop,
 }
 
+#[allow(dead_code)]
 pub enum UnaryOpImm {
     Push,
 }
 
+#[allow(dead_code)]
 pub enum BinaryOp {
     // Arithmetic instructions
     Add,
@@ -41,6 +44,7 @@ pub enum BinaryOp {
     SetGreaterThanOrEqual,
 }
 
+#[allow(dead_code)]
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
@@ -57,7 +61,7 @@ pub trait Operator {
 impl Operator for NullaryOp {
     type ArgType = ();
 
-    fn eval(&self, _: &mut Machine, _: ()) -> Result<(), MachineError> {
+    fn eval(&self, _: &mut Machine, _: Self::ArgType) -> Result<(), MachineError> {
         match self {
             NullaryOp::Nop => {}
         }
@@ -67,16 +71,17 @@ impl Operator for NullaryOp {
 impl Operator for UnaryOpReg {
     type ArgType = Register;
 
-    fn eval(&self, machine: &mut Machine, arg: Register) -> Result<(), MachineError> {
+    fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
         use UnaryOpReg::*;
+
         match self {
             Not => {
-                let val = machine.read(arg)?;
-                machine.push(!*val)?;
+                let val = !*machine.read(arg)?;
+                machine.push(val)?;
             }
             Read => {
-                let val = machine.read(arg)?;
-                machine.push(*val)?;
+                let val = *machine.read(arg)?;
+                machine.push(val)?;
             }
             Pop => {
                 machine.multi_pop(arg)?;
@@ -88,7 +93,7 @@ impl Operator for UnaryOpReg {
 impl Operator for UnaryOpImm {
     type ArgType = Immediate;
 
-    fn eval(&self, machine: &mut Machine, arg: Immediate) -> Result<(), MachineError> {
+    fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
         match self {
             UnaryOpImm::Push => {
                 machine.push(arg)?;
@@ -100,92 +105,37 @@ impl Operator for UnaryOpImm {
 impl Operator for BinaryOp {
     type ArgType = (Register, Register);
 
-    fn eval(&self, machine: &mut Machine, arg: (Register, Register)) -> Result<(), MachineError> {
-        let (reg1, reg2) = arg;
+    fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
         use BinaryOp::*;
-
-        match self {
-            Add => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a + b)?;
-            }
-            Mul => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a * b)?;
-            }
-            Div => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                let div = a.checked_div(*b).ok_or(MachineError::DivisionByZero)?;
-                machine.push(div)?;
-            }
-            And => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a & b)?;
-            }
-            Or => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a | b)?;
-            }
-            Xor => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a ^ b)?;
-            }
-            ShiftLeftLogical => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a << b)?
-            }
-            ShiftRightLogical => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(((*a as u64) >> b) as i64)?;
-            }
-            ShiftRightArithmetic => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(a >> b)?;
-            }
-            SetEqual => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a == b))?;
-            }
-            SetNotEqual => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a != b))?;
-            }
-            SetLessThan => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a < b))?;
-            }
-            SetLessThanOrEqual => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a <= b))?;
-            }
-            SetGreaterThan => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a > b))?;
-            }
-            SetGreaterThanOrEqual => {
-                let a = machine.read(reg1)?;
-                let b = machine.read(reg2)?;
-                machine.push(from_bool(a >= b))?;
-            }
+        fn from_bool<T: From<bool>>(value: bool) -> T {
+            value.into()
         }
+
+        let (reg1, reg2) = arg;
+
+        let a = machine.read(reg1)?;
+        let b = machine.read(reg2)?;
+
+        let calculated_value = match self {
+            Add => a + b,
+            Mul => a * b,
+            Div => a.checked_div(*b).ok_or(MachineError::DivisionByZero)?,
+            And => a & b,
+            Or => a | b,
+            Xor => a ^ b,
+            ShiftLeftLogical => a << b,
+            ShiftRightLogical => ((*a as u64) >> b) as i64,
+            ShiftRightArithmetic => a >> b,
+            SetEqual => from_bool(a == b),
+            SetNotEqual => from_bool(a != b),
+            SetLessThan => from_bool(a < b),
+            SetLessThanOrEqual => from_bool(a <= b),
+            SetGreaterThan => from_bool(a > b),
+            SetGreaterThanOrEqual => from_bool(a >= b),
+        };
+
+        machine.push(calculated_value)?;
+
         Ok(())
     }
-}
-
-fn from_bool<T: From<bool>>(value: bool) -> T {
-    value.into()
 }
