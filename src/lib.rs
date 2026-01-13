@@ -20,14 +20,29 @@ mod tests {
     use crate::{
         instructions::{
             BinaryOp,
-            Instruction::{AluBinary, AluUnaryImm, AluUnaryReg, AluNullary},
-            UnaryOpImm::Push,
-            UnaryOpReg,
-            NullaryOp::Nop,
+            Instruction::{AluBinary, AluNullary, AluUnaryImm, AluUnaryReg},
+            NullaryOp, UnaryOpImm, UnaryOpReg,
         },
         machine::Machine,
         types::MachineError,
     };
+
+    macro_rules! add_instr {
+        ($op:ident) => {
+            AluNullary(NullaryOp::$op)
+        };
+        ($op:ident, $a:expr) => {
+            // for immediate
+            AluUnaryImm(UnaryOpImm::$op, $a)
+        };
+        (R $op:ident, $a:expr) => {
+            // for register
+            AluUnaryReg(UnaryOpReg::$op, $a)
+        };
+        ($op:ident, $a:expr, $b:expr) => {
+            AluBinary(BinaryOp::$op, $a, $b)
+        };
+    }
 
     macro_rules! test_binop {
         ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
@@ -35,9 +50,9 @@ mod tests {
             fn $name() {
                 let mut machine = Machine::default();
                 let program = vec![
-                    AluUnaryImm(Push, $a),
-                    AluUnaryImm(Push, $b),
-                    AluBinary(BinaryOp::$op, 0, 1),
+                    add_instr!(Push, $a),
+                    add_instr!(Push, $b),
+                    add_instr!($op, 0, 1),
                 ];
                 let last = machine.run(&program).unwrap();
                 assert_eq!(last, Some(&$expected));
@@ -54,9 +69,9 @@ mod tests {
     fn test_div_bad() {
         let mut machine = Machine::default();
         let program = vec![
-            AluUnaryImm(Push, 10),
-            AluUnaryImm(Push, 0),
-            AluBinary(BinaryOp::Div, 0, 1),
+            add_instr!(Push, 10),
+            add_instr!(Push, 0),
+            add_instr!(Div, 0, 1),
         ];
         let result = machine.run(&program);
         assert!(matches!(result, Err(MachineError::DivisionByZero)));
@@ -69,7 +84,7 @@ mod tests {
     #[test]
     fn test_not() {
         let mut machine = Machine::default();
-        let program = vec![AluUnaryImm(Push, 0b1100), AluUnaryReg(UnaryOpReg::Not, 0)];
+        let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&(!0b1100)));
     }
@@ -88,7 +103,7 @@ mod tests {
     #[test]
     fn nop() {
         let mut machine = Machine::default();
-        let program = vec![AluNullary(Nop)];
+        let program = vec![add_instr!(Nop)];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, None);
     }
@@ -97,11 +112,11 @@ mod tests {
     fn math_with_read() {
         let mut machine = Machine::default();
         let program = vec![
-            AluUnaryImm(Push, 50),
-            AluUnaryImm(Push, 70),
-            AluUnaryImm(Push, 10),
-            AluBinary(BinaryOp::Add, 0, 1), // 50 + 70 = 120
-            AluBinary(BinaryOp::Div, 3, 2), // 120 / 10 = 12
+            add_instr!(Push, 50),
+            add_instr!(Push, 70),
+            add_instr!(Push, 10),
+            add_instr!(Add, 0, 1), // 50 + 70 = 120
+            add_instr!(Div, 3, 2), // 120 / 10 = 12
         ];
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&12));
@@ -111,11 +126,11 @@ mod tests {
     fn test_run_until() {
         let mut machine = Machine::default();
         let program = vec![
-            AluUnaryImm(Push, 10),
-            AluUnaryImm(Push, 20),
-            AluBinary(BinaryOp::Add, 0, 1),
-            AluUnaryImm(Push, 5),
-            AluBinary(BinaryOp::Mul, 2, 3),
+            add_instr!(Push, 10),
+            add_instr!(Push, 20),
+            add_instr!(Add, 0, 1),
+            add_instr!(Push, 5),
+            add_instr!(Mul, 2, 3),
         ];
         let last = machine.run_until(&program, 3).unwrap();
         assert_eq!(last, Some(&30)); // After first 3 instructions: 10 + 20 = 30
