@@ -7,6 +7,7 @@ use crate::{
 pub enum NullaryOp {
     #[allow(dead_code)]
     Nop,
+    Return,
 }
 
 #[allow(dead_code)]
@@ -14,6 +15,7 @@ pub enum UnaryOpReg {
     Not,
     Read,
     Pop,
+    Call,
 }
 
 #[allow(dead_code)]
@@ -64,6 +66,9 @@ impl Operator for NullaryOp {
     fn eval(&self, _: &mut Machine, _: Self::ArgType) -> Result<(), MachineError> {
         match self {
             NullaryOp::Nop => {}
+            NullaryOp::Return => {
+                todo!()
+            }
         }
         Ok(())
     }
@@ -86,6 +91,10 @@ impl Operator for UnaryOpReg {
             Pop => {
                 machine.multi_pop(arg)?;
             }
+            Call => {
+                todo!()
+            }
+
         }
         Ok(())
     }
