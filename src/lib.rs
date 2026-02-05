@@ -1,22 +1,28 @@
-// A virtual machine that's a hybrid between a register-based and stack-based architecture.
-// Registers are temporarily represented as i64 value. These "registers" are referred to as "cells"
-// in the code.
-// It has a push instruction - it places a value to the next available cell.
-// This is similar to Single Static Assignment (SSA) form in compilers.
-// Pop doesn't have to exist for reading purposes, as we can read directly from available cell.
-// However, pop can be used to free up cells when needed.
+/*
+ * A virtual machine that's a hybrid between a register-based and stack-based
+ * architecture.
+ *
+ * Registers (referred to as "Cells") are temporarily represented as i64 value.
+ * These "registers" are referred to as "cells" in the code.
+ *
+ * It has a push instruction - it places a value to the next available cell.
+ * This is similar to Single Static Assignment (SSA) form in compilers.
+ *
+ * Pop doesn't have to exist for reading purposes, as we can read directly from
+ * available cell.
+ *
+ * However, pop can be used to free up cells when needed.
+ */
 
-// pub struct Register(pub usize);
-// pub struct Immediate(pub i64);
 use std::fmt::Debug;
 
-pub type Register = u16;
+pub type Cell = u16;
 pub type Immediate = i64;
 
 #[derive(Clone)]
 pub enum MachineError {
     StackUnderflow,
-    InvalidRegister,
+    InvalidCell,
     DivisionByZero,
     NoSavedCells,
     RebaseError,
@@ -29,7 +35,7 @@ impl Debug for MachineError {
 
         let text = match self {
             StackUnderflow => "Stack Underflow",
-            InvalidRegister => "Invalid Register",
+            InvalidCell => "Invalid Cell",
             DivisionByZero => "Division By Zero",
             NoSavedCells => "No Saved Cells",
             RebaseError => "Could Not Rebase",
@@ -46,7 +52,7 @@ pub enum NullaryOp {
 }
 
 #[derive(Debug, Clone)]
-pub enum UnaryOpReg {
+pub enum UnaryOpCell {
     Not,
     Read,
     ReadReverse,
@@ -85,8 +91,8 @@ pub enum BinaryOp {
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
-    AluUnaryReg(UnaryOpReg, Register),
-    AluBinary(BinaryOp, Register, Register),
+    AluUnaryCell(UnaryOpCell, Cell),
+    AluBinary(BinaryOp, Cell, Cell),
     Block(Vec<Instruction>),
 }
 
@@ -109,11 +115,11 @@ impl Operator for NullaryOp {
         Ok(())
     }
 }
-impl Operator for UnaryOpReg {
-    type ArgType = Register;
+impl Operator for UnaryOpCell {
+    type ArgType = Cell;
 
     fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
-        use UnaryOpReg::*;
+        use UnaryOpCell::*;
 
         match self {
             Not => {
@@ -130,7 +136,7 @@ impl Operator for UnaryOpReg {
                     .ok()
                     .and_then(|len| len.checked_sub(1))
                     .and_then(|len| len.checked_sub(arg))
-                    .ok_or(MachineError::InvalidRegister)?;
+                    .ok_or(MachineError::InvalidCell)?;
                 let val = *machine.read(index)?;
                 machine.push(val)?;
             }
@@ -156,7 +162,7 @@ impl Operator for UnaryOpImm {
     }
 }
 impl Operator for BinaryOp {
-    type ArgType = (Register, Register);
+    type ArgType = (Cell, Cell);
 
     fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
         use BinaryOp::*;
@@ -198,7 +204,6 @@ pub struct Machine {
     saved_cells: Vec<Vec<i64>>,
     base: usize,
     base_stack: Vec<usize>,
-    rebased_cells: Vec<Vec<i64>>,
 }
 
 impl Machine {
@@ -208,7 +213,6 @@ impl Machine {
             saved_cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
-            rebased_cells: Vec::new(),
         }
     }
 
@@ -223,7 +227,7 @@ impl Machine {
 
     fn multi_pop(&mut self, n: Immediate) -> Result<(), MachineError> {
         if n < 0 {
-            return Err(MachineError::InvalidRegister);
+            return Err(MachineError::InvalidCell);
         }
 
         for _ in 0..n {
@@ -232,10 +236,10 @@ impl Machine {
         Ok(())
     }
 
-    fn read(&self, reg: Register) -> Result<&i64, MachineError> {
+    fn read(&self, reg: Cell) -> Result<&i64, MachineError> {
         match self.cells.get::<usize>(reg.into()) {
             Some(value) => Ok(value),
-            None => Err(MachineError::InvalidRegister),
+            None => Err(MachineError::InvalidCell),
         }
     }
 
@@ -258,20 +262,9 @@ impl Machine {
             return Err(MachineError::RebaseError);
         }
 
-        let rebased = self.cells.split_off(self.base);
-        self.rebased_cells.push(self.cells.clone());
-        self.cells = rebased;
+        self.cells = self.cells.split_off(self.base);
 
         Ok(())
-    }
-
-    fn restore_base(&mut self) -> Result<(), MachineError> {
-        if let Some(rebased) = self.rebased_cells.pop() {
-            self.cells = rebased;
-            Ok(())
-        } else {
-            Err(MachineError::NoRebasedCells)
-        }
     }
 
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
@@ -280,7 +273,7 @@ impl Machine {
         match instruction {
             AluNullary(nullop) => nullop.eval(self, ())?,
             AluUnaryImm(unop_imm, imm) => unop_imm.eval(self, *imm)?,
-            AluUnaryReg(unop_reg, reg) => unop_reg.eval(self, *reg)?,
+            AluUnaryCell(unop_reg, reg) => unop_reg.eval(self, *reg)?,
             AluBinary(binop, reg1, reg2) => binop.eval(self, (*reg1, *reg2))?,
             Block(instructions) => {
                 /* NOTE:
@@ -351,7 +344,7 @@ mod tests {
         };
         (R $op:ident, $a:expr) => {
             // for register
-            AluUnaryReg(UnaryOpReg::$op, $a)
+            AluUnaryCell(UnaryOpCell::$op, $a)
         };
         ($op:ident, $a:expr, $b:expr) => {
             AluBinary(BinaryOp::$op, $a, $b)
@@ -399,7 +392,7 @@ mod tests {
 
         let prog = vec![add_instr!(Pop, -1)];
         let result = machine.run(&prog);
-        assert!(matches!(result, Err(MachineError::InvalidRegister)));
+        assert!(matches!(result, Err(MachineError::InvalidCell)));
 
         let prog = vec![add_instr!(Pop, 1)];
         let val = machine.run(&prog).unwrap();
@@ -656,5 +649,28 @@ mod tests {
         assert_eq!(last, Some(&15));
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 15);
+    }
+
+    #[test]
+    fn test_block_square_add_42() {
+        let mut machine = Machine::default();
+
+        let program = vec![
+            add_instr!(Push, 5), // Argument
+            make_block!(
+                add_instr!(R ReadReverse, 0), // Read x . . . r0 <- x
+                add_instr!(Rebase),
+                add_instr!(Mul, 0, 0), // x ^ 2 . . . r1 <- r0 ^ 2
+                add_instr!(Push, 42), // r2 <- 42
+                add_instr!(Mul, 0, 2), // x * 42 . . . r3 <- r0 * r2
+                add_instr!(Add, 1, 3) // x^2 + 42x . . . r4 <- r1 + r3
+            ),
+        ];
+
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&235));
+        assert_eq!(machine.cells[0], 5);
+        assert_eq!(machine.cells[1], 235);
+        assert_eq!(machine.cells.len(), 2);
     }
 }
