@@ -10,44 +10,55 @@
 // pub struct Immediate(pub i64);
 use std::fmt::Debug;
 
-mod instructions;
-
 pub type Register = u16;
 pub type Immediate = i64;
 
+#[derive(Clone)]
 pub enum MachineError {
     StackUnderflow,
     InvalidRegister,
     DivisionByZero,
+    NoSavedCells,
+    RebaseError,
+    NoRebasedCells,
 }
 
 impl Debug for MachineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use MachineError::*;
+
         let text = match self {
-            MachineError::StackUnderflow => "Stack Underflow",
-            MachineError::InvalidRegister => "Invalid Register",
-            MachineError::DivisionByZero => "Division By Zero",
+            StackUnderflow => "Stack Underflow",
+            InvalidRegister => "Invalid Register",
+            DivisionByZero => "Division By Zero",
+            NoSavedCells => "No Saved Cells",
+            RebaseError => "Could Not Rebase",
+            NoRebasedCells => "No Rebased Cells",
         };
         write!(f, "{}", text)
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum NullaryOp {
     Nop,
-    Return,
+    Rebase,
 }
 
+#[derive(Debug, Clone)]
 pub enum UnaryOpReg {
     Not,
     Read,
-    Pop,
-    Call,
+    ReadReverse,
 }
 
+#[derive(Debug, Clone)]
 pub enum UnaryOpImm {
     Push,
+    Pop,
 }
 
+#[derive(Debug, Clone)]
 pub enum BinaryOp {
     // Arithmetic instructions
     Add,
@@ -70,11 +81,13 @@ pub enum BinaryOp {
     SetGreaterThanOrEqual,
 }
 
+#[derive(Debug, Clone)]
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
     AluUnaryReg(UnaryOpReg, Register),
     AluBinary(BinaryOp, Register, Register),
+    Block(Vec<Instruction>),
 }
 
 pub trait Operator {
@@ -86,11 +99,11 @@ pub trait Operator {
 impl Operator for NullaryOp {
     type ArgType = ();
 
-    fn eval(&self, _: &mut Machine, _: Self::ArgType) -> Result<(), MachineError> {
+    fn eval(&self, machine: &mut Machine, _: Self::ArgType) -> Result<(), MachineError> {
         match self {
             NullaryOp::Nop => {}
-            NullaryOp::Return => {
-                todo!()
+            NullaryOp::Rebase => {
+                machine.rebase()?;
             }
         }
         Ok(())
@@ -111,11 +124,15 @@ impl Operator for UnaryOpReg {
                 let val = *machine.read(arg)?;
                 machine.push(val)?;
             }
-            Pop => {
-                machine.multi_pop(arg)?;
-            }
-            Call => {
-                todo!()
+            ReadReverse => {
+                // like python's negative indexing.
+                let index = u16::try_from(machine.cells.len())
+                    .ok()
+                    .and_then(|len| len.checked_sub(1))
+                    .and_then(|len| len.checked_sub(arg))
+                    .ok_or(MachineError::InvalidRegister)?;
+                let val = *machine.read(index)?;
+                machine.push(val)?;
             }
         }
         Ok(())
@@ -125,9 +142,14 @@ impl Operator for UnaryOpImm {
     type ArgType = Immediate;
 
     fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
+        use UnaryOpImm::*;
+
         match self {
-            UnaryOpImm::Push => {
+            Push => {
                 machine.push(arg)?;
+            }
+            Pop => {
+                machine.multi_pop(arg)?;
             }
         }
         Ok(())
@@ -173,11 +195,21 @@ impl Operator for BinaryOp {
 
 pub struct Machine {
     cells: Vec<i64>,
+    saved_cells: Vec<Vec<i64>>,
+    base: usize,
+    base_stack: Vec<usize>,
+    rebased_cells: Vec<Vec<i64>>,
 }
 
 impl Machine {
     pub fn new() -> Self {
-        Machine { cells: Vec::new() }
+        Machine {
+            cells: Vec::new(),
+            saved_cells: Vec::new(),
+            base: 0,
+            base_stack: Vec::new(),
+            rebased_cells: Vec::new(),
+        }
     }
 
     fn push(&mut self, value: i64) -> Result<(), MachineError> {
@@ -185,17 +217,17 @@ impl Machine {
         Ok(())
     }
 
-    fn pop(&mut self) -> Result<i64, MachineError> {
-        if let Some(value) = self.cells.pop() {
-            Ok(value)
-        } else {
-            Err(MachineError::StackUnderflow)
-        }
+    fn pop(&mut self) -> Option<i64> {
+        self.cells.pop()
     }
 
-    fn multi_pop(&mut self, n: Register) -> Result<(), MachineError> {
+    fn multi_pop(&mut self, n: Immediate) -> Result<(), MachineError> {
+        if n < 0 {
+            return Err(MachineError::InvalidRegister);
+        }
+
         for _ in 0..n {
-            self.pop()?;
+            self.pop().ok_or(MachineError::StackUnderflow)?; // Discard the popped value
         }
         Ok(())
     }
@@ -207,14 +239,68 @@ impl Machine {
         }
     }
 
+    fn save_cells(&mut self) -> Result<(), MachineError> {
+        self.saved_cells.push(self.cells.clone());
+        Ok(())
+    }
+
+    fn restore_cells(&mut self) -> Result<(), MachineError> {
+        if let Some(saved) = self.saved_cells.pop() {
+            self.cells = saved;
+            Ok(())
+        } else {
+            Err(MachineError::NoSavedCells)
+        }
+    }
+
+    fn rebase(&mut self) -> Result<(), MachineError> {
+        if self.base > self.cells.len() {
+            return Err(MachineError::RebaseError);
+        }
+
+        let rebased = self.cells.split_off(self.base);
+        self.rebased_cells.push(self.cells.clone());
+        self.cells = rebased;
+
+        Ok(())
+    }
+
+    fn restore_base(&mut self) -> Result<(), MachineError> {
+        if let Some(rebased) = self.rebased_cells.pop() {
+            self.cells = rebased;
+            Ok(())
+        } else {
+            Err(MachineError::NoRebasedCells)
+        }
+    }
+
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
-        use Instruction::{AluBinary, AluNullary, AluUnaryImm, AluUnaryReg};
+        use Instruction::*;
 
         match instruction {
             AluNullary(nullop) => nullop.eval(self, ())?,
             AluUnaryImm(unop_imm, imm) => unop_imm.eval(self, *imm)?,
             AluUnaryReg(unop_reg, reg) => unop_reg.eval(self, *reg)?,
             AluBinary(binop, reg1, reg2) => binop.eval(self, (*reg1, *reg2))?,
+            Block(instructions) => {
+                /* NOTE:
+                 * Since it is likely that more pops than pushes occur, we must
+                 * save the ENTIRE state of cells, copying it twice.
+                 */
+                self.save_cells()?;
+                self.base_stack.push(self.base);
+                self.base = self.cells.len();
+
+                self.run(instructions)?;
+
+                let block_result = self.pop();
+
+                self.base = self.base_stack.pop().ok_or(MachineError::RebaseError)?;
+                self.restore_cells()?;
+                if let Some(val) = block_result {
+                    self.push(val)?;
+                }
+            }
         }
 
         Ok(())
@@ -229,10 +315,15 @@ impl Machine {
         program: &[Instruction],
         limit: usize,
     ) -> Result<Option<&i64>, MachineError> {
-        program
-            .iter()
-            .take(limit)
-            .try_for_each(|instruction| self.evaluate_instruction(instruction))?;
+        program.iter().take(limit).try_for_each(|instr| {
+            self.evaluate_instruction(instr).map_err(|e| {
+                eprintln!(
+                    "Error executing instruction {:?}: {:?} | cells: {:?}",
+                    instr, e, self.cells
+                );
+                e
+            })
+        })?;
 
         Ok(self.cells.last())
     }
@@ -247,7 +338,7 @@ impl Default for Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Instruction::{AluBinary, AluNullary, AluUnaryImm, AluUnaryReg};
+    use Instruction::*;
 
     #[macro_export]
     macro_rules! add_instr {
@@ -264,6 +355,12 @@ mod tests {
         };
         ($op:ident, $a:expr, $b:expr) => {
             AluBinary(BinaryOp::$op, $a, $b)
+        };
+    }
+
+    macro_rules! make_block {
+        ($($instr:expr),+) => { // Variadic arguments, at least one
+            Block(vec![ $( $instr ),* ])
         };
     }
 
@@ -290,21 +387,33 @@ mod tests {
             add_instr!(Push, 1),
             add_instr!(Push, 2),
             add_instr!(Push, 3),
+            add_instr!(Push, 4),
+            add_instr!(Push, 5),
         ];
         machine.run(&prog).unwrap();
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
+        assert_eq!(machine.cells[3], 4);
+        assert_eq!(machine.cells[4], 5);
 
-        let prog = vec![add_instr!(R Pop, 1)];
+        let prog = vec![add_instr!(Pop, -1)];
+        let result = machine.run(&prog);
+        assert!(matches!(result, Err(MachineError::InvalidRegister)));
+
+        let prog = vec![add_instr!(Pop, 1)];
+        let val = machine.run(&prog).unwrap();
+        assert_eq!(val, Some(&4));
+
+        let prog = vec![add_instr!(Pop, 2)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, Some(&2));
 
-        let prog = vec![add_instr!(R Pop, 2)];
+        let prog = vec![add_instr!(Pop, 2)];
         let val = machine.run(&prog).unwrap();
         assert_eq!(val, None);
 
-        let prog = vec![add_instr!(R Pop, 1)];
+        let prog = vec![add_instr!(Pop, 1)];
         let result = machine.run(&prog);
         assert!(matches!(result, Err(MachineError::StackUnderflow)));
     }
@@ -321,6 +430,22 @@ mod tests {
         assert_eq!(last, Some(&100));
         assert_eq!(machine.cells[0], 100);
         assert_eq!(machine.cells[1], 200);
+    }
+
+    #[test]
+    fn test_read_reverse() {
+        let mut machine = Machine::default();
+        let program = vec![
+            add_instr!(Push, 10),
+            add_instr!(Push, 20),
+            add_instr!(Push, 30),
+            add_instr!(R ReadReverse, 1), // Should read 20
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&20));
+        assert_eq!(machine.cells[0], 10);
+        assert_eq!(machine.cells[1], 20);
+        assert_eq!(machine.cells[2], 30);
     }
 
     test_binop!(test_add, 10, 20, Add => 30);
@@ -401,5 +526,135 @@ mod tests {
         let mut machine = Machine::default();
         let last = machine.run_until(&program, 5).unwrap();
         assert_eq!(last, Some(&150)); // After all instructions: 30 * 5 = 150
+    }
+
+    #[test]
+    fn test_block_no_arg() {
+        let mut machine = Machine::default();
+        let block_instructions = vec![
+            add_instr!(Push, 10),
+            add_instr!(Push, 20),
+            add_instr!(Add, 0, 1),
+            make_block!(
+                add_instr!(Push, 2),   // This push should be deleted after block ends
+                add_instr!(Mul, 2, 3) // This is the last push, the result, and it should remain after block ends
+            ),
+            add_instr!(Add, 2, 3),
+        ];
+
+        let last = machine.run(&block_instructions).unwrap();
+        assert_eq!(last, Some(&90)); // (10 + 20) + ((10 + 20) * 2) = 90
+
+        assert_eq!(machine.cells[0], 10);
+        assert_eq!(machine.cells[1], 20);
+        assert_eq!(machine.cells[2], 30); // Result of first addition
+        assert_eq!(machine.cells[3], 60); // Result of multiplication inside block
+        assert_eq!(machine.cells[4], 90); // Final result
+        assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
+        assert_eq!(machine.cells.len(), 5); // Ensure all expected cells are present
+    }
+
+    #[test]
+    fn test_block_nested() {
+        let mut machine = Machine::default();
+        let program = vec![
+            add_instr!(Push, 3),
+            make_block!(
+                add_instr!(Push, 4),
+                make_block!(
+                    add_instr!(Push, 5),
+                    add_instr!(Mul, 1, 2) // 4 * 5 = 20
+                ),
+                add_instr!(Add, 0, 2) // 3 + 20 = 23
+            ),
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&23));
+        assert_eq!(machine.cells[0], 3);
+        assert_eq!(machine.cells[1], 23);
+    }
+
+    #[test]
+    fn test_block_square_fn() {
+        let mut machine = Machine::default();
+
+        let square_block = make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Mul, 0, 1) // Multiply input by 2
+        );
+
+        let program = vec![
+            add_instr!(Push, 2),
+            square_block.clone(),
+            square_block.clone(),
+        ];
+
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&16));
+    }
+
+    #[test]
+    fn test_block_with_pop() {
+        let mut machine = Machine::default();
+
+        let block = make_block!(
+            add_instr!(Pop, 2) // Pop the 20, leaving only 30
+        );
+
+        let program = vec![
+            add_instr!(Push, 3),
+            add_instr!(Push, 5),
+            block,
+            add_instr!(Mul, 0, 1), // 3 * 5 = 15
+        ];
+
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&15));
+    }
+
+    #[test]
+    fn test_block_nested_rebase_1() {
+        let mut machine = Machine::default();
+        let program = vec![
+            add_instr!(Push, 2),
+            make_block!(
+                add_instr!(Push, 3),
+                add_instr!(Rebase),
+                make_block!(
+                    add_instr!(Push, 4),
+                    add_instr!(Mul, 0, 1) // 3 * 4 = 12
+                ),
+                add_instr!(Add, 0, 1) // 3 + 12 = 14
+            ),
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&15));
+        assert_eq!(machine.cells[0], 2);
+        assert_eq!(machine.cells[1], 15);
+    }
+
+    #[test]
+    fn test_block_nested_rebase_2() {
+        let mut machine = Machine::default();
+        let program = vec![
+            add_instr!(Push, 2),
+            make_block!(
+                add_instr!(Push, 3),
+                add_instr!(Rebase),
+                make_block!(
+                    add_instr!(R ReadReverse, 0),
+                    add_instr!(Push, 4),
+                    add_instr!(Rebase),
+                    add_instr!(Mul, 0, 1) // 3 * 4 = 12
+                ),
+                add_instr!(Add, 0, 1) // 3 + 12 = 14
+            ),
+        ];
+        let last = machine.run(&program).unwrap();
+        assert_eq!(last, Some(&15));
+        assert_eq!(machine.cells[0], 2);
+        assert_eq!(machine.cells[1], 15);
     }
 }
