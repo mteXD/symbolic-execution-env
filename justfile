@@ -27,7 +27,7 @@ test-list:
     
 [group('dev')]
 check:
-    cargo check
+    cargo check --tests
 
 [group('cleaning')]
 clean:
