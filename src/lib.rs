@@ -199,6 +199,7 @@ impl Operator for BinaryOp {
     }
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct Machine {
     cells: Vec<i64>,
     saved_cells: Vec<Vec<i64>>,
@@ -322,17 +323,7 @@ impl Machine {
     }
 }
 
-impl Default for Machine {
-    fn default() -> Self {
-        Machine::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use Instruction::*;
-
+pub mod macros {
     #[macro_export]
     macro_rules! add_instr {
         ($op:ident) => {
@@ -351,11 +342,21 @@ mod tests {
         };
     }
 
+    #[macro_export]
     macro_rules! make_block {
         ($($instr:expr),+) => { // Variadic arguments, at least one
             Block(vec![ $( $instr ),* ])
         };
     }
+
+    pub use add_instr;
+    pub use make_block;
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use Instruction::*;
 
     macro_rules! test_binop {
         ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
@@ -661,9 +662,9 @@ mod tests {
                 add_instr!(R ReadReverse, 0), // Read x . . . r0 <- x
                 add_instr!(Rebase),
                 add_instr!(Mul, 0, 0), // x ^ 2 . . . r1 <- r0 ^ 2
-                add_instr!(Push, 42), // r2 <- 42
+                add_instr!(Push, 42),  // r2 <- 42
                 add_instr!(Mul, 0, 2), // x * 42 . . . r3 <- r0 * r2
-                add_instr!(Add, 1, 3) // x^2 + 42x . . . r4 <- r1 + r3
+                add_instr!(Add, 1, 3)  // x^2 + 42x . . . r4 <- r1 + r3
             ),
         ];
 
