@@ -843,5 +843,33 @@ pub mod tests {
             assert_eq!(machine.cells[1], 2);
             assert!(matches!(machine.cells.get(2), None));
         }
+
+        #[test]
+        fn test_nested_functions() {
+            let mut program = vec![
+                add_instr!(fun FunctionDefine, String::from("outer")),
+                make_block!(
+                    add_instr!(fun FunctionDefine, String::from("inner")),
+                    make_block!(
+                        add_instr!(Push, 42)
+                    ),
+                    add_instr!(fun FunctionCall, String::from("inner"))
+                ),
+                add_instr!(fun FunctionCall, String::from("outer")),
+            ];
+
+            // Outer function call should work
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&42));
+
+            // Inner function call should fail
+            let mut machine = Machine::new();
+            program.push(add_instr!(fun FunctionCall, String::from("inner")));
+            machine.load_program(&program);
+            let last = machine.run();
+            assert!(matches!(last, Err(MachineError::FunctionUndefined)));
+        }
     }
 }
