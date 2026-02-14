@@ -916,6 +916,14 @@ pub mod tests {
 
         #[test]
         fn test_factorial() {
+            fn factorial(n: i64) -> i64 {
+                if n <= 1 {
+                    return 1;
+                }
+                n * factorial(n - 1)
+            }
+            let number = 10;
+
             let program = vec![
                 add_instr!(fun FunctionDefine, String::from("factorial")),
                 make_block!(
@@ -931,7 +939,7 @@ pub mod tests {
                         add_instr!(Mul, 0, 4) // n * factorial(n - 1
                     )
                 ),
-                add_instr!(Push, 10),
+                add_instr!(Push, number),
                 add_instr!(fun FunctionCall, String::from("factorial")),
             ];
 
@@ -939,7 +947,7 @@ pub mod tests {
             machine.load_program(&program);
             machine.reset_pc();
             let last = machine.run().unwrap();
-            assert_eq!(last, Some(&3628800));
+            assert_eq!(last, Some(&factorial(number)));
         }
 
         #[test]
