@@ -14,12 +14,12 @@
  * However, pop can be used to free up cells when needed.
  */
 
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
 pub type Cell = u16;
 pub type Immediate = i64;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum MachineError {
     StackUnderflow,
     InvalidCell,
@@ -27,23 +27,32 @@ pub enum MachineError {
     NoSavedCells,
     RebaseError,
     NoRebasedCells,
+    FunctionRedefinition,
+    FunctionUndefined,
+    FunctionCallError,
+    InstructionError(String),
+    OtherError(String),
 }
 
-impl Debug for MachineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use MachineError::*;
-
-        let text = match self {
-            StackUnderflow => "Stack Underflow",
-            InvalidCell => "Invalid Cell",
-            DivisionByZero => "Division By Zero",
-            NoSavedCells => "No Saved Cells",
-            RebaseError => "Could Not Rebase",
-            NoRebasedCells => "No Rebased Cells",
-        };
-        write!(f, "{}", text)
-    }
-}
+// TODO: Solve this comment (delete or uncomment if derive is not good enough).
+// impl Debug for MachineError {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         use MachineError::*;
+//
+//         let text = match self {
+//             StackUnderflow => "Stack Underflow",
+//             InvalidCell => "Invalid Cell",
+//             DivisionByZero => "Division By Zero",
+//             NoSavedCells => "No Saved Cells",
+//             RebaseError => "Could Not Rebase",
+//             NoRebasedCells => "No Rebased Cells",
+//             FunctionRedefinition => "Function Redefinition",
+//             FunctionUndefined => "Function Undefined",
+//             FunctionCallError => "Function Call Error",
+//         };
+//         write!(f, "{}", text)
+//     }
+// }
 
 #[derive(Debug, Clone)]
 pub enum NullaryOp {
@@ -56,6 +65,7 @@ pub enum UnaryOpCell {
     Not,
     Read,
     ReadReverse,
+    Tail, // Tail-call a function.
 }
 
 #[derive(Debug, Clone)]
@@ -88,12 +98,19 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, Clone)]
+pub enum FunctionOp {
+    FunctionDefine,
+    FunctionCall,
+}
+
+#[derive(Debug, Clone)]
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
     AluUnaryCell(UnaryOpCell, Cell),
     AluBinary(BinaryOp, Cell, Cell),
     Block(Vec<Instruction>),
+    AluFunction(FunctionOp, String),
 }
 
 pub trait Operator {
@@ -140,6 +157,7 @@ impl Operator for UnaryOpCell {
                 let val = *machine.read(index)?;
                 machine.push(val)?;
             }
+            Tail => todo!(), // TODO: Implement tail call
         }
         Ok(())
     }
@@ -199,12 +217,51 @@ impl Operator for BinaryOp {
     }
 }
 
+impl Operator for FunctionOp {
+    type ArgType = String;
+
+    fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError> {
+        use FunctionOp::*;
+
+        match self {
+            FunctionDefine => {
+                eprintln!("Defining function '{}'", arg);
+                if machine.function_data.function_table.contains_key(&arg) {
+                    return Err(MachineError::FunctionRedefinition);
+                }
+
+                machine.function_data.new_function_declared = Some(arg.clone());
+            }
+            FunctionCall => {
+                if let Some(instruction) = machine.function_data.function_table.get(&arg) {
+                    eprintln!("Calling function '{}'", arg);
+                    eprintln!("Function body: {:?}", instruction);
+                    let instruction_clone = instruction.clone(); // WARN: Clone
+                    let vec = vec![instruction_clone];
+                    machine.run(&vec)?;
+                } else {
+                    return Err(MachineError::FunctionUndefined);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FunctionData {
+    function_table: HashMap<String, Instruction>,
+    new_function_declared: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Machine {
     cells: Vec<i64>,
     saved_cells: Vec<Vec<i64>>,
     base: usize,
     base_stack: Vec<usize>,
+    function_data: FunctionData,
 }
 
 impl Machine {
@@ -214,6 +271,7 @@ impl Machine {
             saved_cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
+            function_data: FunctionData::default(),
         }
     }
 
@@ -245,7 +303,7 @@ impl Machine {
     }
 
     fn save_cells(&mut self) -> Result<(), MachineError> {
-        self.saved_cells.push(self.cells.clone());
+        self.saved_cells.push(self.cells.clone()); // WARN: Clone
         Ok(())
     }
 
@@ -271,6 +329,17 @@ impl Machine {
     fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
         use Instruction::*;
 
+        if let Some(func_name) = &self.function_data.new_function_declared {
+            if self.function_data.function_table.contains_key(func_name) {
+                return Err(MachineError::FunctionRedefinition);
+            }
+            self.function_data
+                .function_table
+                .insert(func_name.clone(), instruction.clone()); // WARN: Clone
+            self.function_data.new_function_declared = None;
+            return Ok(());
+        }
+
         match instruction {
             AluNullary(nullop) => nullop.eval(self, ())?,
             AluUnaryImm(unop_imm, imm) => unop_imm.eval(self, *imm)?,
@@ -294,6 +363,9 @@ impl Machine {
                 if let Some(val) = block_result {
                     self.push(val)?;
                 }
+            }
+            AluFunction(function_op, name) => {
+                function_op.eval(self, name.to_string())?;
             }
         }
 
@@ -339,6 +411,9 @@ pub mod macros {
         };
         ($op:ident, $a:expr, $b:expr) => {
             AluBinary(BinaryOp::$op, $a, $b)
+        };
+        (fun $op:ident, $name:expr) => {
+            AluFunction(FunctionOp::$op, $name)
         };
     }
 
@@ -673,5 +748,46 @@ pub mod tests {
         assert_eq!(machine.cells[0], 5);
         assert_eq!(machine.cells[1], 235);
         assert_eq!(machine.cells.len(), 2);
+    }
+
+    mod function_tests {
+        use super::*;
+
+        #[test]
+        fn test_simple_function() {
+            let mut machine = Machine::default();
+
+            let program = vec![
+                add_instr!(fun FunctionDefine, String::from("square")),
+                make_block!(
+                    add_instr!(R ReadReverse, 0),
+                    add_instr!(Rebase),
+                    add_instr!(Mul, 0, 0) // Multiply input by 2
+                ),
+                add_instr!(Push, 3),
+                add_instr!(fun FunctionCall, String::from("square")),
+            ];
+
+            let last = machine.run(&program).unwrap();
+            assert_eq!(last, Some(&9));
+        }
+
+        #[test]
+        fn test_sequential_definitions() {
+            let mut machine = Machine::default();
+
+            let program = vec![
+                add_instr!(fun FunctionDefine, String::from("square")),
+                add_instr!(fun FunctionDefine, String::from("cube")),
+                add_instr!(fun FunctionDefine, String::from("nothing")),
+                add_instr!(Push, 2),
+                add_instr!(fun FunctionCall, String::from("square")),
+                add_instr!(fun FunctionCall, String::from("brr")),
+            ];
+
+            let _ = machine.run(&program).unwrap();
+
+            // assert_eq!(machine.cells[0], 2);
+        }
     }
 }
