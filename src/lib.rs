@@ -96,6 +96,40 @@ pub enum Instruction {
     Block(Vec<Instruction>),
 }
 
+impl<'a> Instruction {
+    fn eval(&'a self, machine: &mut Machine<'a>) -> Result<(), MachineError> {
+        use Instruction::*;
+
+        match self {
+            AluNullary(nullop) => nullop.eval(machine, ())?,
+            AluUnaryImm(unop_imm, imm) => unop_imm.eval(machine, *imm)?,
+            AluUnaryCell(unop_reg, reg) => unop_reg.eval(machine, *reg)?,
+            AluBinary(binop, reg1, reg2) => binop.eval(machine, (*reg1, *reg2))?,
+            Block(instructions) => {
+                /* NOTE:
+                 * Since it is likely that more pops than pushes occur, we must
+                 * save the ENTIRE state of cells, copying it twice.
+                 */
+                machine.save_cells()?;
+                machine.base_stack.push(machine.base);
+                machine.base = machine.cells.len();
+
+                machine.run(instructions)?;
+
+                let block_result = machine.pop();
+
+                machine.base = machine.base_stack.pop().ok_or(MachineError::RebaseError)?;
+                machine.restore_cells()?;
+                if let Some(val) = block_result {
+                    machine.push(val)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub trait Operator {
     type ArgType;
 
@@ -199,19 +233,21 @@ impl Operator for BinaryOp {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Machine {
+#[derive(Debug, Clone)]
+pub struct Machine<'a> {
     cells: Vec<i64>,
     saved_cells: Vec<Vec<i64>>,
+    program: &'a Vec<Instruction>,
     base: usize,
     base_stack: Vec<usize>,
 }
 
-impl Machine {
-    pub fn new() -> Self {
+impl<'a> Machine<'a> {
+    pub fn new(program: &'a Vec<Instruction>) -> Self {
         Machine {
             cells: Vec::new(),
             saved_cells: Vec::new(),
+            program,
             base: 0,
             base_stack: Vec::new(),
         }
@@ -268,49 +304,10 @@ impl Machine {
         Ok(())
     }
 
-    fn evaluate_instruction(&mut self, instruction: &Instruction) -> Result<(), MachineError> {
-        use Instruction::*;
 
-        match instruction {
-            AluNullary(nullop) => nullop.eval(self, ())?,
-            AluUnaryImm(unop_imm, imm) => unop_imm.eval(self, *imm)?,
-            AluUnaryCell(unop_reg, reg) => unop_reg.eval(self, *reg)?,
-            AluBinary(binop, reg1, reg2) => binop.eval(self, (*reg1, *reg2))?,
-            Block(instructions) => {
-                /* NOTE:
-                 * Since it is likely that more pops than pushes occur, we must
-                 * save the ENTIRE state of cells, copying it twice.
-                 */
-                self.save_cells()?;
-                self.base_stack.push(self.base);
-                self.base = self.cells.len();
-
-                self.run(instructions)?;
-
-                let block_result = self.pop();
-
-                self.base = self.base_stack.pop().ok_or(MachineError::RebaseError)?;
-                self.restore_cells()?;
-                if let Some(val) = block_result {
-                    self.push(val)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn run(&mut self, program: &[Instruction]) -> Result<Option<&i64>, MachineError> {
-        self.run_until(program, program.len())
-    }
-
-    pub fn run_until(
-        &mut self,
-        program: &[Instruction],
-        limit: usize,
-    ) -> Result<Option<&i64>, MachineError> {
-        program.iter().take(limit).try_for_each(|instr| {
-            self.evaluate_instruction(instr).map_err(|e| {
+    pub fn run(&mut self, program: &'a Vec<Instruction>) -> Result<Option<&i64>, MachineError> {
+        program.iter().try_for_each(|instr| {
+            instr.eval(self).map_err(|e| {
                 eprintln!(
                     "Error executing instruction {:?}: {:?} | cells: {:?}",
                     instr, e, self.cells
@@ -362,12 +359,12 @@ pub mod tests {
         ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
             #[test]
             fn $name() {
-                let mut machine = Machine::default();
                 let program = vec![
                     add_instr!(Push, $a),
                     add_instr!(Push, $b),
                     add_instr!($op, 0, 1),
                 ];
+                let mut machine = Machine::new(&program);
                 let last = machine.run(&program).unwrap();
                 assert_eq!(last, Some(&$expected));
             }
@@ -376,15 +373,15 @@ pub mod tests {
 
     #[test]
     fn test_push_pop() {
-        let mut machine = Machine::default();
-        let prog = vec![
+        let program = vec![
             add_instr!(Push, 1),
             add_instr!(Push, 2),
             add_instr!(Push, 3),
             add_instr!(Push, 4),
             add_instr!(Push, 5),
         ];
-        machine.run(&prog).unwrap();
+        let mut machine = Machine::new(&program);
+        machine.run(&program).unwrap();
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
@@ -414,12 +411,12 @@ pub mod tests {
 
     #[test]
     fn test_read() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 100),
             add_instr!(Push, 200),
             add_instr!(R Read, 0),
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&100));
         assert_eq!(machine.cells[0], 100);
@@ -428,13 +425,13 @@ pub mod tests {
 
     #[test]
     fn test_read_reverse() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 10),
             add_instr!(Push, 20),
             add_instr!(Push, 30),
             add_instr!(R ReadReverse, 1), // Should read 20
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&20));
         assert_eq!(machine.cells[0], 10);
@@ -449,12 +446,12 @@ pub mod tests {
 
     #[test]
     fn test_div_bad() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 10),
             add_instr!(Push, 0),
             add_instr!(Div, 0, 1),
         ];
+        let mut machine = Machine::new(&program);
         let result = machine.run(&program);
         assert!(matches!(result, Err(MachineError::DivisionByZero)));
     }
@@ -465,8 +462,8 @@ pub mod tests {
 
     #[test]
     fn test_not() {
-        let mut machine = Machine::default();
         let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&(!0b1100)));
     }
@@ -484,15 +481,14 @@ pub mod tests {
 
     #[test]
     fn nop() {
-        let mut machine = Machine::default();
         let program = vec![add_instr!(Nop)];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, None);
     }
 
     #[test]
     fn math_with_read() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 50),
             add_instr!(Push, 70),
@@ -500,32 +496,14 @@ pub mod tests {
             add_instr!(Add, 0, 1), // 50 + 70 = 120
             add_instr!(Div, 3, 2), // 120 / 10 = 12
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&12));
     }
 
     #[test]
-    fn test_run_until() {
-        let mut machine = Machine::default();
-        let program = vec![
-            add_instr!(Push, 10),
-            add_instr!(Push, 20),
-            add_instr!(Add, 0, 1),
-            add_instr!(Push, 5),
-            add_instr!(Mul, 2, 3),
-        ];
-        let last = machine.run_until(&program, 3).unwrap();
-        assert_eq!(last, Some(&30)); // After first 3 instructions: 10 + 20 = 30
-
-        let mut machine = Machine::default();
-        let last = machine.run_until(&program, 5).unwrap();
-        assert_eq!(last, Some(&150)); // After all instructions: 30 * 5 = 150
-    }
-
-    #[test]
     fn test_block_no_arg() {
-        let mut machine = Machine::default();
-        let block_instructions = vec![
+        let program = vec![
             add_instr!(Push, 10),
             add_instr!(Push, 20),
             add_instr!(Add, 0, 1),
@@ -536,7 +514,8 @@ pub mod tests {
             add_instr!(Add, 2, 3),
         ];
 
-        let last = machine.run(&block_instructions).unwrap();
+        let mut machine = Machine::new(&program);
+        let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&90)); // (10 + 20) + ((10 + 20) * 2) = 90
 
         assert_eq!(machine.cells[0], 10);
@@ -550,7 +529,6 @@ pub mod tests {
 
     #[test]
     fn test_block_nested() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 3),
             make_block!(
@@ -562,6 +540,7 @@ pub mod tests {
                 add_instr!(Add, 0, 2) // 3 + 20 = 23
             ),
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&23));
         assert_eq!(machine.cells[0], 3);
@@ -570,8 +549,6 @@ pub mod tests {
 
     #[test]
     fn test_block_square_fn() {
-        let mut machine = Machine::default();
-
         let square_block = make_block!(
             add_instr!(R ReadReverse, 0),
             add_instr!(R ReadReverse, 0),
@@ -585,14 +562,13 @@ pub mod tests {
             square_block.clone(),
         ];
 
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&16));
     }
 
     #[test]
     fn test_block_with_pop() {
-        let mut machine = Machine::default();
-
         let block = make_block!(
             add_instr!(Pop, 2) // Pop the 20, leaving only 30
         );
@@ -604,13 +580,13 @@ pub mod tests {
             add_instr!(Mul, 0, 1), // 3 * 5 = 15
         ];
 
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&15));
     }
 
     #[test]
     fn test_block_nested_rebase_1() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 2),
             make_block!(
@@ -623,6 +599,7 @@ pub mod tests {
                 add_instr!(Add, 0, 1) // 3 + 12 = 14
             ),
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&15));
         assert_eq!(machine.cells[0], 2);
@@ -631,7 +608,6 @@ pub mod tests {
 
     #[test]
     fn test_block_nested_rebase_2() {
-        let mut machine = Machine::default();
         let program = vec![
             add_instr!(Push, 2),
             make_block!(
@@ -646,6 +622,7 @@ pub mod tests {
                 add_instr!(Add, 0, 1) // 3 + 12 = 14
             ),
         ];
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&15));
         assert_eq!(machine.cells[0], 2);
@@ -654,8 +631,6 @@ pub mod tests {
 
     #[test]
     fn test_block_square_add_42() {
-        let mut machine = Machine::default();
-
         let program = vec![
             add_instr!(Push, 5), // Argument
             make_block!(
@@ -668,6 +643,7 @@ pub mod tests {
             ),
         ];
 
+        let mut machine = Machine::new(&program);
         let last = machine.run(&program).unwrap();
         assert_eq!(last, Some(&235));
         assert_eq!(machine.cells[0], 5);
