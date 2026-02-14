@@ -36,26 +36,6 @@ pub enum MachineError {
     ProgramNotLoaded,
 }
 
-// TODO: Solve this comment (delete or uncomment if derive is not good enough).
-// impl Debug for MachineError {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         use MachineError::*;
-//
-//         let text = match self {
-//             StackUnderflow => "Stack Underflow",
-//             InvalidCell => "Invalid Cell",
-//             DivisionByZero => "Division By Zero",
-//             NoSavedCells => "No Saved Cells",
-//             RebaseError => "Could Not Rebase",
-//             NoRebasedCells => "No Rebased Cells",
-//             FunctionRedefinition => "Function Redefinition",
-//             FunctionUndefined => "Function Undefined",
-//             FunctionCallError => "Function Call Error",
-//         };
-//         write!(f, "{}", text)
-//     }
-// }
-
 #[derive(Debug, Clone)]
 pub enum NullaryOp {
     Nop,
@@ -402,21 +382,6 @@ impl<'a> Machine<'a> {
             None => Err(MachineError::InvalidCell),
         }
     }
-
-    // TODO: Delete or uncomment
-    // fn save_cells(&mut self) -> Result<(), MachineError> {
-    //     self.saved_cells.push(self.cells.clone()); // WARN: Clone
-    //     Ok(())
-    // }
-    //
-    // fn restore_cells(&mut self) -> Result<(), MachineError> {
-    //     if let Some(saved) = self.saved_cells.pop() {
-    //         self.cells = saved;
-    //         Ok(())
-    //     } else {
-    //         Err(MachineError::NoSavedCells)
-    //     }
-    // }
 
     fn rebase(&mut self) -> Result<(), MachineError> {
         if self.base > self.cells.len() {
