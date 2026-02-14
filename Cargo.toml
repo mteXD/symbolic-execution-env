@@ -11,3 +11,8 @@ criterion = "0.8.2"
 [[bench]]
 name = "default_benchmark"
 harness = false
+
+[profile.dev]
+opt-level = 0          # No optimizations for faster compilation
+debug = true           # Include debug symbols
+debug-assertions = true # Enable runtime checks

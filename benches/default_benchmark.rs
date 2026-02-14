@@ -27,10 +27,11 @@ fn bench1(c: &mut Criterion) {
         .cloned()
         .collect(),
     );
+    machine.load_program(&program);
 
     c.bench_function("simple addition", |b| {
         b.iter(|| {
-            let _ = machine.run(&program).expect("Failed to run the program");
+            let _ = machine.run().expect("Failed to run the program");
         })
     });
 }

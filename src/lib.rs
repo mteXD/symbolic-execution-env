@@ -18,6 +18,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 pub type Cell = u16;
 pub type Immediate = i64;
+pub type Address = usize;
 
 #[derive(Debug, Clone)]
 pub enum MachineError {
@@ -122,18 +123,27 @@ impl<'a> Instruction {
                 return Err(MachineError::FunctionRedefinition);
             }
 
+            // Handles fallthrough to function body, which is the next non-fuction-defining
+            // instruction.
+            let mut body_pointer = machine.pc;
+            while let Some(AluFunction(_, _)) =
+                machine.program.and_then(|prog| prog.get(body_pointer))
+            {
+                body_pointer += 1;
+            }
+
             machine
                 .function_data
                 .function_table
-                .insert(val.clone(), self.clone());
+                .insert(val.clone(), body_pointer);
 
             machine.function_data.new_function_declared = None;
 
-            return Ok(());
+            if let AluFunction(_, _) = self {
+            } else {
+                return Ok(());
+            }
         }
-
-        eprintln!("Executing instruction: {:#?}", self);
-        eprintln!("Current cells: {:#?}\n", machine.cells);
 
         match self {
             AluNullary(nullop) => nullop.eval(machine, ())?,
@@ -146,8 +156,8 @@ impl<'a> Instruction {
                  * save the ENTIRE state of cells, copying it twice.
                  */
 
-                let mut block_machine = Machine::from(instructions);
-                block_machine.cells = machine.cells.clone();
+                let mut block_machine = Machine::from(machine.cells.clone());
+                block_machine.load_program(instructions);
                 block_machine.base_stack.push(machine.base);
                 block_machine.base = block_machine.cells.len();
 
@@ -290,20 +300,22 @@ impl Operator for FunctionOp {
                 machine.function_data.new_function_declared = Some(arg);
             }
             FunctionCall => {
-                let instructions = machine
+                let instruction_addr = machine
                     .function_data
                     .function_table
                     .get(&arg)
                     .ok_or(MachineError::FunctionUndefined)?;
 
-                let program = vec![instructions.clone()];
+                let instructions = machine
+                    .program
+                    .ok_or(MachineError::OtherError("No program loaded".to_string()))?
+                    .get(*instruction_addr)
+                    .map(std::slice::from_ref)
+                    .ok_or(MachineError::FunctionUndefined)?;
 
-                let mut function_machine = Machine::from(&program);
-                function_machine.cells = machine.cells.clone();
-
-                eprintln!("Calling function '{}'", arg);
-                eprintln!(" with cells: {:?}", function_machine.cells);
-                eprintln!("Function instructions: {:?}", instructions);
+                let mut function_machine = Machine::from(machine.cells.clone());
+                function_machine.function_data = machine.function_data.clone();
+                function_machine.load_program(instructions);
                 let function_result = function_machine.run()?;
 
                 if let Some(val) = function_result {
@@ -318,7 +330,7 @@ impl Operator for FunctionOp {
 
 #[derive(Debug, Clone, Default)]
 pub struct FunctionData {
-    function_table: HashMap<String, Instruction>,
+    function_table: HashMap<String, Address>,
     new_function_declared: Option<String>,
 }
 
@@ -329,6 +341,7 @@ pub struct Machine<'a> {
     base: usize,
     base_stack: Vec<usize>,
     function_data: FunctionData,
+    pc: Address,
 }
 
 impl<'a> Machine<'a> {
@@ -339,10 +352,11 @@ impl<'a> Machine<'a> {
             base: 0,
             base_stack: Vec::new(),
             function_data: FunctionData::default(),
+            pc: 0,
         }
     }
 
-    pub fn load_program(&mut self, program: &'a Vec<Instruction>) {
+    pub fn load_program(&mut self, program: &'a [Instruction]) {
         self.program = Some(program);
     }
 
@@ -402,10 +416,12 @@ impl<'a> Machine<'a> {
         self.program
             .ok_or(MachineError::OtherError("No program loaded".to_string()))?
             .iter()
-            .try_for_each(|instr| {
+            .enumerate()
+            .try_for_each(|(pc, instr)| {
+                self.pc = pc;
                 instr.eval(self).map_err(|e| {
                     eprintln!(
-                        "Error executing instruction {:?}: {:?} | cells: {:?}",
+                        "Error executing instruction {:?}. Error: {:?} | cells: {:?}",
                         instr, e, self.cells
                     );
                     e
@@ -416,10 +432,10 @@ impl<'a> Machine<'a> {
     }
 }
 
-impl<'a> From<&'a Vec<Instruction>> for Machine<'a> {
-    fn from(value: &'a Vec<Instruction>) -> Self {
+impl From<Vec<i64>> for Machine<'_> {
+    fn from(value: Vec<i64>) -> Self {
         let mut machine = Machine::new();
-        machine.load_program(value);
+        machine.cells = value;
         machine
     }
 }
@@ -479,146 +495,150 @@ pub mod tests {
         };
     }
 
-    #[test]
-    fn test_push_pop() {
-        let program = vec![
-            add_instr!(Push, 1),
-            add_instr!(Push, 2),
-            add_instr!(Push, 3),
-            add_instr!(Push, 4),
-            add_instr!(Push, 5),
-        ];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let _ = machine.run().unwrap();
-        assert_eq!(machine.cells[0], 1);
-        assert_eq!(machine.cells[1], 2);
-        assert_eq!(machine.cells[2], 3);
-        assert_eq!(machine.cells[3], 4);
-        assert_eq!(machine.cells[4], 5);
+    mod basic_instructions {
+        use super::*;
 
-        let prog = vec![add_instr!(Pop, -1)];
-        machine.program = Some(&prog);
-        let result = machine.run();
-        assert!(matches!(result, Err(MachineError::InvalidCell)));
+        #[test]
+        fn test_push_pop() {
+            let program = vec![
+                add_instr!(Push, 1),
+                add_instr!(Push, 2),
+                add_instr!(Push, 3),
+                add_instr!(Push, 4),
+                add_instr!(Push, 5),
+            ];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let _ = machine.run().unwrap();
+            assert_eq!(machine.cells[0], 1);
+            assert_eq!(machine.cells[1], 2);
+            assert_eq!(machine.cells[2], 3);
+            assert_eq!(machine.cells[3], 4);
+            assert_eq!(machine.cells[4], 5);
 
-        let prog = vec![add_instr!(Pop, 1)];
-        machine.program = Some(&prog);
-        let val = machine.run().unwrap();
-        assert_eq!(val, Some(&4));
+            let prog = vec![add_instr!(Pop, -1)];
+            machine.program = Some(&prog);
+            let result = machine.run();
+            assert!(matches!(result, Err(MachineError::InvalidCell)));
 
-        let prog = vec![add_instr!(Pop, 2)];
-        machine.program = Some(&prog);
-        let val = machine.run().unwrap();
-        assert_eq!(val, Some(&2));
+            let prog = vec![add_instr!(Pop, 1)];
+            machine.program = Some(&prog);
+            let val = machine.run().unwrap();
+            assert_eq!(val, Some(&4));
 
-        let prog = vec![add_instr!(Pop, 2)];
-        machine.program = Some(&prog);
-        let val = machine.run().unwrap();
-        assert_eq!(val, None);
+            let prog = vec![add_instr!(Pop, 2)];
+            machine.program = Some(&prog);
+            let val = machine.run().unwrap();
+            assert_eq!(val, Some(&2));
 
-        let prog = vec![add_instr!(Pop, 1)];
-        machine.program = Some(&prog);
-        let result = machine.run();
-        assert!(matches!(result, Err(MachineError::StackUnderflow)));
-    }
+            let prog = vec![add_instr!(Pop, 2)];
+            machine.program = Some(&prog);
+            let val = machine.run().unwrap();
+            assert_eq!(val, None);
 
-    #[test]
-    fn test_read() {
-        let program = vec![
-            add_instr!(Push, 100),
-            add_instr!(Push, 200),
-            add_instr!(R Read, 0),
-        ];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run().unwrap();
-        assert_eq!(last, Some(&100));
-        assert_eq!(machine.cells[0], 100);
-        assert_eq!(machine.cells[1], 200);
-    }
+            let prog = vec![add_instr!(Pop, 1)];
+            machine.program = Some(&prog);
+            let result = machine.run();
+            assert!(matches!(result, Err(MachineError::StackUnderflow)));
+        }
 
-    #[test]
-    fn test_read_reverse() {
-        let program = vec![
-            add_instr!(Push, 10),
-            add_instr!(Push, 20),
-            add_instr!(Push, 30),
-            add_instr!(R ReadReverse, 1), // Should read 20
-        ];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run().unwrap();
-        assert_eq!(last, Some(&20));
-        assert_eq!(machine.cells[0], 10);
-        assert_eq!(machine.cells[1], 20);
-        assert_eq!(machine.cells[2], 30);
-    }
+        #[test]
+        fn test_read() {
+            let program = vec![
+                add_instr!(Push, 100),
+                add_instr!(Push, 200),
+                add_instr!(R Read, 0),
+            ];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&100));
+            assert_eq!(machine.cells[0], 100);
+            assert_eq!(machine.cells[1], 200);
+        }
 
-    test_binop!(test_add, 10, 20, Add => 30);
-    test_binop!(test_add_neg, 10, -30, Add => -20);
-    test_binop!(test_mul, 10, 20, Mul => 200);
-    test_binop!(test_div, 20, 5, Div => 4);
+        #[test]
+        fn test_read_reverse() {
+            let program = vec![
+                add_instr!(Push, 10),
+                add_instr!(Push, 20),
+                add_instr!(Push, 30),
+                add_instr!(R ReadReverse, 1), // Should read 20
+            ];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&20));
+            assert_eq!(machine.cells[0], 10);
+            assert_eq!(machine.cells[1], 20);
+            assert_eq!(machine.cells[2], 30);
+        }
 
-    #[test]
-    fn test_div_bad() {
-        let program = vec![
-            add_instr!(Push, 10),
-            add_instr!(Push, 0),
-            add_instr!(Div, 0, 1),
-        ];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run();
-        assert!(matches!(last, Err(MachineError::DivisionByZero)));
-    }
+        test_binop!(test_add, 10, 20, Add => 30);
+        test_binop!(test_add_neg, 10, -30, Add => -20);
+        test_binop!(test_mul, 10, 20, Mul => 200);
+        test_binop!(test_div, 20, 5, Div => 4);
 
-    test_binop!(test_and, 0b1100, 0b1010, And => 0b1000);
-    test_binop!(test_or, 0b1100, 0b1010, Or => 0b1110);
-    test_binop!(test_xor, 0b1100, 0b1010, Xor => 0b0110);
+        #[test]
+        fn test_div_bad() {
+            let program = vec![
+                add_instr!(Push, 10),
+                add_instr!(Push, 0),
+                add_instr!(Div, 0, 1),
+            ];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run();
+            assert!(matches!(last, Err(MachineError::DivisionByZero)));
+        }
 
-    #[test]
-    fn test_not() {
-        let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run().unwrap();
-        assert_eq!(last, Some(&(!0b1100)));
-    }
+        test_binop!(test_and, 0b1100, 0b1010, And => 0b1000);
+        test_binop!(test_or, 0b1100, 0b1010, Or => 0b1110);
+        test_binop!(test_xor, 0b1100, 0b1010, Xor => 0b0110);
 
-    test_binop!(test_slt, 10, 20, SetLessThan => 1);
-    test_binop!(test_sgt, 20, 10, SetGreaterThan => 1);
-    test_binop!(test_seq, 10, 10, SetEqual => 1);
-    test_binop!(test_sne, 10, 20, SetNotEqual => 1);
-    test_binop!(test_sle, 10, 10, SetLessThanOrEqual => 1);
-    test_binop!(test_sge, 20, 10, SetGreaterThanOrEqual => 1);
+        #[test]
+        fn test_not() {
+            let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&(!0b1100)));
+        }
 
-    test_binop!(test_sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
-    test_binop!(test_srl, 0b0100, 2, ShiftRightLogical => 0b0001);
-    test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
+        test_binop!(test_slt, 10, 20, SetLessThan => 1);
+        test_binop!(test_sgt, 20, 10, SetGreaterThan => 1);
+        test_binop!(test_seq, 10, 10, SetEqual => 1);
+        test_binop!(test_sne, 10, 20, SetNotEqual => 1);
+        test_binop!(test_sle, 10, 10, SetLessThanOrEqual => 1);
+        test_binop!(test_sge, 20, 10, SetGreaterThanOrEqual => 1);
 
-    #[test]
-    fn nop() {
-        let program = vec![add_instr!(Nop)];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run().unwrap();
-        assert_eq!(last, None);
-    }
+        test_binop!(test_sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
+        test_binop!(test_srl, 0b0100, 2, ShiftRightLogical => 0b0001);
+        test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
 
-    #[test]
-    fn math_with_read() {
-        let program = vec![
-            add_instr!(Push, 50),
-            add_instr!(Push, 70),
-            add_instr!(Push, 10),
-            add_instr!(Add, 0, 1), // 50 + 70 = 120
-            add_instr!(Div, 3, 2), // 120 / 10 = 12
-        ];
-        let mut machine = Machine::new();
-        machine.load_program(&program);
-        let last = machine.run().unwrap();
-        assert_eq!(last, Some(&12));
+        #[test]
+        fn nop() {
+            let program = vec![add_instr!(Nop)];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, None);
+        }
+
+        #[test]
+        fn math_with_read() {
+            let program = vec![
+                add_instr!(Push, 50),
+                add_instr!(Push, 70),
+                add_instr!(Push, 10),
+                add_instr!(Add, 0, 1), // 50 + 70 = 120
+                add_instr!(Div, 3, 2), // 120 / 10 = 12
+            ];
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&12));
+        }
     }
 
     mod block_tests {
@@ -807,26 +827,21 @@ pub mod tests {
         #[test]
         fn test_sequential_definitions() {
             let program = vec![
-                add_instr!(fun FunctionDefine, String::from("square")),
-                add_instr!(fun FunctionDefine, String::from("cube")),
-                add_instr!(fun FunctionDefine, String::from("nothing")),
+                add_instr!(fun FunctionDefine, String::from("push2_1")),
+                add_instr!(fun FunctionDefine, String::from("push2_2")),
+                add_instr!(fun FunctionDefine, String::from("push2_3")),
                 add_instr!(Push, 2),
-                add_instr!(fun FunctionCall, String::from("square")),
-                add_instr!(fun FunctionCall, String::from("brr")),
+                add_instr!(fun FunctionCall, String::from("push2_1")),
+                add_instr!(fun FunctionCall, String::from("push2_2")),
             ];
-
-            // BUG: This test currently fails because we are taking whatever
-            // the next instruction is as the function body. The intended behavior
-            // is similar to the one of a label in assembly, so we need
-            // something like a PC counter, so that we can slide across
-            // FunctionDefine instructions until we hit something else.
-            // TODO: Implement the PC counter.
 
             let mut machine = Machine::new();
             machine.load_program(&program);
             let _ = machine.run().unwrap();
 
-            // assert_eq!(machine.cells[0], 2);
+            assert_eq!(machine.cells[0], 2);
+            assert_eq!(machine.cells[1], 2);
+            assert!(matches!(machine.cells.get(2), None));
         }
     }
 }
