@@ -33,6 +33,7 @@ pub enum MachineError {
     FunctionCallError,
     InstructionError(String),
     OtherError(String),
+    ProgramNotLoaded,
 }
 
 // TODO: Solve this comment (delete or uncomment if derive is not good enough).
@@ -59,6 +60,7 @@ pub enum MachineError {
 pub enum NullaryOp {
     Nop,
     Rebase,
+    Cond,
 }
 
 #[derive(Debug, Clone)]
@@ -118,33 +120,6 @@ impl<'a> Instruction {
     fn eval(&'a self, machine: &mut Machine<'a>) -> Result<(), MachineError> {
         use Instruction::*;
 
-        if let Some(val) = &machine.function_data.new_function_declared {
-            if machine.function_data.function_table.contains_key(val) {
-                return Err(MachineError::FunctionRedefinition);
-            }
-
-            // Handles fallthrough to function body, which is the next non-fuction-defining
-            // instruction.
-            let mut body_pointer = machine.pc;
-            while let Some(AluFunction(_, _)) =
-                machine.program.and_then(|prog| prog.get(body_pointer))
-            {
-                body_pointer += 1;
-            }
-
-            machine
-                .function_data
-                .function_table
-                .insert(val.clone(), body_pointer);
-
-            machine.function_data.new_function_declared = None;
-
-            if let AluFunction(_, _) = self {
-            } else {
-                return Ok(());
-            }
-        }
-
         match self {
             AluNullary(nullop) => nullop.eval(machine, ())?,
             AluUnaryImm(unop_imm, imm) => unop_imm.eval(machine, *imm)?,
@@ -158,6 +133,7 @@ impl<'a> Instruction {
 
                 let mut block_machine = Machine::from(machine.cells.clone());
                 block_machine.load_program(instructions);
+                block_machine.function_data = machine.function_data.clone();
                 block_machine.base_stack.push(machine.base);
                 block_machine.base = block_machine.cells.len();
 
@@ -192,10 +168,21 @@ impl Operator for NullaryOp {
     type ArgType = ();
 
     fn eval(&self, machine: &mut Machine, _: Self::ArgType) -> Result<(), MachineError> {
+        use NullaryOp::*;
+
         match self {
-            NullaryOp::Nop => {}
-            NullaryOp::Rebase => {
+            Nop => {}
+            Rebase => {
                 machine.rebase()?;
+            }
+            Cond => {
+                match machine.cells.last() {
+                    Some(1) => {}
+                    Some(_) => {
+                        machine.pc += 1; // Skip the next instruction
+                    }
+                    None => return Err(MachineError::StackUnderflow),
+                }
             }
         }
         Ok(())
@@ -297,7 +284,29 @@ impl Operator for FunctionOp {
                 if machine.function_data.function_table.contains_key(&arg) {
                     return Err(MachineError::FunctionRedefinition);
                 }
-                machine.function_data.new_function_declared = Some(arg);
+
+                let mut defenitions = Vec::new();
+                defenitions.push(arg.clone());
+                machine.pc += 1;
+
+                // Handles fallthrough to function body, which is the next non-fuction-defining
+                // instruction.
+                while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) =
+                    machine.program.and_then(|prog| prog.get(machine.pc))
+                {
+                    defenitions.push(name.clone());
+                    machine.pc += 1;
+                }
+
+                defenitions
+                    .iter()
+                    .map(|name| {
+                        machine
+                            .function_data
+                            .function_table
+                            .insert(name.clone(), machine.pc);
+                    })
+                    .for_each(drop);
             }
             FunctionCall => {
                 let instruction_addr = machine
@@ -331,7 +340,6 @@ impl Operator for FunctionOp {
 #[derive(Debug, Clone, Default)]
 pub struct FunctionData {
     function_table: HashMap<String, Address>,
-    new_function_declared: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +366,14 @@ impl<'a> Machine<'a> {
 
     pub fn load_program(&mut self, program: &'a [Instruction]) {
         self.program = Some(program);
+    }
+
+    pub fn reset_pc(&mut self) {
+        self.pc = 0;
+    }
+
+    pub fn get_program(&mut self) -> Result<&'a [Instruction], MachineError> {
+        self.program.ok_or(MachineError::ProgramNotLoaded)
     }
 
     fn push(&mut self, value: i64) -> Result<(), MachineError> {
@@ -413,20 +429,54 @@ impl<'a> Machine<'a> {
     }
 
     pub fn run(&mut self) -> Result<Option<&i64>, MachineError> {
-        self.program
-            .ok_or(MachineError::OtherError("No program loaded".to_string()))?
-            .iter()
-            .enumerate()
-            .try_for_each(|(pc, instr)| {
-                self.pc = pc;
-                instr.eval(self).map_err(|e| {
+        let program = self.get_program()?;
+
+        while let Some(instr) = program.get(self.pc) {
+            match &instr {
+                Instruction::Block(_) => eprintln!("Executing block..."),
+                Instruction::AluFunction(FunctionOp::FunctionDefine, name) => {
                     eprintln!(
-                        "Error executing instruction {:?}. Error: {:?} | cells: {:?}",
-                        instr, e, self.cells
+                        "Defining function {:?} at pc: {} | cells: {:?}",
+                        name, self.pc, self.cells
                     );
-                    e
-                })
+                }
+                Instruction::AluFunction(FunctionOp::FunctionCall, name) => {
+                    eprintln!(
+                        "Calling function {:?} at pc: {} | cells: {:?}",
+                        name, self.pc, self.cells
+                    );
+                }
+                _ => {
+                    eprintln!(
+                        "Executing instruction {:?} at pc: {} | cells: {:?}",
+                        instr, self.pc, self.cells
+                    );
+                }
+            }
+            instr.eval(self).map_err(|e| {
+                eprintln!(
+                    "Error executing instruction {:?}. Error: {:?} | cells: {:?}",
+                    instr, e, self.cells
+                );
+                e
             })?;
+
+            match &instr {
+                Instruction::Block(_) => eprintln!("\tFinished executing block..."),
+                Instruction::AluFunction(FunctionOp::FunctionDefine, _) => {}
+                Instruction::AluFunction(FunctionOp::FunctionCall, name) => {
+                    eprintln!("\tExiting function {:?}", name);
+                }
+                _ => {
+                    eprintln!(
+                        "\tFinished inst {:?} at pc: {} | cells: {:?}",
+                        instr, self.pc, self.cells
+                    );
+                }
+            }
+
+            self.pc += 1;
+        }
 
         Ok(self.cells.last())
     }
@@ -489,13 +539,14 @@ pub mod tests {
                 ];
                 let mut machine = Machine::new();
                 machine.load_program(&program);
+                machine.reset_pc();
                 let last = machine.run().unwrap();
                 assert_eq!(last, Some(&$expected));
             }
         };
     }
 
-    mod basic_instructions {
+    mod basic {
         use super::*;
 
         #[test]
@@ -509,35 +560,42 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let _ = machine.run().unwrap();
             assert_eq!(machine.cells[0], 1);
             assert_eq!(machine.cells[1], 2);
             assert_eq!(machine.cells[2], 3);
             assert_eq!(machine.cells[3], 4);
             assert_eq!(machine.cells[4], 5);
+            assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
 
             let prog = vec![add_instr!(Pop, -1)];
-            machine.program = Some(&prog);
+            machine.load_program(&prog);
+            machine.reset_pc();
             let result = machine.run();
             assert!(matches!(result, Err(MachineError::InvalidCell)));
 
             let prog = vec![add_instr!(Pop, 1)];
-            machine.program = Some(&prog);
+            machine.load_program(&prog);
+            machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, Some(&4));
 
             let prog = vec![add_instr!(Pop, 2)];
-            machine.program = Some(&prog);
+            machine.load_program(&prog);
+            machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, Some(&2));
 
             let prog = vec![add_instr!(Pop, 2)];
-            machine.program = Some(&prog);
+            machine.load_program(&prog);
+            machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, None);
 
             let prog = vec![add_instr!(Pop, 1)];
-            machine.program = Some(&prog);
+            machine.load_program(&prog);
+            machine.reset_pc();
             let result = machine.run();
             assert!(matches!(result, Err(MachineError::StackUnderflow)));
         }
@@ -551,6 +609,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&100));
             assert_eq!(machine.cells[0], 100);
@@ -567,6 +626,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&20));
             assert_eq!(machine.cells[0], 10);
@@ -588,6 +648,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run();
             assert!(matches!(last, Err(MachineError::DivisionByZero)));
         }
@@ -601,6 +662,7 @@ pub mod tests {
             let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&(!0b1100)));
         }
@@ -621,6 +683,7 @@ pub mod tests {
             let program = vec![add_instr!(Nop)];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, None);
         }
@@ -636,12 +699,13 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&12));
         }
     }
 
-    mod block_tests {
+    mod blocks {
         use super::*;
 
         #[test]
@@ -659,6 +723,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&90)); // (10 + 20) + ((10 + 20) * 2) = 90
 
@@ -668,7 +733,7 @@ pub mod tests {
             assert_eq!(machine.cells[3], 60); // Result of multiplication inside block
             assert_eq!(machine.cells[4], 90); // Final result
             assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
-            assert_eq!(machine.cells.len(), 5); // Ensure all expected cells are present
+            assert_eq!(machine.cells.len(), 5);
         }
 
         #[test]
@@ -686,6 +751,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&23));
             assert_eq!(machine.cells[0], 3);
@@ -709,6 +775,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&16));
         }
@@ -728,6 +795,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&15));
         }
@@ -748,6 +816,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&15));
             assert_eq!(machine.cells[0], 2);
@@ -772,6 +841,7 @@ pub mod tests {
             ];
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&15));
             assert_eq!(machine.cells[0], 2);
@@ -794,6 +864,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&235));
             assert_eq!(machine.cells[0], 5);
@@ -802,7 +873,7 @@ pub mod tests {
         }
     }
 
-    mod function_tests {
+    mod functions {
         use super::*;
 
         #[test]
@@ -820,6 +891,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&9));
         }
@@ -837,6 +909,7 @@ pub mod tests {
 
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let _ = machine.run().unwrap();
 
             assert_eq!(machine.cells[0], 2);
@@ -850,9 +923,7 @@ pub mod tests {
                 add_instr!(fun FunctionDefine, String::from("outer")),
                 make_block!(
                     add_instr!(fun FunctionDefine, String::from("inner")),
-                    make_block!(
-                        add_instr!(Push, 42)
-                    ),
+                    make_block!(add_instr!(Push, 42)),
                     add_instr!(fun FunctionCall, String::from("inner"))
                 ),
                 add_instr!(fun FunctionCall, String::from("outer")),
@@ -861,6 +932,7 @@ pub mod tests {
             // Outer function call should work
             let mut machine = Machine::new();
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run().unwrap();
             assert_eq!(last, Some(&42));
 
@@ -868,8 +940,41 @@ pub mod tests {
             let mut machine = Machine::new();
             program.push(add_instr!(fun FunctionCall, String::from("inner")));
             machine.load_program(&program);
+            machine.reset_pc();
             let last = machine.run();
             assert!(matches!(last, Err(MachineError::FunctionUndefined)));
+        }
+    }
+
+    mod programs {
+        use super::*;
+
+        #[test]
+        fn test_factorial() {
+            let program = vec![
+                add_instr!(fun FunctionDefine, String::from("factorial")),
+                make_block!(
+                    add_instr!(R ReadReverse, 0), // n
+                    add_instr!(Rebase),
+                    add_instr!(Push, 1),              // 1
+                    add_instr!(SetGreaterThan, 0, 1), // n > 1
+                    add_instr!(Cond),                 // if n <= 1, skip to return
+                    make_block!(
+                        add_instr!(Push, -1),  // Push 1 as the base case result
+                        add_instr!(Add, 0, 3), // n - 1
+                        add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
+                        add_instr!(Mul, 4, 5) // n * factorial(n - 1
+                    )
+                ),
+                add_instr!(Push, 5),
+                add_instr!(fun FunctionCall, String::from("factorial")),
+            ];
+
+            let mut machine = Machine::new();
+            machine.load_program(&program);
+            machine.reset_pc();
+            let last = machine.run().unwrap();
+            assert_eq!(last, Some(&120));
         }
     }
 }
