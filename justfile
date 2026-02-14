@@ -18,8 +18,12 @@ flamegraph test:
     cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}
 
 [group('dev')]
-test $RUST_BACKTRACE="1":
-    cargo test --
+test arg="":
+    cargo test {{arg}} --
+
+[group('dev')]
+test-backtrace arg="" $RUST_BACKTRACE="1":
+    cargo test {{arg}} --
 
 [group('dev')]
 test-list:
