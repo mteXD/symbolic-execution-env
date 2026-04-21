@@ -16,9 +16,13 @@
 
 use std::{collections::HashMap, fmt::Debug};
 
+use crate::verificator::{Verificator, VerificatorError};
+
 pub type Cell = u16;
 pub type Immediate = i64;
 pub type Address = usize;
+
+mod verificator;
 
 #[derive(Debug, Clone)]
 pub enum MachineError {
@@ -136,12 +140,33 @@ impl<'a> Instruction {
 
         Ok(())
     }
+
+    pub fn check(&'a self, verificator: &Verificator) -> Result<(), VerificatorError> {
+        use Instruction::*;
+
+        match self {
+            AluNullary(nullop) => nullop.check(verificator, ())?,
+            AluUnaryImm(unop_imm, imm) => unop_imm.check(verificator, *imm)?,
+            AluUnaryCell(unop_reg, reg) => unop_reg.check(verificator, *reg)?,
+            AluBinary(binop, reg1, reg2) => binop.check(verificator, (*reg1, *reg2))?,
+            Block(instructions) => {
+                let mut block_verificator = Verificator::new(instructions);
+                block_verificator.verify()?;
+            }
+            AluFunction(function_op, name) => {
+                function_op.check(verificator, name.clone())?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub trait Operator {
     type ArgType;
 
     fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError>;
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError>;
 }
 
 impl Operator for NullaryOp {
@@ -167,6 +192,17 @@ impl Operator for NullaryOp {
         }
         Ok(())
     }
+
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+        use NullaryOp::*;
+
+        match self {
+            Nop => Ok(()),
+            Rebase => todo!(), // TODO: Implement rebase checks
+            Cond => todo!(), // TODO: Implement conditional checks
+        }
+    }
+
 }
 impl Operator for UnaryOpCell {
     type ArgType = Cell;
@@ -197,6 +233,17 @@ impl Operator for UnaryOpCell {
         }
         Ok(())
     }
+
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+        use UnaryOpCell::*;
+
+        match self {
+            Not => todo!(), 
+            Read => todo!(),
+            ReadReverse => todo!(),
+            Tail => todo!(),
+        }
+    }
 }
 impl Operator for UnaryOpImm {
     type ArgType = Immediate;
@@ -213,6 +260,15 @@ impl Operator for UnaryOpImm {
             }
         }
         Ok(())
+    }
+
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+        use UnaryOpImm::*;
+
+        match self {
+            Push => todo!(),
+            Pop => todo!(),
+        }
     }
 }
 impl Operator for BinaryOp {
@@ -250,6 +306,28 @@ impl Operator for BinaryOp {
         machine.push(calculated_value)?;
 
         Ok(())
+    }
+
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+        use BinaryOp::*;
+
+        match self {
+            Add => todo!(),
+            Mul => todo!(),
+            Div => todo!(),
+            And => todo!(),
+            Or => todo!(),
+            Xor => todo!(),
+            ShiftLeftLogical => todo!(),
+            ShiftRightLogical => todo!(),
+            ShiftRightArithmetic => todo!(),
+            SetEqual => todo!(),
+            SetNotEqual => todo!(),
+            SetLessThan => todo!(),
+            SetLessThanOrEqual => todo!(),
+            SetGreaterThan => todo!(),
+            SetGreaterThanOrEqual => todo!(),
+        }
     }
 }
 
@@ -314,6 +392,15 @@ impl Operator for FunctionOp {
         }
 
         Ok(())
+    }
+
+    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+        use FunctionOp::*;
+
+        match self {
+            FunctionDefine => todo!(),
+            FunctionCall => todo!(),
+        }
     }
 }
 
