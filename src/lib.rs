@@ -156,9 +156,19 @@ impl<'a> Instruction {
             AluUnaryCell(unop_reg, reg) => unop_reg.check(verificator, *reg)?,
             AluBinary(binop, reg1, reg2) => binop.check(verificator, (*reg1, *reg2))?,
             Block(instructions) => {
-                todo!()
-                // let mut block_verificator = Verificator::new(instructions);
-                // block_verificator.verify()?;
+                let mut block_verificator = Verificator::from(verificator.clone());
+                block_verificator.program = instructions;
+                block_verificator.pc = 0;
+
+                eprintln!("Block verificator state:");
+                eprintln!("\tProgram: {:?}", block_verificator.program);
+                eprintln!("\tCells: {:?}", block_verificator.cell_count);
+                eprintln!("\tCells from original: {:?}", verificator.cell_count);
+                eprintln!("\tBlock cells: {:?}", block_verificator.block_cells);
+                eprintln!("\tFunctions: {:?}", block_verificator.function_data);
+                eprintln!("\tpc: {:?}", block_verificator.pc);
+
+                block_verificator.verify()?
             }
             AluFunction(function_op, name) => {
                 function_op.check(verificator, name.clone())?;
@@ -206,16 +216,20 @@ impl Operator for NullaryOp {
 
     fn check(
         &self,
-        _verificator: &mut Verificator,
+        verificator: &mut Verificator,
         _arg: Self::ArgType,
     ) -> Result<(), VerificatorError> {
         use NullaryOp::*;
 
         match self {
-            Nop => Ok(()),
-            Rebase => Ok(()), // TODO: Implement rebase checks
-            Cond => todo!(),  // TODO: Implement conditional checks
+            Nop => (),
+            Rebase => {
+                verificator.block_cells = 0;
+            } // TODO: Implement rebase checks
+            Cond => todo!(), // TODO: Implement conditional checks
         }
+
+        Ok(())
     }
 }
 impl Operator for UnaryOpCell {
@@ -283,9 +297,7 @@ impl Operator for UnaryOpImm {
         use UnaryOpImm::*;
 
         match self {
-            Push => {
-                machine.push(arg)?;
-            }
+            Push => machine.push(arg)?,
         }
         Ok(())
     }
@@ -300,6 +312,11 @@ impl Operator for UnaryOpImm {
         match self {
             Push => verificator.add_cells(1),
         }
+
+        eprintln!(
+            "Added 1 cell for {:?} with arg {:?}. Total cells: {}",
+            self, arg, verificator.cell_count
+        );
 
         Ok(())
     }
@@ -369,7 +386,6 @@ impl Operator for BinaryOp {
         // }
 
         verificator.check_len(2)?;
-        verificator.rm_cells(2)?;
         verificator.add_cells(1);
 
         Ok(())
@@ -441,12 +457,12 @@ impl Operator for FunctionOp {
     ) -> Result<(), VerificatorError> {
         use FunctionOp::*;
 
-        if verificator.function_exists(&arg) {
-            return Err(VerificatorError::FunctionRedefinition);
-        }
-
         match self {
             FunctionDefine => {
+                if verificator.function_exists(&arg) {
+                    return Err(VerificatorError::FunctionRedefinition);
+                }
+
                 let mut definitions = Vec::new();
                 definitions.push(arg.clone());
 
@@ -477,7 +493,11 @@ impl Operator for FunctionOp {
                     .for_each(drop);
             }
             FunctionCall => {
-                todo!()
+                if !verificator.function_exists(&arg) {
+                    return Err(VerificatorError::FunctionUndefined);
+                }
+
+                // TODO: Check for infinite recursion.
             }
         }
 
