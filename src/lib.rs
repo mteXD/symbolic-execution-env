@@ -22,6 +22,12 @@ pub type Cell = u16;
 pub type Immediate = i64;
 pub type Address = usize;
 
+pub enum Number {
+    Cell(Cell),
+    Immediate(Immediate),
+    Address(Address),
+}
+
 mod verificator;
 
 #[derive(Debug, Clone)]
@@ -52,13 +58,13 @@ pub enum UnaryOpCell {
     Not,
     Read,
     ReadReverse,
+    Pop,
     Tail, // Tail-call a function.
 }
 
 #[derive(Debug, Clone)]
 pub enum UnaryOpImm {
     Push,
-    Pop,
 }
 
 #[derive(Debug, Clone)]
@@ -141,7 +147,7 @@ impl<'a> Instruction {
         Ok(())
     }
 
-    pub fn check(&'a self, verificator: &Verificator) -> Result<(), VerificatorError> {
+    pub fn check(&'a self, verificator: &mut Verificator) -> Result<(), VerificatorError> {
         use Instruction::*;
 
         match self {
@@ -150,8 +156,9 @@ impl<'a> Instruction {
             AluUnaryCell(unop_reg, reg) => unop_reg.check(verificator, *reg)?,
             AluBinary(binop, reg1, reg2) => binop.check(verificator, (*reg1, *reg2))?,
             Block(instructions) => {
-                let mut block_verificator = Verificator::new(instructions);
-                block_verificator.verify()?;
+                todo!()
+                // let mut block_verificator = Verificator::new(instructions);
+                // block_verificator.verify()?;
             }
             AluFunction(function_op, name) => {
                 function_op.check(verificator, name.clone())?;
@@ -166,7 +173,11 @@ pub trait Operator {
     type ArgType;
 
     fn eval(&self, machine: &mut Machine, arg: Self::ArgType) -> Result<(), MachineError>;
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError>;
+    fn check(
+        &self,
+        verificator: &mut Verificator,
+        arg: Self::ArgType,
+    ) -> Result<(), VerificatorError>;
 }
 
 impl Operator for NullaryOp {
@@ -193,16 +204,19 @@ impl Operator for NullaryOp {
         Ok(())
     }
 
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+    fn check(
+        &self,
+        _verificator: &mut Verificator,
+        _arg: Self::ArgType,
+    ) -> Result<(), VerificatorError> {
         use NullaryOp::*;
 
         match self {
             Nop => Ok(()),
-            Rebase => todo!(), // TODO: Implement rebase checks
-            Cond => todo!(), // TODO: Implement conditional checks
+            Rebase => Ok(()), // TODO: Implement rebase checks
+            Cond => todo!(),  // TODO: Implement conditional checks
         }
     }
-
 }
 impl Operator for UnaryOpCell {
     type ArgType = Cell;
@@ -229,20 +243,37 @@ impl Operator for UnaryOpCell {
                 let val = *machine.read(index)?;
                 machine.push(val)?;
             }
+            Pop => {
+                machine.multi_pop(arg)?;
+            }
             Tail => todo!(), // TODO: Implement tail call
         }
         Ok(())
     }
 
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+    fn check(
+        &self,
+        verificator: &mut Verificator,
+        arg: Self::ArgType,
+    ) -> Result<(), VerificatorError> {
         use UnaryOpCell::*;
 
+        let required_len = match self {
+            Not => 1,
+            Pop => arg,
+            Read | ReadReverse => arg + 1,
+            Tail => todo!(),
+        };
+
+        verificator.check_len(required_len)?;
+
         match self {
-            Not => todo!(), 
-            Read => todo!(),
-            ReadReverse => todo!(),
+            Not | Read | ReadReverse => verificator.add_cells(1),
+            Pop => verificator.rm_cells(arg)?,
             Tail => todo!(),
         }
+
+        Ok(())
     }
 }
 impl Operator for UnaryOpImm {
@@ -255,20 +286,22 @@ impl Operator for UnaryOpImm {
             Push => {
                 machine.push(arg)?;
             }
-            Pop => {
-                machine.multi_pop(arg)?;
-            }
         }
         Ok(())
     }
 
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+    fn check(
+        &self,
+        verificator: &mut Verificator,
+        arg: Self::ArgType,
+    ) -> Result<(), VerificatorError> {
         use UnaryOpImm::*;
 
         match self {
-            Push => todo!(),
-            Pop => todo!(),
+            Push => verificator.add_cells(1),
         }
+
+        Ok(())
     }
 }
 impl Operator for BinaryOp {
@@ -308,26 +341,38 @@ impl Operator for BinaryOp {
         Ok(())
     }
 
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
-        use BinaryOp::*;
+    fn check(
+        &self,
+        verificator: &mut Verificator,
+        _arg: Self::ArgType,
+    ) -> Result<(), VerificatorError> {
+        // use BinaryOp::*;
 
-        match self {
-            Add => todo!(),
-            Mul => todo!(),
-            Div => todo!(),
-            And => todo!(),
-            Or => todo!(),
-            Xor => todo!(),
-            ShiftLeftLogical => todo!(),
-            ShiftRightLogical => todo!(),
-            ShiftRightArithmetic => todo!(),
-            SetEqual => todo!(),
-            SetNotEqual => todo!(),
-            SetLessThan => todo!(),
-            SetLessThanOrEqual => todo!(),
-            SetGreaterThan => todo!(),
-            SetGreaterThanOrEqual => todo!(),
-        }
+        // TODO: We'll have to track cell values (and/or ranges) to properly
+        // do overflow checks and division by zero checks.
+        // match self {
+        //     Add => todo!(),
+        //     Mul => todo!(),
+        //     Div => todo!(),
+        //     And => todo!(),
+        //     Or => todo!(),
+        //     Xor => todo!(),
+        //     ShiftLeftLogical => todo!(),
+        //     ShiftRightLogical => todo!(),
+        //     ShiftRightArithmetic => todo!(),
+        //     SetEqual => todo!(),
+        //     SetNotEqual => todo!(),
+        //     SetLessThan => todo!(),
+        //     SetLessThanOrEqual => todo!(),
+        //     SetGreaterThan => todo!(),
+        //     SetGreaterThanOrEqual => todo!(),
+        // }
+
+        verificator.check_len(2)?;
+        verificator.rm_cells(2)?;
+        verificator.add_cells(1);
+
+        Ok(())
     }
 }
 
@@ -339,7 +384,7 @@ impl Operator for FunctionOp {
 
         match self {
             FunctionDefine => {
-                if machine.function_data.function_table.contains_key(&arg) {
+                if machine.function_exists(&arg) {
                     return Err(MachineError::FunctionRedefinition);
                 }
 
@@ -347,6 +392,8 @@ impl Operator for FunctionOp {
                 defenitions.push(arg.clone());
                 machine.pc += 1;
 
+                // WARN: What does this do
+                // TODO: Fix this horrible code
                 // Handles fallthrough to function body, which is the next non-fuction-defining
                 // instruction.
                 while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) =
@@ -366,22 +413,15 @@ impl Operator for FunctionOp {
                 defenitions
                     .iter()
                     .map(|name| {
-                        machine
-                            .function_data
-                            .function_table
-                            .insert(name.clone(), instruction);
+                        machine.function_insert(name.clone(), instruction);
                     })
                     .for_each(drop);
             }
             FunctionCall => {
-                let instructions = *machine
-                    .function_data
-                    .function_table
-                    .get(&arg)
-                    .ok_or(MachineError::FunctionUndefined)?;
+                let instructions = machine.function_get(&arg)?;
 
                 let mut function_machine = Machine::from(machine.cells.clone());
-                function_machine.function_data = machine.function_data.clone();
+                function_machine.function_data = machine.function_data.clone(); // TODO: is this necessary? 
                 function_machine.load_program(instructions);
                 let function_result = function_machine.run()?;
 
@@ -394,19 +434,78 @@ impl Operator for FunctionOp {
         Ok(())
     }
 
-    fn check(&self, verificator: &Verificator, arg: Self::ArgType) -> Result<(), VerificatorError> {
+    fn check(
+        &self,
+        verificator: &mut Verificator,
+        arg: Self::ArgType,
+    ) -> Result<(), VerificatorError> {
         use FunctionOp::*;
 
-        match self {
-            FunctionDefine => todo!(),
-            FunctionCall => todo!(),
+        if verificator.function_exists(&arg) {
+            return Err(VerificatorError::FunctionRedefinition);
         }
+
+        match self {
+            FunctionDefine => {
+                let mut definitions = Vec::new();
+                definitions.push(arg.clone());
+
+                let mut defenitions = Vec::new();
+                defenitions.push(arg.clone());
+                verificator.pc += 1;
+
+                // Handles fallthrough to function body, which is the next non-fuction-defining
+                // instruction.
+                while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) =
+                    verificator.program.get(verificator.pc)
+                {
+                    defenitions.push(name.clone());
+                    verificator.pc += 1;
+                }
+
+                let instruction = verificator
+                    .program
+                    .get(verificator.pc)
+                    .map(std::slice::from_ref)
+                    .ok_or(VerificatorError::FunctionUndefined)?;
+
+                defenitions
+                    .iter()
+                    .map(|name| {
+                        verificator.function_insert(name.clone(), instruction);
+                    })
+                    .for_each(drop);
+            }
+            FunctionCall => {
+                todo!()
+            }
+        }
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct FunctionData<'a> {
     function_table: HashMap<String, &'a [Instruction]>,
+}
+
+impl<'a> FunctionData<'a> {
+    pub fn new() -> Self {
+        FunctionData::default()
+    }
+
+    pub fn insert(&mut self, name: String, instructions: &'a [Instruction]) {
+        self.function_table.insert(name, instructions);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&'a [Instruction]> {
+        self.function_table.get(name).copied()
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.function_table.contains_key(name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +530,20 @@ impl<'a> Machine<'a> {
         }
     }
 
+    fn function_exists(&self, name: &str) -> bool {
+        self.function_data.contains_key(name)
+    }
+
+    fn function_get(&self, name: &str) -> Result<&'a [Instruction], MachineError> {
+        self.function_data
+            .get(name)
+            .ok_or(MachineError::FunctionUndefined)
+    }
+
+    fn function_insert(&mut self, name: String, instructions: &'a [Instruction]) {
+        self.function_data.insert(name, instructions);
+    }
+
     pub fn load_program(&mut self, program: &'a [Instruction]) {
         self.program = Some(program);
     }
@@ -452,7 +565,7 @@ impl<'a> Machine<'a> {
         self.cells.pop()
     }
 
-    fn multi_pop(&mut self, n: Immediate) -> Result<(), MachineError> {
+    fn multi_pop(&mut self, n: Cell) -> Result<(), MachineError> {
         if n < 0 {
             return Err(MachineError::InvalidCell);
         }
@@ -576,7 +689,7 @@ pub mod macros {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub mod machine_tests {
     use super::*;
     use Instruction::*;
 
@@ -603,7 +716,7 @@ pub mod tests {
 
         #[test]
         fn test_push_pop() {
-            let program = vec![
+            let prog = vec![
                 add_instr!(Push, 1),
                 add_instr!(Push, 2),
                 add_instr!(Push, 3),
@@ -611,7 +724,7 @@ pub mod tests {
                 add_instr!(Push, 5),
             ];
             let mut machine = Machine::new();
-            machine.load_program(&program);
+            machine.load_program(&prog);
             machine.reset_pc();
             let _ = machine.run().unwrap();
             assert_eq!(machine.cells[0], 1);
@@ -621,31 +734,25 @@ pub mod tests {
             assert_eq!(machine.cells[4], 5);
             assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
 
-            let prog = vec![add_instr!(Pop, -1)];
-            machine.load_program(&prog);
-            machine.reset_pc();
-            let result = machine.run();
-            assert!(matches!(result, Err(MachineError::InvalidCell)));
-
-            let prog = vec![add_instr!(Pop, 1)];
+            let prog = vec![add_instr!(R Pop, 1)];
             machine.load_program(&prog);
             machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, Some(&4));
 
-            let prog = vec![add_instr!(Pop, 2)];
+            let prog = vec![add_instr!(R Pop, 2)];
             machine.load_program(&prog);
             machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, Some(&2));
 
-            let prog = vec![add_instr!(Pop, 2)];
+            let prog = vec![add_instr!(R Pop, 2)];
             machine.load_program(&prog);
             machine.reset_pc();
             let val = machine.run().unwrap();
             assert_eq!(val, None);
 
-            let prog = vec![add_instr!(Pop, 1)];
+            let prog = vec![add_instr!(R Pop, 1)];
             machine.load_program(&prog);
             machine.reset_pc();
             let result = machine.run();
@@ -835,7 +942,7 @@ pub mod tests {
         #[test]
         fn test_with_pop() {
             let block = make_block!(
-                add_instr!(Pop, 2) // Pop the 20, leaving only 30
+                add_instr!(R Pop, 2) // Pop the 20, leaving only 30
             );
 
             let program = vec![

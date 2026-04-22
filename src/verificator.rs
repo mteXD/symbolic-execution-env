@@ -17,20 +17,22 @@
  * -
  */
 
-use crate::Instruction;
+use crate::{Address, Cell, FunctionData, Immediate, Instruction, Number};
 
 #[derive(Debug, Clone)]
 pub enum VerificatorError {
-    UndeclaredFunction(String),
-    NotEnoughCells { required: u64, available: u64 },
+    FunctionUndefined,
+    FunctionRedefinition,
+    NotEnoughCells { required: Cell, available: Cell },
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Verificator<'a> {
-    cell_count: u64,
-    program: &'a [Instruction],
-    pc: usize,
+    pub cell_count: Cell,
+    pub program: &'a [Instruction],
+    function_data: FunctionData<'a>,
+    pub pc: Address,
 }
 
 impl<'a> Verificator<'a> {
@@ -38,21 +40,52 @@ impl<'a> Verificator<'a> {
         Self {
             cell_count: 0,
             program: program,
+            function_data: FunctionData::default(),
             pc: 0,
         }
     }
 
-    pub fn check_len(&self, required: u64) -> Result<(), VerificatorError> {
+    pub fn function_exists(&self, name: &str) -> bool {
+        self.function_data.contains_key(name)
+    }
+
+    pub fn function_get(&self, name: &str) -> Result<&'a [Instruction], VerificatorError> {
+        self.function_data
+            .get(name)
+            .ok_or(VerificatorError::FunctionUndefined)
+    }
+
+    pub fn function_insert(&mut self, name: String, instructions: &'a [Instruction]) {
+        self.function_data.insert(name, instructions);
+    }
+
+    pub fn check_len(&self, required: Cell) -> Result<(), VerificatorError> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
         if self.cell_count < required {
-            Err(VerificatorError::NotEnoughCells {
+            return Err(VerificatorError::NotEnoughCells {
                 required,
                 available: self.cell_count,
-            })
-        } else {
-            Ok(())
+            });
         }
+
+        Ok(())
+    }
+
+    pub fn add_cells(&mut self, count: Cell) {
+        self.cell_count += count;
+    }
+
+    pub fn rm_cells(&mut self, count: Cell) -> Result<(), VerificatorError> {
+        if self.cell_count < count {
+            return Err(VerificatorError::NotEnoughCells {
+                required: count,
+                available: self.cell_count,
+            });
+        }
+
+        self.cell_count -= count;
+        Ok(())
     }
 
     pub fn verify(&mut self) -> Result<(), VerificatorError> {
@@ -74,7 +107,7 @@ impl<'a> Verificator<'a> {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub mod verificator_tests {
     use super::*;
     use crate::{
         BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm, macros::*,
@@ -111,7 +144,7 @@ pub mod tests {
 
     #[test]
     fn test_pop_good() {
-        let prog = vec![add_instr!(Push, 1), add_instr!(Pop, 1)];
+        let prog = vec![add_instr!(Push, 1), add_instr!(R Pop, 1)];
 
         let mut verificator = Verificator::new(&prog);
         assert!(verificator.verify().is_ok());
@@ -124,9 +157,9 @@ pub mod tests {
             add_instr!(Push, 2),
             add_instr!(Push, 3),
             add_instr!(Push, 4),
-            add_instr!(Pop, 1),
+            add_instr!(R Pop, 1),
             add_instr!(Push, 4),
-            add_instr!(Pop, 4),
+            add_instr!(R Pop, 4),
         ];
 
         let mut verificator = Verificator::new(&prog);
@@ -136,7 +169,7 @@ pub mod tests {
     #[test]
     fn test_pop_bad() {
         let prog = vec![
-            add_instr!(Pop, 1), // Trying to pop from empty cells
+            add_instr!(R Pop, 1), // Trying to pop from empty cells
         ];
 
         let mut verificator = Verificator::new(&prog);
@@ -149,7 +182,7 @@ pub mod tests {
             add_instr!(Push, 1),
             add_instr!(Push, 2),
             add_instr!(Push, 3),
-            add_instr!(Pop, 4), // 3 elements available, but trying to pop 4
+            add_instr!(R Pop, 4), // 3 elements available, but trying to pop 4
         ];
 
         let mut verificator = Verificator::new(&prog);
@@ -357,7 +390,7 @@ pub mod tests {
         #[test]
         fn test_with_pop() {
             let block = make_block!(
-                add_instr!(Pop, 2) // Pop the 20, leaving only 30
+                add_instr!(R Pop, 2) // Pop the 20, leaving only 30
             );
 
             let program = vec![
