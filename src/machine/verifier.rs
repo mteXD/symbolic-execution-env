@@ -1,7 +1,7 @@
 use crate::{
     instruction::{BinaryOp, FunctionOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpImm},
     machine::{
-        CoreError::{self, *},
+        CoreError::{self},
         CoreMachine,
     },
     types::{Cell, Immediate},
@@ -14,6 +14,12 @@ pub enum VerifierError {
     FunctionUndefined,
     FunctionRedefinition,
     NotEnoughCells { required: Cell, available: Cell },
+}
+
+impl From<CoreError> for VerifierError {
+    fn from(e: CoreError) -> Self {
+        VerifierError::Core(e)
+    }
 }
 
 // #[derive(Clone)]

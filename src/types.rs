@@ -7,21 +7,21 @@ pub type Immediate = i64;
 pub type Address = usize;
 
 #[derive(Debug, Clone, Default)]
-pub struct FunctionData<'a> {
-    function_table: HashMap<String, &'a [Instruction]>,
+pub struct FunctionData {
+    function_table: HashMap<String, Address>,
 }
 
-impl<'a> FunctionData<'a> {
+impl FunctionData {
     pub fn new() -> Self {
         FunctionData::default()
     }
 
-    pub fn insert(&mut self, name: String, instructions: &'a [Instruction]) {
-        self.function_table.insert(name, instructions);
+    pub fn insert(&mut self, name: String, instr_pc: Address) {
+        self.function_table.insert(name, instr_pc);
     }
 
-    pub fn get(&self, name: &str) -> Option<&'a [Instruction]> {
-        self.function_table.get(name).copied()
+    pub fn get(&self, name: &str) -> Option<&Address> {
+        self.function_table.get(name)
     }
 
     pub fn contains_key(&self, name: &str) -> bool {

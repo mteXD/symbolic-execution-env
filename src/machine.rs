@@ -2,11 +2,11 @@ use std::fmt::Debug;
 
 use crate::{
     instruction::{
-        BinaryOp, FunctionOp,
-        Instruction::{self, AluBinary, AluFunction, AluNullary, AluUnaryCell, AluUnaryImm, Block},
-        NullaryOp, UnaryOpCell, UnaryOpImm,
+        FunctionOp,
+        Instruction::{self},
+        
     },
-    types::{Address, Cell, FunctionData, Immediate, ProgramData},
+    types::{Address, FunctionData, ProgramData},
 };
 
 mod executor;
@@ -30,7 +30,7 @@ pub enum CoreError {
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
-    function_data: FunctionData<'a>,
+    function_data: FunctionData,
     program_data: ProgramData<'a>,
 }
 
@@ -46,14 +46,19 @@ impl<'a> CoreMachine<'a> {
         self.function_data.contains_key(name)
     }
 
-    pub fn function_get(&self, name: &str) -> Result<&'a [Instruction], CoreError> {
+    pub fn function_get(&self, name: &str) -> Result<&Address, CoreError> {
         self.function_data
             .get(name)
             .ok_or(CoreError::FunctionUndefined)
     }
 
-    pub fn function_insert(&mut self, name: String, instructions: &'a [Instruction]) {
-        self.function_data.insert(name, instructions);
+    pub fn function_insert(&mut self, name: String, instr_pc: Address) {
+        self.function_data.insert(name, instr_pc);
+    }
+
+    pub fn function_insert_current(&mut self, name: String) {
+        let instr_pc = self.program_data.get_pc();
+        self.function_insert(name, instr_pc);
     }
 
     pub fn load_program(&mut self, program: &'a [Instruction]) {
@@ -93,10 +98,7 @@ impl<'a> CoreMachine<'a> {
     //     Ok(None)
     // }
 
-    pub fn common_function_logic(
-        &mut self,
-        arg: &str,
-    ) -> Result<(), CoreError> {
+    pub fn common_function_logic(&mut self, arg: &str) -> Result<(), CoreError> {
         if self.function_exists(&arg) {
             return Err(CoreError::FunctionRedefinition);
         }
@@ -108,16 +110,9 @@ impl<'a> CoreMachine<'a> {
             definitions.push(name);
         }
 
-        let instruction = self
-            .get_current_instruction()
-            .map(std::slice::from_ref)
-            .ok_or(CoreError::FunctionUndefined)?;
-
         definitions
             .iter()
-            .map(|name| {
-                self.function_insert(String::from(*name), instruction);
-            })
+            .map(|name| self.function_insert_current(String::from(*name)))
             .for_each(drop);
 
         Ok(())
