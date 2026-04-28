@@ -250,35 +250,7 @@ impl<'a> Executor<'a> {
 
         match instr {
             FunctionDefine => {
-                if self.machine.function_exists(&arg) {
-                    return Err(Core(FunctionRedefinition));
-                }
-
-                let mut definitions = Vec::new();
-                definitions.push(arg);
-
-                // WARN: What does this do
-                // TODO: Fix this horrible code
-                // Handles fallthrough to function body, which is the next non-fuction-defining
-                // instruction.
-                while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) =
-                    self.machine.next()
-                {
-                    definitions.push(name);
-                }
-
-                let instruction = self
-                    .machine
-                    .get_current_instruction()
-                    .map(std::slice::from_ref)
-                    .ok_or(Core(FunctionUndefined))?;
-
-                definitions
-                    .iter()
-                    .map(|name| {
-                        self.machine.function_insert(String::from(*name), instruction);
-                    })
-                    .for_each(drop);
+                self.machine.common_function_logic(arg)?;
             }
             FunctionCall => {
                 let instructions = self.machine.function_get(&arg)?;

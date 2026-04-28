@@ -183,34 +183,7 @@ impl<'a> Verifier<'a> {
 
         match instr {
             FunctionDefine => {
-                if self.machine.function_exists(&arg) {
-                    return Err(VerifierError::FunctionRedefinition);
-                }
-
-                let mut definitions = Vec::new();
-                definitions.push(arg);
-
-                // Handles fallthrough to function body, which is the next non-fuction-defining
-                // instruction.
-                while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) =
-                    self.machine.next()
-                {
-                    definitions.push(name);
-                }
-
-                let instruction = self
-                    .machine
-                    .get_current_instruction()
-                    .map(std::slice::from_ref)
-                    .ok_or(VerifierError::FunctionUndefined)?;
-
-                definitions
-                    .iter()
-                    .map(|name| {
-                        self.machine
-                            .function_insert(String::from(*name), instruction);
-                    })
-                    .for_each(drop);
+                self.machine.common_function_logic(arg)?;
             }
             FunctionCall => {
                 if !self.machine.function_exists(&arg) {

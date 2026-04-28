@@ -92,6 +92,36 @@ impl<'a> CoreMachine<'a> {
     //     // Ok(self.cells.last())
     //     Ok(None)
     // }
+
+    pub fn common_function_logic(
+        &mut self,
+        arg: &str,
+    ) -> Result<(), CoreError> {
+        if self.function_exists(&arg) {
+            return Err(CoreError::FunctionRedefinition);
+        }
+
+        let mut definitions = Vec::new();
+        definitions.push(arg);
+
+        while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
+            definitions.push(name);
+        }
+
+        let instruction = self
+            .get_current_instruction()
+            .map(std::slice::from_ref)
+            .ok_or(CoreError::FunctionUndefined)?;
+
+        definitions
+            .iter()
+            .map(|name| {
+                self.function_insert(String::from(*name), instruction);
+            })
+            .for_each(drop);
+
+        Ok(())
+    }
 }
 
 // impl Default for CoreMachine<'_> {
