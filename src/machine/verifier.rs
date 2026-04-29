@@ -11,8 +11,6 @@ use VerifierError::*;
 #[derive(Debug, Clone)]
 pub enum VerifierError {
     Core(CoreError),
-    FunctionUndefined,
-    FunctionRedefinition,
     NotEnoughCells { required: Cell, available: Cell },
 }
 
@@ -35,6 +33,13 @@ impl<'a> Verifier<'a> {
             machine: CoreMachine::new(program),
             cell_count: 0,
             block_cells: 0,
+        }
+    }
+
+    pub fn sub_machine_block(&self, program: &'a [Instruction]) -> Self {
+        Self {
+            machine: CoreMachine::sub_machine(&self.machine, program),
+            ..*self
         }
     }
 
@@ -148,8 +153,8 @@ impl<'a> Verifier<'a> {
         _arg1: Cell,
         _arg2: Cell,
     ) -> Result<(), VerifierError> {
-        use BinaryOp::*;
-
+        // use BinaryOp::*;
+        //
         // match instr {
         //     Add => todo!(),
         //     Mul => todo!(),
@@ -178,7 +183,7 @@ impl<'a> Verifier<'a> {
         let mut block_verificator = Verifier::new(instrs);
         block_verificator.cell_count = self.cell_count;
         // Don't copy block_cells since we're starting fresh for this block
-        
+
         block_verificator.verify()?;
 
         Ok(())
@@ -192,9 +197,7 @@ impl<'a> Verifier<'a> {
                 self.machine.common_function_logic(arg)?;
             }
             FunctionCall => {
-                if !self.machine.function_exists(&arg) {
-                    return Err(VerifierError::FunctionUndefined);
-                }
+                self.machine.function_get(&arg)?;
 
                 // TODO: Check for infinite recursion.
             }
@@ -202,20 +205,7 @@ impl<'a> Verifier<'a> {
 
         Ok(())
     }
-
-    // pub fn verify(&mut self) -> Result<(), VerifierError> {
-    //     // use Instruction::*;
-    //
-    //     while let Some(instr) = self.program_data.next() {
-    //         instr.check(self).map_err(|e| {
-    //             eprintln!(
-    //                 "Error verifying instruction {:?}. Error: {:?} | cells: {:?}",
-    //                 instr, e, self.cell_count
-    //             );
-    //             e
-    //         })?;
-    //     }
-    //
-    //     Ok(())
-    // }
 }
+
+#[cfg(test)]
+pub mod verifier_tests;

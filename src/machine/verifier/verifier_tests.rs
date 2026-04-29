@@ -1,10 +1,11 @@
-use super::*;
 // use crate::{
 //     BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm, macros::*,
 // };
 use crate::{
+    add_instr,
     instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
-    machine::macros::*,
+    machine::verifier::Verifier,
+    make_block,
 };
 
 macro_rules! test_binop {
@@ -17,8 +18,8 @@ macro_rules! test_binop {
                 add_instr!($op, 0, 1),
             ];
 
-            let mut verificator = Verificator::new(&program);
-            assert!(verificator.verify().is_ok());
+            let mut verifier = Verifier::new(&program);
+            assert!(verifier.verify().is_ok());
         }
     };
 }
@@ -32,16 +33,16 @@ fn test_push() {
         add_instr!(Push, 4),
         add_instr!(Push, 5),
     ];
-    let mut verificator = Verificator::new(&prog);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&prog);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
 fn test_pop_good() {
     let prog = vec![add_instr!(Push, 1), add_instr!(R Pop, 1)];
 
-    let mut verificator = Verificator::new(&prog);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&prog);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
@@ -56,8 +57,8 @@ fn test_pop_multiple_good() {
         add_instr!(R Pop, 4),
     ];
 
-    let mut verificator = Verificator::new(&prog);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&prog);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
@@ -66,8 +67,8 @@ fn test_pop_bad() {
         add_instr!(R Pop, 1), // Trying to pop from empty cells
     ];
 
-    let mut verificator = Verificator::new(&prog);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&prog);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
@@ -79,8 +80,8 @@ fn test_pop_multiple_bad() {
         add_instr!(R Pop, 4), // 3 elements available, but trying to pop 4
     ];
 
-    let mut verificator = Verificator::new(&prog);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&prog);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
@@ -91,24 +92,24 @@ fn test_read() {
         add_instr!(R Read, 0), // Read from cell 0
     ];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
 fn test_read_bad_empty() {
     let program = vec![add_instr!(R Read, 0)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
 fn test_read_bad_index() {
     let program = vec![add_instr!(Push, 100), add_instr!(R Read, 1)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
@@ -120,8 +121,8 @@ fn test_read_reverse() {
         add_instr!(R ReadReverse, 1), // Should read 20
     ];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
@@ -130,15 +131,15 @@ fn test_read_reverse_bad_empty() {
 
     let program = vec![add_instr!(R ReadReverse, 0)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 
     // PART 2
 
     let program = vec![add_instr!(R ReadReverse, 42)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
@@ -147,15 +148,15 @@ fn test_read_reverse_bad_index() {
 
     let program = vec![add_instr!(Push, 10), add_instr!(R ReadReverse, 1)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 
     // PART 2
 
     let program = vec![add_instr!(Push, 10), add_instr!(R ReadReverse, 42)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 test_binop!(test_add, Add);
@@ -184,31 +185,31 @@ fn test_div_bad() {
         add_instr!(Div, 0, 1),
     ];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
 fn test_not() {
     let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
 fn test_not_bad() {
     let program = vec![add_instr!(R Not, 0)];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_err());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_err());
 }
 
 #[test]
 fn nop() {
     let program = vec![add_instr!(Nop)];
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_ok());
 }
 
 #[test]
@@ -221,8 +222,8 @@ fn math_with_read() {
         add_instr!(Div, 3, 2), // 120 / 10 = 12
     ];
 
-    let mut verificator = Verificator::new(&program);
-    assert!(verificator.verify().is_ok());
+    let mut verifier = Verifier::new(&program);
+    assert!(verifier.verify().is_ok());
 }
 
 mod blocks {
@@ -241,8 +242,8 @@ mod blocks {
             add_instr!(Add, 2, 3),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -259,8 +260,8 @@ mod blocks {
             ),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -278,8 +279,8 @@ mod blocks {
             square_block.clone(),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -295,8 +296,8 @@ mod blocks {
             add_instr!(Mul, 0, 1), // 3 * 5 = 15
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -314,8 +315,8 @@ mod blocks {
             ),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -335,8 +336,8 @@ mod blocks {
             ),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -353,8 +354,8 @@ mod blocks {
             ),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 }
 
@@ -374,8 +375,8 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("square")),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -389,8 +390,8 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("push2_2")),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -406,8 +407,8 @@ mod functions {
         ];
 
         // Outer function call should work
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     #[test]
@@ -424,8 +425,8 @@ mod functions {
         ];
 
         // Inner function call should fail
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_err());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_err());
     }
 }
 
@@ -455,8 +456,8 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("factorial")),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 
     /*
@@ -492,7 +493,7 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("fibonacci")),
         ];
 
-        let mut verificator = Verificator::new(&program);
-        assert!(verificator.verify().is_ok());
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 }

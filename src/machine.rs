@@ -1,12 +1,13 @@
 use std::fmt::Debug;
 
 use crate::{
+    add_instr,
     instruction::{
         FunctionOp,
         Instruction::{self},
-        
     },
-    types::{Address, FunctionData, ProgramData},
+    make_block,
+    types::{Address, FunctionData, FunctionDataError, ProgramData, ProgramDataError},
 };
 
 mod executor;
@@ -14,20 +15,23 @@ mod verifier;
 
 #[derive(Debug, Clone)]
 pub enum CoreError {
-    StackUnderflow,
-    InvalidCell,
-    DivisionByZero,
-    NoSavedCells,
-    RebaseError,
-    NoRebasedCells,
-    FunctionRedefinition,
-    FunctionUndefined,
-    FunctionCallError,
-    InstructionError(String),
-    OtherError(String),
-    ProgramNotLoaded,
-    InvalidPC,
+    FunctionDataError(FunctionDataError),
+    ProgramDataError(ProgramDataError),
 }
+
+impl From<FunctionDataError> for CoreError {
+    fn from(err: FunctionDataError) -> Self {
+        CoreError::FunctionDataError(err)
+    }
+}
+
+impl From<ProgramDataError> for CoreError {
+    fn from(err: ProgramDataError) -> Self {
+        CoreError::ProgramDataError(err)
+    }
+}
+
+type Result<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
@@ -43,30 +47,26 @@ impl<'a> CoreMachine<'a> {
         }
     }
 
-    pub fn function_exists(&self, name: &str) -> bool {
-        self.function_data.contains_key(name)
+    pub fn function_get(&self, name: &str) -> Result<&Instruction> {
+        Ok(self.function_data.get(name)?)
     }
 
-    pub fn function_get(&self, name: &str) -> Result<&Address, CoreError> {
-        self.function_data
-            .get(name)
-            .ok_or(CoreError::FunctionUndefined)
+    pub fn function_insert(&mut self, name: String, instr: Instruction) -> Result<()> {
+        Ok(self.function_data.insert(name, instr)?)
     }
 
-    pub fn function_insert(&mut self, name: String, instr_pc: Address) {
-        self.function_data.insert(name, instr_pc);
+    pub fn function_insert_current(&mut self, name: String) -> Result<()> {
+        let instr_pc = self.program_data.get_pc() - 1;  // WARN: Avoid going back to preceeding PC
+
+        eprintln!("Inserting function '{}' at PC {}", name, instr_pc);
+        eprintln!("That is instruction: {:?}", self.program_data.get_at(instr_pc)?);
+
+        // TODO: to_owned copies data, find a way to use references without the borrow checker
+        // complaining.
+        self.function_insert(name, self.program_data.get_at(instr_pc)?.to_owned())
     }
 
-    pub fn function_insert_current(&mut self, name: String) {
-        let instr_pc = self.program_data.get_pc();
-        self.function_insert(name, instr_pc);
-    }
-
-    pub fn load_program(&mut self, program: &'a [Instruction]) {
-        self.program_data = ProgramData::new(program)
-    }
-
-    pub fn sub_machine(&mut self, program: &'a [Instruction]) -> Self {
+    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
         // TODO: Optimize
         let mut sub_machine = Self::new(program);
         sub_machine.function_data = self.function_data.clone();
@@ -78,36 +78,16 @@ impl<'a> CoreMachine<'a> {
         format!("PC: {}", self.program_data.get_pc())
     }
 
-    pub fn get_current_instruction(&self) -> Option<&Instruction> {
-        self.program_data.get_current()
+    pub fn get_current_instruction(&self) -> Result<&Instruction> {
+        Ok(self.program_data.get_current()?)
     }
 
-    pub fn get_instruction_at(&self, pc: Address) -> Option<&[Instruction]> {
-        self.program_data.get_at(pc)
+    pub fn get_instruction_at(&self, pc: Address) -> Result<&Instruction> {
+        Ok(self.program_data.get_at(pc)?)
     }
 
-    // pub fn run(&mut self) -> Result<Option<&i64>, CoreError> {
-    //     while let Some(instr) = self.program_data.next() {
-    //         instr.eval(self).map_err(|e| {
-    //             // eprintln!(
-    //             //     "Error executing instruction {:?}. Error: {:?} | cells: {:?}",
-    //             //     instr, e, self.cells
-    //             // );
-    //             e
-    //         })?;
-    //
-    //     }
-    //
-    //     // TODO: Move this return into Executor
-    //     // Ok(self.cells.last())
-    //     Ok(None)
-    // }
-
-    pub fn common_function_logic(&mut self, arg: &str) -> Result<(), CoreError> {
-        if self.function_exists(&arg) {
-            return Err(CoreError::FunctionRedefinition);
-        }
-
+    pub fn common_function_logic(&mut self, arg: &str) -> Result<()> {
+        // TODO: Remove String::from and use &str instead (or to_owned)
         let mut definitions = Vec::new();
         definitions.push(arg);
 
@@ -115,20 +95,13 @@ impl<'a> CoreMachine<'a> {
             definitions.push(name);
         }
 
-        definitions
-            .iter()
-            .map(|name| self.function_insert_current(String::from(*name)))
-            .for_each(drop);
+        for name in definitions {
+            self.function_insert_current(String::from(name))?;
+        }
 
         Ok(())
     }
 }
-
-// impl Default for CoreMachine<'_> {
-//     fn default() -> Self {
-//         Self::new(&[])
-//     }
-// }
 
 impl<'a> Iterator for CoreMachine<'a> {
     type Item = &'a Instruction;
@@ -137,6 +110,3 @@ impl<'a> Iterator for CoreMachine<'a> {
         self.program_data.next()
     }
 }
-
-// #[cfg(test)]
-// pub mod machine_tests;

@@ -18,4 +18,6 @@
 mod machine;
 mod instruction;
 mod types;
+
+#[macro_use]
 mod macros;

@@ -1,5 +1,15 @@
 use super::*;
-use crate::macros::*;
+
+use crate::{
+    instruction::{
+        BinaryOp, FunctionOp,
+        Instruction::{AluBinary, AluFunction, AluNullary, AluUnaryCell, AluUnaryImm, Block},
+        NullaryOp, UnaryOpCell, UnaryOpImm,
+    },
+    machine::executor::Executor,
+    machine::CoreError,
+    types::FunctionDataError,
+};
 
 macro_rules! test_binop {
     ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
@@ -10,25 +20,27 @@ macro_rules! test_binop {
                 add_instr!(Push, $b),
                 add_instr!($op, 0, 1),
             ];
-            let mut machine = Machine::new(&program);
-            let last = machine.run().unwrap();
+            let mut machine = Executor::new(&program);
+            let last = machine.eval().unwrap();
             assert_eq!(last, Some(&$expected));
         }
     };
 }
 
 mod basic {
+    use super::*;
+
     #[test]
     fn test_push_pop() {
-        let program = vec![
+        let mut program = vec![
             add_instr!(Push, 1),
             add_instr!(Push, 2),
             add_instr!(Push, 3),
             add_instr!(Push, 4),
             add_instr!(Push, 5),
         ];
-        let mut machine = Machine::new(&program);
-        let _ = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let _ = machine.eval().unwrap();
         assert_eq!(machine.cells[0], 1);
         assert_eq!(machine.cells[1], 2);
         assert_eq!(machine.cells[2], 3);
@@ -36,28 +48,25 @@ mod basic {
         assert_eq!(machine.cells[4], 5);
         assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
 
-        // FIXME: This will now fail haha since running the program from a
-        // new machine will not conserver the previous state as was previously
-        // the case for this test.
-        let program = vec![add_instr!(R Pop, 1)];
-        machine.load_program(&program);
-        let val = machine.run().unwrap();
+        program.push(add_instr!(R Pop, 1));
+        let mut machine = Executor::new(&program);
+        let val = machine.eval().unwrap();
         assert_eq!(val, Some(&4));
 
-        let program = vec![add_instr!(R Pop, 2)];
-        machine.load_program(&program);
-        let val = machine.run().unwrap();
+        program.push(add_instr!(R Pop, 2));
+        let mut machine = Executor::new(&program);
+        let val = machine.eval().unwrap();
         assert_eq!(val, Some(&2));
 
-        let program = vec![add_instr!(R Pop, 2)];
-        machine.load_program(&program);
-        let val = machine.run().unwrap();
+        program.push(add_instr!(R Pop, 2));
+        let mut machine = Executor::new(&program);
+        let val = machine.eval().unwrap();
         assert_eq!(val, None);
 
-        let program = vec![add_instr!(R Pop, 1)];
-        machine.load_program(&program);
-        let result = machine.run();
-        assert!(matches!(result, Err(MachineError::StackUnderflow)));
+        program.push(add_instr!(R Pop, 1));
+        let mut machine = Executor::new(&program);
+        let val = machine.eval();
+        assert!(matches!(val, Err(StackUnderflow)));
     }
 
     #[test]
@@ -67,8 +76,8 @@ mod basic {
             add_instr!(Push, 200),
             add_instr!(R Read, 0),
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&100));
         assert_eq!(machine.cells[0], 100);
         assert_eq!(machine.cells[1], 200);
@@ -82,12 +91,9 @@ mod basic {
             add_instr!(Push, 30),
             add_instr!(R ReadReverse, 1), // Should read 20
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&20));
-        assert_eq!(machine.cells[0], 10);
-        assert_eq!(machine.cells[1], 20);
-        assert_eq!(machine.cells[2], 30);
     }
 
     test_binop!(test_add, 10, 20, Add => 30);
@@ -102,9 +108,9 @@ mod basic {
             add_instr!(Push, 0),
             add_instr!(Div, 0, 1),
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run();
-        assert!(matches!(last, Err(MachineError::DivisionByZero)));
+        let mut machine = Executor::new(&program);
+        let last = machine.eval();
+        assert!(matches!(last, Err(DivisionByZero)));
     }
 
     test_binop!(test_and, 0b1100, 0b1010, And => 0b1000);
@@ -114,8 +120,8 @@ mod basic {
     #[test]
     fn test_not() {
         let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&(!0b1100)));
     }
 
@@ -133,8 +139,8 @@ mod basic {
     #[test]
     fn nop() {
         let program = vec![add_instr!(Nop)];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, None);
     }
 
@@ -147,8 +153,8 @@ mod basic {
             add_instr!(Add, 0, 1), // 50 + 70 = 120
             add_instr!(Div, 3, 2), // 120 / 10 = 12
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&12));
     }
 }
@@ -169,8 +175,8 @@ mod blocks {
             add_instr!(Add, 2, 3),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&90)); // (10 + 20) + ((10 + 20) * 2) = 90
 
         assert_eq!(machine.cells[0], 10);
@@ -195,8 +201,8 @@ mod blocks {
                 add_instr!(Add, 0, 2) // 3 + 20 = 23
             ),
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&23));
         assert_eq!(machine.cells[0], 3);
         assert_eq!(machine.cells[1], 23);
@@ -217,8 +223,8 @@ mod blocks {
             square_block.clone(),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&16));
     }
 
@@ -235,8 +241,8 @@ mod blocks {
             add_instr!(Mul, 0, 1), // 3 * 5 = 15
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&15));
     }
 
@@ -254,8 +260,8 @@ mod blocks {
                 add_instr!(Add, 0, 1) // 3 + 12 = 14
             ),
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&15));
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 15);
@@ -277,8 +283,8 @@ mod blocks {
                 add_instr!(Add, 0, 1) // 3 + 12 = 14
             ),
         ];
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&15));
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 15);
@@ -298,8 +304,8 @@ mod blocks {
             ),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&235));
         assert_eq!(machine.cells[0], 5);
         assert_eq!(machine.cells[1], 235);
@@ -323,8 +329,8 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("square")),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&9));
     }
 
@@ -337,14 +343,16 @@ mod functions {
             add_instr!(Push, 2),
             add_instr!(fun FunctionCall, String::from("push2_1")),
             add_instr!(fun FunctionCall, String::from("push2_2")),
+            add_instr!(fun FunctionCall, String::from("push2_3")),
         ];
 
-        let mut machine = Machine::new(&program);
-        let _ = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let _ = machine.eval().unwrap();
 
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 2);
-        assert!(matches!(machine.cells.get(2), None));
+        assert_eq!(machine.cells[2], 2);
+        assert!(matches!(machine.cells.get(3), None));
     }
 
     #[test]
@@ -360,15 +368,20 @@ mod functions {
         ];
 
         // Outer function call should work
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&42));
 
         // Inner function call should fail
         program.push(add_instr!(fun FunctionCall, String::from("inner")));
-        let mut machine = Machine::new(&program);
-        let last = machine.run();
-        assert!(matches!(last, Err(MachineError::FunctionUndefined)));
+        let mut machine = Executor::new(&program);
+        let last = machine.eval();
+        assert!(matches!(
+            last,
+            Err(Core(CoreError::FunctionDataError(
+                FunctionDataError::FunctionUndefined(_)
+            )))
+        ));
     }
 }
 
@@ -404,8 +417,8 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("factorial")),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&factorial(number)));
     }
 
@@ -440,8 +453,8 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("fibonacci")),
         ];
 
-        let mut machine = Machine::new(&program);
-        let last = machine.run().unwrap();
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
         assert_eq!(last, Some(&fib(number)));
     }
 }

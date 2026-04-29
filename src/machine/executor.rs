@@ -1,15 +1,19 @@
+use super::*;
 use crate::{
     instruction::{BinaryOp, FunctionOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpImm},
-    machine::{
-        CoreError::{self, *},
-        CoreMachine,
-    },
+    machine::{CoreError, CoreMachine},
     types::{Cell, Immediate},
 };
 use ExecutorError::*;
 
 #[derive(Debug, Clone)]
 pub enum ExecutorError {
+    DivisionByZero,
+    StackUnderflow,
+    NoSavedCells,
+    RebaseError,
+    NoRebasedCells,
+    InvalidCell,
     Core(CoreError),
 }
 
@@ -19,10 +23,12 @@ impl From<CoreError> for ExecutorError {
     }
 }
 
+type Result<T> = std::result::Result<T, ExecutorError>;
+
 pub struct Executor<'a> {
     machine: CoreMachine<'a>,
     cells: Vec<i64>,
-    base: usize,
+    base: usize, // The index in `cells` where the current block/function's cells start.
     base_stack: Vec<usize>,
 }
 
@@ -36,11 +42,25 @@ impl<'a> Executor<'a> {
         }
     }
 
-    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
+    fn sub_machine(&self, program: &'a [Instruction]) -> Self {
         // TODO: Optimize
-        let mut sub_machine = Self::new(program);
-        sub_machine.cells = self.cells.clone();
+        Self {
+            machine: CoreMachine::sub_machine(&self.machine, program),
+            cells: self.cells.clone(),
+            base: 0,
+            base_stack: Vec::new(),
+        }
+    }
+
+    pub fn sub_machine_block(&self, program: &'a [Instruction]) -> Self {
+        let mut sub_machine = self.sub_machine(program);
+        sub_machine.base_stack.push(self.base);
+        sub_machine.base = self.cells.len();
         sub_machine
+    }
+
+    pub fn sub_machine_function(&self, program: &'a [Instruction]) -> Self {
+        self.sub_machine(program)
     }
 
     pub fn new_block(&mut self) {
@@ -68,23 +88,20 @@ impl<'a> Executor<'a> {
         self.cells.len()
     }
 
-    pub fn multi_pop(&mut self, n: Cell) -> Result<(), ExecutorError> {
+    pub fn multi_pop(&mut self, n: Cell) -> Result<()> {
         for _ in 0..n {
-            self.pop().ok_or(Core(StackUnderflow))?; // Discard the popped value
+            self.pop().ok_or(StackUnderflow)?; // Discard the popped value
         }
         Ok(())
     }
 
-    pub fn read(&self, reg: Cell) -> Result<&i64, ExecutorError> {
-        match self.cells.get::<usize>(reg.into()) {
-            Some(value) => Ok(value),
-            None => Err(Core(InvalidCell)),
-        }
+    pub fn read(&self, reg: Cell) -> Result<&i64> {
+        self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
     }
 
-    pub fn rebase(&mut self) -> Result<(), ExecutorError> {
+    pub fn rebase(&mut self) -> Result<()> {
         if self.base > self.cells.len() {
-            return Err(Core(RebaseError));
+            return Err(RebaseError);
         }
 
         self.cells = self.cells.split_off(self.base);
@@ -92,7 +109,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    pub fn eval(&mut self) -> Result<Option<&i64>, ExecutorError> {
+    pub fn eval(&mut self) -> Result<Option<&i64>> {
         while let Some(instr) = self.machine.next() {
             self.eval_instruction(instr)?;
         }
@@ -100,22 +117,55 @@ impl<'a> Executor<'a> {
         Ok(self.cells.last())
     }
 
-    fn eval_instruction(&mut self, instr: &'a Instruction) -> Result<(), ExecutorError> {
+    fn eval_instruction(&mut self, instr: &'a Instruction) -> Result<()> {
         use Instruction::*;
 
         match instr {
-            AluNullary(instr) => self.eval_alu_nullary(instr),
-            AluUnaryImm(instr, imm) => self.eval_alu_unary_imm(instr, *imm),
-            AluUnaryCell(instr, cell) => self.eval_alu_unary_cell(instr, *cell),
-            AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
-            Block(instrs) => self.eval_block(instrs),
-            AluFunction(instr, fun) => self.eval_function(instr, fun),
+            AluNullary(instr) => {
+                eprintln!("Evaluating nullary instruction: {:?}", instr);
+                self.eval_alu_nullary(instr)
+            }
+            AluUnaryImm(instr, imm) => {
+                eprintln!(
+                    "Evaluating unary instruction: {:?} with argument '{}'",
+                    instr, imm
+                );
+                self.eval_alu_unary_imm(instr, *imm)
+            }
+            AluUnaryCell(instr, cell) => {
+                eprintln!(
+                    "Evaluating unary instruction: {:?} with argument '{}'",
+                    instr, cell
+                );
+                self.eval_alu_unary_cell(instr, *cell)
+            }
+            AluBinary(instr, arg1, arg2) => {
+                eprintln!(
+                    "Evaluating binary instruction: {:?} with arguments '{}' and '{}'",
+                    instr, arg1, arg2
+                );
+                self.eval_alu_binary(instr, *arg1, *arg2)
+            }
+            Block(instrs) => {
+                eprintln!(
+                    "Evaluating block instruction with {} instructions",
+                    instrs.len()
+                );
+                self.eval_block(instrs)
+            }
+            AluFunction(instr, fun) => {
+                eprintln!(
+                    "Evaluating function instruction: {:?} with argument '{}'",
+                    instr, fun
+                );
+                self.eval_function(instr, fun)
+            }
         }?;
 
         Ok(())
     }
 
-    fn eval_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), ExecutorError> {
+    fn eval_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
         use NullaryOp::*;
 
         match instr {
@@ -126,18 +176,14 @@ impl<'a> Executor<'a> {
                 Some(_) => {
                     self.machine.next(); // Skip the next instruction
                 }
-                None => return Err(Core(StackUnderflow)),
+                None => return Err(StackUnderflow),
             },
         }
 
         Ok(())
     }
 
-    fn eval_alu_unary_imm(
-        &mut self,
-        instr: &UnaryOpImm,
-        arg: Immediate,
-    ) -> Result<(), ExecutorError> {
+    fn eval_alu_unary_imm(&mut self, instr: &UnaryOpImm, arg: Immediate) -> Result<()> {
         use UnaryOpImm::*;
 
         match instr {
@@ -147,11 +193,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_alu_unary_cell(
-        &mut self,
-        instr: &UnaryOpCell,
-        arg: Cell,
-    ) -> Result<(), ExecutorError> {
+    fn eval_alu_unary_cell(&mut self, instr: &UnaryOpCell, arg: Cell) -> Result<()> {
         use UnaryOpCell::*;
 
         match instr {
@@ -169,7 +211,7 @@ impl<'a> Executor<'a> {
                     .ok()
                     .and_then(|len| len.checked_sub(1))
                     .and_then(|len| len.checked_sub(arg))
-                    .ok_or(Core(InvalidCell))?;
+                    .ok_or(InvalidCell)?;
                 let val = *self.read(index)?;
                 self.push(val);
             }
@@ -182,12 +224,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_alu_binary(
-        &mut self,
-        instr: &BinaryOp,
-        arg1: Cell,
-        arg2: Cell,
-    ) -> Result<(), ExecutorError> {
+    fn eval_alu_binary(&mut self, instr: &BinaryOp, arg1: Cell, arg2: Cell) -> Result<()> {
         use BinaryOp::*;
         fn from_bool<T: From<bool>>(value: bool) -> T {
             value.into()
@@ -196,10 +233,11 @@ impl<'a> Executor<'a> {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
+        // TODO: Overflow checking for add, mul...
         let calculated_value = match instr {
             Add => a + b,
             Mul => a * b,
-            Div => a.checked_div(*b).ok_or(Core(DivisionByZero))?,
+            Div => a.checked_div(*b).ok_or(DivisionByZero)?,
             And => a & b,
             Or => a | b,
             Xor => a ^ b,
@@ -219,7 +257,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_block(&mut self, instrs: &'a [Instruction]) -> Result<(), ExecutorError> {
+    fn eval_block(&mut self, instrs: &'a [Instruction]) -> Result<()> {
         /* NOTE:
          * Since it is likely that more pops than pushes occur, we must
          * save the ENTIRE state of cells, copying it twice.
@@ -235,28 +273,20 @@ impl<'a> Executor<'a> {
             self.push(*val);
         }
 
-        self.set_base(
-            block_self
-                .base_pop()
-                .ok_or(Core(RebaseError))?
-                .clone(),
-        );
+        self.set_base(block_self.base_pop().ok_or(RebaseError)?.clone());
 
         Ok(())
     }
 
-    fn eval_function(&mut self, instr: &FunctionOp, arg: &str) -> Result<(), ExecutorError> {
+    fn eval_function(&mut self, instr: &FunctionOp, arg: &str) -> Result<()> {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => {
-                self.machine.common_function_logic(arg)?;
-            }
+            FunctionDefine => self.machine.common_function_logic(arg)?,
             FunctionCall => {
-                let instr_pc = self.machine.function_get(&arg)?;
-                let instructions = self.machine.get_instruction_at(*instr_pc).ok_or(Core(InvalidPC))?;
+                let instr = self.machine.function_get(&arg).map(std::slice::from_ref)?;
 
-                let mut function_self = self.sub_machine(instructions);
+                let mut function_self = self.sub_machine(instr);
                 let function_result = function_self.eval()?;
 
                 if let Some(val) = function_result {
@@ -277,5 +307,5 @@ impl From<Vec<i64>> for Executor<'_> {
     }
 }
 
-// #[cfg(test)]
-// pub mod verifier_tests;
+#[cfg(test)]
+pub mod executor_tests;
