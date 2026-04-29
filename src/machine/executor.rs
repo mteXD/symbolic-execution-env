@@ -36,7 +36,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    pub fn sub_machine(&mut self, program: &'a [Instruction]) -> Self {
+    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
         // TODO: Optimize
         let mut sub_machine = Self::new(program);
         sub_machine.cells = self.cells.clone();
@@ -253,7 +253,8 @@ impl<'a> Executor<'a> {
                 self.machine.common_function_logic(arg)?;
             }
             FunctionCall => {
-                let instructions = self.machine.function_get(&arg)?;
+                let instr_pc = self.machine.function_get(&arg)?;
+                let instructions = self.machine.get_instruction_at(*instr_pc).ok_or(Core(InvalidPC))?;
 
                 let mut function_self = self.sub_machine(instructions);
                 let function_result = function_self.eval()?;

@@ -26,6 +26,7 @@ pub enum CoreError {
     InstructionError(String),
     OtherError(String),
     ProgramNotLoaded,
+    InvalidPC,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +80,10 @@ impl<'a> CoreMachine<'a> {
 
     pub fn get_current_instruction(&self) -> Option<&Instruction> {
         self.program_data.get_current()
+    }
+
+    pub fn get_instruction_at(&self, pc: Address) -> Option<&[Instruction]> {
+        self.program_data.get_at(pc)
     }
 
     // pub fn run(&mut self) -> Result<Option<&i64>, CoreError> {

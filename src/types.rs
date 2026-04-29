@@ -51,6 +51,10 @@ impl<'a> ProgramData<'a> {
     pub fn get_current(&self) -> Option<&Instruction> {
         self.program.get(self.pc)
     }
+
+    pub fn get_at(&self, pc: Address) -> Option<&[Instruction]> {
+        self.program.get(pc..pc + 1)
+    }
 }
 
 impl<'a> Iterator for ProgramData<'a> {
