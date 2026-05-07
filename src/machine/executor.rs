@@ -5,10 +5,12 @@ use crate::{
     types::{Cell, Immediate},
 };
 use ExecutorError::*;
+use log::debug;
 
 #[derive(Debug, Clone)]
 pub enum ExecutorError {
     DivisionByZero,
+    ArithmeticOverflow,
     StackUnderflow,
     NoSavedCells,
     RebaseError,
@@ -111,58 +113,25 @@ impl<'a> Executor<'a> {
 
     pub fn eval(&mut self) -> Result<Option<&i64>> {
         while let Some(instr) = self.machine.next() {
-            self.eval_instruction(instr)?;
+            use Instruction::*;
+
+            match instr {
+                AluNullary(instr) => self.eval_alu_nullary(instr),
+                AluUnaryImm(instr, imm) => self.eval_alu_unary_imm(instr, *imm),
+                AluUnaryCell(instr, cell) => self.eval_alu_unary_cell(instr, *cell),
+                AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
+                Block(instrs) => self.eval_block(instrs),
+                AluFunction(instr, fun) => self.eval_function(instr, fun),
+            }?;
+
+            if let Block(_) = instr {
+                debug!("Done with Block");
+            } else {
+                debug!("Done with {:#?},\ncells: {:#?}", instr, self.cells);
+            }
         }
 
         Ok(self.cells.last())
-    }
-
-    fn eval_instruction(&mut self, instr: &'a Instruction) -> Result<()> {
-        use Instruction::*;
-
-        match instr {
-            AluNullary(instr) => {
-                eprintln!("Evaluating nullary instruction: {:?}", instr);
-                self.eval_alu_nullary(instr)
-            }
-            AluUnaryImm(instr, imm) => {
-                eprintln!(
-                    "Evaluating unary instruction: {:?} with argument '{}'",
-                    instr, imm
-                );
-                self.eval_alu_unary_imm(instr, *imm)
-            }
-            AluUnaryCell(instr, cell) => {
-                eprintln!(
-                    "Evaluating unary instruction: {:?} with argument '{}'",
-                    instr, cell
-                );
-                self.eval_alu_unary_cell(instr, *cell)
-            }
-            AluBinary(instr, arg1, arg2) => {
-                eprintln!(
-                    "Evaluating binary instruction: {:?} with arguments '{}' and '{}'",
-                    instr, arg1, arg2
-                );
-                self.eval_alu_binary(instr, *arg1, *arg2)
-            }
-            Block(instrs) => {
-                eprintln!(
-                    "Evaluating block instruction with {} instructions",
-                    instrs.len()
-                );
-                self.eval_block(instrs)
-            }
-            AluFunction(instr, fun) => {
-                eprintln!(
-                    "Evaluating function instruction: {:?} with argument '{}'",
-                    instr, fun
-                );
-                self.eval_function(instr, fun)
-            }
-        }?;
-
-        Ok(())
     }
 
     fn eval_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
@@ -218,7 +187,6 @@ impl<'a> Executor<'a> {
             Pop => {
                 self.multi_pop(arg)?;
             }
-            Tail => todo!(), // TODO: Implement tail call
         }
 
         Ok(())
@@ -233,10 +201,9 @@ impl<'a> Executor<'a> {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        // TODO: Overflow checking for add, mul...
         let calculated_value = match instr {
-            Add => a + b,
-            Mul => a * b,
+            Add => a.checked_add(*b).ok_or(ArithmeticOverflow)?,
+            Mul => a.checked_mul(*b).ok_or(ArithmeticOverflow)?,
             Div => a.checked_div(*b).ok_or(DivisionByZero)?,
             And => a & b,
             Or => a | b,

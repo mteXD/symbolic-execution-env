@@ -15,7 +15,7 @@ pub enum UnaryOpCell {
     Read,
     ReadReverse,
     Pop,
-    Tail, // Tail-call a function.
+    // Tail, // Tail call not needed right now.
 }
 
 #[derive(Debug, Clone)]

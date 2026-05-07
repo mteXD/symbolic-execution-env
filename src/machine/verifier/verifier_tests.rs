@@ -1,6 +1,3 @@
-// use crate::{
-//     BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm, macros::*,
-// };
 use crate::{
     add_instr,
     instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},

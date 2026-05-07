@@ -18,6 +18,7 @@
 mod machine;
 mod instruction;
 mod types;
+mod logging;
 
 #[macro_use]
 mod macros;

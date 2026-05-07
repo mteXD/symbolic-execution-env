@@ -1,13 +1,15 @@
 use super::*;
 
 use crate::{
+    add_instr,
     instruction::{
         BinaryOp, FunctionOp,
         Instruction::{AluBinary, AluFunction, AluNullary, AluUnaryCell, AluUnaryImm, Block},
         NullaryOp, UnaryOpCell, UnaryOpImm,
     },
-    machine::executor::Executor,
     machine::CoreError,
+    machine::executor::Executor,
+    make_block,
     types::FunctionDataError,
 };
 
@@ -386,6 +388,22 @@ mod functions {
 }
 
 mod programs {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    pub fn init() {
+        INIT.call_once(|| {
+            env_logger::builder()
+                .is_test(true)
+                .format_timestamp(None)
+                .format_target(false)
+                .format_file(true)
+                .format_line_number(true)
+                .format_module_path(false)
+                .init();
+        });
+    }
+
     use super::*;
 
     #[test]
@@ -396,6 +414,8 @@ mod programs {
             }
             n * factorial(n - 1)
         }
+
+        init();
         let number = 10;
 
         let program = vec![
@@ -430,7 +450,9 @@ mod programs {
             }
             fib(n - 1) + fib(n - 2)
         }
-        let number = 10;
+
+        init();
+        let number = 4;
 
         let program = vec![
             add_instr!(fun FunctionDefine, String::from("fibonacci")),
