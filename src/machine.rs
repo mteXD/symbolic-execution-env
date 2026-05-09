@@ -69,10 +69,11 @@ impl<'a> CoreMachine<'a> {
     }
 
     pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
-        // TODO: Optimize
-        let mut sub_machine = Self::new(program);
-        sub_machine.function_data = self.function_data.clone();
-        sub_machine
+        // TODO: Optimize this function_data clone()
+        Self {
+            function_data: self.function_data.clone(),
+            program_data: ProgramData::new(program),
+        }
     }
 
     pub fn common_function_logic(&mut self, arg: &str) -> Result<()> {

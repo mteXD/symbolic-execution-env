@@ -45,7 +45,7 @@ impl<'a> Executor<'a> {
     }
 
     fn sub_machine(&self, program: &'a [Instruction]) -> Self {
-        // TODO: Optimize
+        // TODO: Optimize cells cloning (use Rc?)
         Self {
             machine: CoreMachine::sub_machine(&self.machine, program),
             cells: self.cells.clone(),
@@ -63,11 +63,6 @@ impl<'a> Executor<'a> {
 
     pub fn sub_machine_function(&self, program: &'a [Instruction]) -> Self {
         self.sub_machine(program)
-    }
-
-    pub fn new_block(&mut self) {
-        self.base_stack.push(self.base);
-        self.base = self.cells.len();
     }
 
     pub fn push(&mut self, value: i64) {
@@ -230,8 +225,7 @@ impl<'a> Executor<'a> {
          * save the ENTIRE state of cells, copying it twice.
          */
 
-        let mut block_self = self.sub_machine(instrs);
-        block_self.new_block();
+        let mut block_self = self.sub_machine_block(instrs);
 
         let block_result = block_self.eval()?;
 
@@ -253,7 +247,7 @@ impl<'a> Executor<'a> {
             FunctionCall => {
                 let instr = self.machine.function_get(&arg).map(std::slice::from_ref)?;
 
-                let mut function_self = self.sub_machine(instr);
+                let mut function_self = self.sub_machine_function(instr);
                 let function_result = function_self.eval()?;
 
                 if let Some(val) = function_result {
