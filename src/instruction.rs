@@ -1,6 +1,4 @@
-use crate::{
-    types::{Cell, Immediate},
-};
+use crate::types::{Cell, Immediate};
 
 #[derive(Debug, Clone)]
 pub enum NullaryOp {
