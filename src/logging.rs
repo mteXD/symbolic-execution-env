@@ -1,6 +1,13 @@
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
+use std::io::Write;
 
 pub static mut INDENT_AMNT: usize = 0;
+
+pub fn init() {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
+}
 
 pub fn indent_inc() {
     unsafe {
@@ -15,7 +22,7 @@ pub fn indent_dec() {
 }
 
 pub fn indent_prt() {
-    for _ in 0..unsafe{INDENT_AMNT} {
+    for _ in 0..unsafe { INDENT_AMNT } {
         print!("\t");
     }
 }

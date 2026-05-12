@@ -15,10 +15,10 @@
  */
 
 // mod verificator;
-mod machine;
-mod instruction;
-mod types;
-mod logging;
+pub mod machine;
+pub mod instruction;
+pub mod types;
+pub mod logging;
 
 #[macro_use]
 mod macros;

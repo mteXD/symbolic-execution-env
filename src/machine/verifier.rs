@@ -11,7 +11,11 @@ use VerifierError::*;
 #[derive(Debug, Clone)]
 pub enum VerifierError {
     Core(CoreError),
-    NotEnoughCells { required: Cell, available: Cell },
+    RebaseError,
+    InvalidCell,
+    ArithmeticOverflow,
+    DivisionByZero,
+    NotEnoughCells { required: Cell, available: usize },
 }
 
 impl From<CoreError> for VerifierError {
@@ -23,62 +27,61 @@ impl From<CoreError> for VerifierError {
 // #[derive(Clone)]
 pub struct Verifier<'a> {
     machine: CoreMachine<'a>,
-    cell_count: Cell,
-    block_cells: Cell,
+    cells: Vec<i64>,
+    base: usize,
+    base_stack: Vec<usize>,
 }
 
 impl<'a> Verifier<'a> {
     pub fn new(program: &'a [Instruction]) -> Self {
         Self {
             machine: CoreMachine::new(program),
-            cell_count: 0,
-            block_cells: 0,
+            cells: Vec::new(),
+            base: 0,
+            base_stack: Vec::new(),
         }
     }
 
-    pub fn sub_machine_block(&self, program: &'a [Instruction]) -> Self {
+    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
         Self {
             machine: CoreMachine::sub_machine(&self.machine, program),
-            ..*self
+            cells: self.cells.clone(),
+            base: 0,
+            base_stack: Vec::new(),
         }
     }
 
     pub fn check_len(&self, required: Cell) -> Result<(), VerifierError> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
-        if self.cell_count < required {
+        if self.cells.len() < required as usize {
             return Err(NotEnoughCells {
                 required,
-                available: self.cell_count,
+                available: self.cells.len(),
             });
         }
 
         Ok(())
     }
 
-    pub fn add_cells(&mut self, count: Cell) {
-        self.cell_count += count;
-        self.block_cells += count;
+    pub fn push(&mut self, value: i64) {
+        self.cells.push(value);
     }
 
-    pub fn rm_cells(&mut self, count: Cell) -> Result<(), VerifierError> {
-        if self.cell_count < count {
-            return Err(NotEnoughCells {
-                required: count,
-                available: self.cell_count,
-            });
-        }
-
-        self.cell_count -= count;
-        Ok(())
+    pub fn pop(&mut self) -> Option<i64> {
+        self.cells.pop()
     }
 
-    pub fn verify(&mut self) -> Result<(), VerifierError> {
+    pub fn read(&self, reg: Cell) -> Result<&i64, VerifierError> {
+        self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
+    }
+
+    pub fn verify(&mut self) -> Result<Option<&i64>, VerifierError> {
         while let Some(instr) = self.machine.next() {
             self.verify_instruction(instr)?
         }
 
-        Ok(())
+        Ok(self.cells.last())
     }
 
     fn verify_instruction(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
@@ -101,7 +104,13 @@ impl<'a> Verifier<'a> {
 
         match instr {
             Nop => (),
-            Rebase => self.block_cells = 0,
+            Rebase => {
+                if self.base > self.cells.len() {
+                    return Err(RebaseError);
+                }
+
+                self.cells = self.cells.split_off(self.base);
+            }
             Cond => todo!(),
         }
 
@@ -111,12 +120,12 @@ impl<'a> Verifier<'a> {
     fn verify_alu_unary_imm(
         &mut self,
         instr: &UnaryOpImm,
-        _: Immediate,
+        arg: Immediate,
     ) -> Result<(), VerifierError> {
         use UnaryOpImm::*;
 
         match instr {
-            Push => self.add_cells(1),
+            Push => self.push(arg),
         }
 
         Ok(())
@@ -129,19 +138,30 @@ impl<'a> Verifier<'a> {
     ) -> Result<(), VerifierError> {
         use UnaryOpCell::*;
 
-        let required_len = match instr {
-            Not => 1,
-            Read | ReadReverse => arg + 1,
-            Pop => arg,
-            Tail => todo!(),
-        };
-
-        self.check_len(required_len)?;
-
         match instr {
-            Not | Read | ReadReverse => self.add_cells(1),
-            Pop => self.rm_cells(arg)?,
-            Tail => todo!(),
+            Not => {
+                let val = !*self.read(arg)?;
+                self.push(val);
+            }
+            Read => {
+                let val = *self.read(arg)?;
+                self.push(val);
+            }
+            ReadReverse => {
+                // like python's negative indexing.
+                let index = u16::try_from(self.cells.len())
+                    .ok()
+                    .and_then(|len| len.checked_sub(1))
+                    .and_then(|len| len.checked_sub(arg))
+                    .ok_or(InvalidCell)?;
+                let val = *self.read(index)?;
+                self.push(val);
+            }
+            Pop => {
+                for _ in 0..arg {
+                    self.pop().ok_or(InvalidCell)?;
+                }
+            }
         }
 
         Ok(())
@@ -149,42 +169,54 @@ impl<'a> Verifier<'a> {
 
     fn verify_alu_binary(
         &mut self,
-        _instr: &BinaryOp,
-        _arg1: Cell,
-        _arg2: Cell,
+        instr: &BinaryOp,
+        arg1: Cell,
+        arg2: Cell,
     ) -> Result<(), VerifierError> {
-        // use BinaryOp::*;
-        //
-        // match instr {
-        //     Add => todo!(),
-        //     Mul => todo!(),
-        //     Div => todo!(),
-        //     And => todo!(),
-        //     Or => todo!(),
-        //     Xor => todo!(),
-        //     ShiftLeftLogical => todo!(),
-        //     ShiftRightLogical => todo!(),
-        //     ShiftRightArithmetic => todo!(),
-        //     SetEqual => todo!(),
-        //     SetNotEqual => todo!(),
-        //     SetLessThan => todo!(),
-        //     SetLessThanOrEqual => todo!(),
-        //     SetGreaterThan => todo!(),
-        //     SetGreaterThanOrEqual => todo!(),
-        // }
+        use BinaryOp::*;
+        fn from_bool<T: From<bool>>(value: bool) -> T {
+            value.into()
+        }
 
-        self.check_len(2)?;
-        self.add_cells(1);
+        let a = self.read(arg1)?;
+        let b = self.read(arg2)?;
+
+        let calculated_value = match instr {
+            Add => a.checked_add(*b).ok_or(ArithmeticOverflow)?,
+            Mul => a.checked_mul(*b).ok_or(ArithmeticOverflow)?,
+            Div => a.checked_div(*b).ok_or(DivisionByZero)?,
+            And => a & b,
+            Or => a | b,
+            Xor => a ^ b,
+            ShiftLeftLogical => a << b,
+            ShiftRightLogical => ((*a as u64) >> b) as i64,
+            ShiftRightArithmetic => a >> b,
+            SetEqual => from_bool(a == b),
+            SetNotEqual => from_bool(a != b),
+            SetLessThan => from_bool(a < b),
+            SetLessThanOrEqual => from_bool(a <= b),
+            SetGreaterThan => from_bool(a > b),
+            SetGreaterThanOrEqual => from_bool(a >= b),
+        };
+
+        self.push(calculated_value);
 
         Ok(())
     }
 
     fn verify_block(&mut self, instrs: &[Instruction]) -> Result<(), VerifierError> {
-        let mut block_verificator = Verifier::new(instrs);
-        block_verificator.cell_count = self.cell_count;
-        // Don't copy block_cells since we're starting fresh for this block
+        let mut block_verifier = self.sub_machine(instrs);
+        block_verifier.base_stack.push(self.base);
+        block_verifier.base = self.cells.len();
 
-        block_verificator.verify()?;
+        let block_result = block_verifier.verify()?;
+
+        // WARN: What if this block returns "void"? Add this to checker.
+        if let Some(val) = block_result {
+            self.push(*val);
+        }
+
+        self.base = block_verifier.base_stack.pop().ok_or(RebaseError)?.clone();
 
         Ok(())
     }

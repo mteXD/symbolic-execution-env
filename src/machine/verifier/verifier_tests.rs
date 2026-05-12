@@ -459,7 +459,6 @@ mod programs {
 
     /*
      * Things that can go wrong:
-     * - Not enough cells for the recursive calls (should be caught by the rebase checks)
      * - Function not defined
      * - Stack underflow
      * - Infinite recursion (something connected to the Cond instruction)
