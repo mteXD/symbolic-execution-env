@@ -58,7 +58,7 @@ impl<'a> CoreMachine<'a> {
         // WARN: Avoid going back to preceeding PC
         // This happens because the PC is initially 0, and calling next() returns
         // the current instruction and then increments the PC. 
-        let instr_pc = self.program_data.get_pc() - 1;
+        let instr_pc = self.program_data.get_pc();
 
         debug!("Inserting function '{}' at PC {}", name, instr_pc);
         debug!("That is instruction: {:?}", self.program_data.get_at(instr_pc)?);
@@ -85,7 +85,7 @@ impl<'a> CoreMachine<'a> {
             definitions.push(name);
         }
 
-        match self.program_data.get_at(self.program_data.get_pc() - 1) {
+        match self.program_data.get_current() {
             Ok(Instruction::Block(_)) => {
             }
             Ok(instr) => {

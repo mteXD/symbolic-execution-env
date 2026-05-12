@@ -1,10 +1,58 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    ops::{Add, AddAssign, Sub},
+};
+
+use log::{error};
 
 use crate::instruction::Instruction;
 
 pub type Cell = u16;
 pub type Immediate = i64;
-pub type Address = usize;
+
+#[derive(Debug, Clone, Default, Copy)]
+pub enum Address {
+    #[default]
+    Null,
+    Value(usize),
+}
+
+impl Address {
+    pub fn inc(&mut self) {
+        use Address::*;
+
+        *self = match self {
+            Null => Value(0),
+            Value(v) => Value(*v + 1),
+        };
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Address::*;
+
+        match self {
+            Null => write!(f, "Null"),
+            Value(v) => write!(f, "@{}", v),
+        }
+    }
+}
+
+impl TryInto<usize> for Address {
+    type Error = ProgramDataError;
+
+    fn try_into(self) -> Result<usize, Self::Error> {
+        match self {
+            Address::Null => {
+                error!("Address struct Null to usize");
+                Err(InvalidPC { pc: self })
+            },
+            Address::Value(v) => Ok(v),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FunctionDataError {
@@ -46,7 +94,9 @@ impl FunctionData {
 
 #[derive(Debug, Clone)]
 pub enum ProgramDataError {
-    InvalidPC,
+    InvalidPC {
+        pc: Address,
+    },
 }
 use ProgramDataError::*;
 
@@ -58,26 +108,23 @@ pub struct ProgramData<'a> {
 
 impl<'a> ProgramData<'a> {
     pub fn new(program: &'a [Instruction]) -> Self {
-        Self {
-            program,
-            pc: 0,
-        }
+        Self { program, pc: Address::Null }
     }
 
     pub fn reset(&mut self) {
-        self.pc = 0;
+        self.pc = Address::Null;
     }
 
     pub fn get_pc(&self) -> Address {
         self.pc
     }
 
-    pub fn get_current(&self) -> Result<&Instruction, ProgramDataError> {
-        self.program.get(self.pc).ok_or(InvalidPC)
+    pub fn get_at(&self, pc: Address) -> Result<&Instruction, ProgramDataError> {
+        self.program.get::<usize>(pc.try_into()?).ok_or(InvalidPC { pc })
     }
 
-    pub fn get_at(&self, pc: Address) -> Result<&Instruction, ProgramDataError> {
-        self.program.get(pc).ok_or(InvalidPC)
+    pub fn get_current(&self) -> Result<&Instruction, ProgramDataError> {
+        self.get_at(self.pc)
     }
 }
 
@@ -85,8 +132,8 @@ impl<'a> Iterator for ProgramData<'a> {
     type Item = &'a Instruction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let instr = self.program.get(self.pc)?;
-        self.pc += 1;
+        self.pc.inc();
+        let instr = self.program.get::<usize>(self.pc.try_into().ok()?)?;
         Some(instr)
     }
 }

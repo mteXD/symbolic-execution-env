@@ -67,6 +67,7 @@ impl<'a> Executor<'a> {
     }
 
     pub fn read(&self, reg: Cell) -> Result<&i64> {
+        let i: usize = reg.try_into().expect("Cell value should always be convertible to usize");
         self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
     }
 
@@ -74,14 +75,22 @@ impl<'a> Executor<'a> {
         while let Some(instr) = self.machine.next() {
             use Instruction::*;
 
-            match instr {
+            let res = match instr {
                 AluNullary(instr) => self.eval_alu_nullary(instr),
                 AluUnaryImm(instr, imm) => self.eval_alu_unary_imm(instr, *imm),
                 AluUnaryCell(instr, cell) => self.eval_alu_unary_cell(instr, *cell),
                 AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
                 Block(instrs) => self.eval_block(instrs),
                 AluFunction(instr, fun) => self.eval_function(instr, fun),
-            }?;
+            };
+
+            if let Block(_) = instr {
+            } else {
+                if let Err(e) = res {
+                    error!("Error executing {:#?}: {:?}", instr, e);
+                    return Err(e);
+                }
+            }
 
             if let Block(_) = instr {
                 debug!("Done with Block");
