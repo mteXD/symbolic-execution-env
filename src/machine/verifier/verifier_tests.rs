@@ -174,7 +174,6 @@ test_binop!(test_srl, ShiftRightLogical);
 test_binop!(test_sra, ShiftRightArithmetic);
 
 #[test]
-#[ignore]
 fn test_div_bad() {
     let program = vec![
         add_instr!(Push, 10),
@@ -424,6 +423,28 @@ mod functions {
         // Inner function call should fail
         let mut verifier = Verifier::new(&program);
         assert!(verifier.verify().is_err());
+    }
+
+    #[test]
+    fn test_multi_args() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("add_three")),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(R ReadReverse, 1),
+                add_instr!(R ReadReverse, 2),
+                add_instr!(Rebase),
+                add_instr!(Add, 0, 1), // a + b
+                add_instr!(Add, 3, 2) // (a + b) + c
+            ),
+            add_instr!(Push, 10),
+            add_instr!(Push, 20),
+            add_instr!(Push, 30),
+            add_instr!(fun FunctionCall, String::from("add_three")),
+        ];
+
+        let mut verifier = Verifier::new(&program);
+        assert!(verifier.verify().is_ok());
     }
 }
 
