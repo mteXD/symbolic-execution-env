@@ -54,7 +54,7 @@ impl<'a> Verifier<'a> {
     pub fn check_len(&self, required: Cell) -> Result<(), VerifierError> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
-        if self.cells.len() < required as usize {
+        if self.cells.len() < required.try_into().expect("Cell value should fit into usize") {
             return Err(NotEnoughCells {
                 required,
                 available: self.cells.len(),

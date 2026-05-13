@@ -1,5 +1,5 @@
-use std::fmt::Debug;
 use log::{debug, error, warn};
+use std::fmt::Debug;
 
 use crate::{
     instruction::{
@@ -55,23 +55,16 @@ impl<'a> CoreMachine<'a> {
     }
 
     pub fn function_insert_current(&mut self, name: String) -> Result<()> {
-        // WARN: Avoid going back to preceeding PC
-        // This happens because the PC is initially 0, and calling next() returns
-        // the current instruction and then increments the PC. 
-        let instr_pc = self.program_data.get_pc();
+        let current = self.program_data.get_current()?;
 
-        debug!("Inserting function '{}' at PC {}", name, instr_pc);
-        debug!("That is instruction: {:?}", self.program_data.get_at(instr_pc)?);
+        debug!("Function '{}' will point to {:?}", name, current);
 
-        // TODO: to_owned copies data, find a way to use references without the borrow checker
-        // complaining.
-        self.function_insert(name, self.program_data.get_at(instr_pc)?.to_owned())
+        self.function_insert(name, current.to_owned()) // TODO: Oprimize to_owned
     }
 
     pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
-        // TODO: Optimize this function_data clone()
         Self {
-            function_data: self.function_data.clone(),
+            function_data: self.function_data.clone(), // TODO: Optimize clone()
             program_data: ProgramData::new(program),
         }
     }
@@ -86,13 +79,18 @@ impl<'a> CoreMachine<'a> {
         }
 
         match self.program_data.get_current() {
-            Ok(Instruction::Block(_)) => {
-            }
+            Ok(Instruction::Block(_)) => {}
             Ok(instr) => {
-                warn!("Expected block after function definitions, but found instruction: {:?}", instr);
+                warn!(
+                    "Expected block after function definitions, but found instruction: {:?}",
+                    instr
+                );
             }
             Err(err) => {
-                error!("Error while fetching instruction for function definition: {:?}", err);
+                error!(
+                    "Error while fetching instruction for function definition: {:?}",
+                    err
+                );
             }
         }
 

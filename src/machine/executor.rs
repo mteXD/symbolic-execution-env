@@ -12,9 +12,7 @@ pub enum ExecutorError {
     DivisionByZero,
     ArithmeticOverflow,
     StackUnderflow,
-    NoSavedCells,
     RebaseError,
-    NoRebasedCells,
     InvalidCell,
     Core(CoreError),
 }
@@ -67,8 +65,17 @@ impl<'a> Executor<'a> {
     }
 
     pub fn read(&self, reg: Cell) -> Result<&i64> {
-        let i: usize = reg.try_into().expect("Cell value should always be convertible to usize");
-        self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
+        let res = self.cells.get::<usize>(reg.into());
+        match res {
+            Some(val) => Ok(val),
+            None => {
+                error!(
+                    "Invalid cell access: {reg} (cells length: {})",
+                    self.cells.len()
+                );
+                Err(InvalidCell)
+            }
+        }
     }
 
     pub fn eval(&mut self) -> Result<Option<&i64>> {
@@ -84,12 +91,12 @@ impl<'a> Executor<'a> {
                 AluFunction(instr, fun) => self.eval_function(instr, fun),
             };
 
-            if let Block(_) = instr {
-            } else {
-                if let Err(e) = res {
+            if let Err(e) = res {
+                if let Block(_) = instr {
+                } else {
                     error!("Error executing {:#?}: {:?}", instr, e);
-                    return Err(e);
                 }
+                return Err(e);
             }
 
             if let Block(_) = instr {
