@@ -119,7 +119,7 @@ impl<'a> Executor<'a> {
                 AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
                 Block(instrs) => self.eval_block(instrs),
                 AluFunction(instr, fun) => self.eval_function(instr, fun),
-                AluIntrinsic(instr) => todo!(),
+                AluIntrinsic(instr, arg) => todo!(),
             }?;
 
             if let Block(_) = instr {

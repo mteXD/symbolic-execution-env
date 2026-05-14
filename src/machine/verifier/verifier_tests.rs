@@ -433,6 +433,15 @@ mod functions {
     }
 }
 
+mod intrinsics {
+    use super::*;
+
+    #[test]
+    fn test_print() {
+        
+    }
+}
+
 mod programs {
     use super::*;
 

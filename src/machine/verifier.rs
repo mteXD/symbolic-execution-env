@@ -10,6 +10,7 @@ use crate::{
 };
 use Cell::*;
 use VerifierError::*;
+use log::warn;
 
 #[derive(Debug, Clone)]
 pub enum VerifierError {
@@ -109,7 +110,7 @@ impl<'a> Verifier<'a> {
             AluBinary(instr, arg1, arg2) => self.verify_alu_binary(instr, *arg1, *arg2),
             Block(instrs) => self.verify_block(instrs),
             AluFunction(instr, fun) => self.verify_function(instr, fun),
-            AluIntrinsic(instr) => self.verify_intrinsic(instr),
+            AluIntrinsic(instr, arg) => self.verify_intrinsic(instr, *arg),
         }?;
 
         Ok(())
@@ -275,12 +276,16 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_intrinsic(&mut self, instr: &IntrinsicOp) -> Result<(), VerifierError> {
+    fn verify_intrinsic(
+        &mut self,
+        instr: &IntrinsicOp,
+        arg: CellIndex,
+    ) -> Result<(), VerifierError> {
         use IntrinsicOp::*;
 
         match instr {
             Print => {
-                let val = self.pop().ok_or(InvalidCell)?;
+                let val = self.read(arg)?;
                 print!("{val}");
             }
             Input => {
@@ -294,7 +299,13 @@ impl<'a> Verifier<'a> {
 
                 match result {
                     Ok(val) => self.push(Integer(val)),
-                    Err(_) => input.chars().for_each(|c| self.push(Text(c))),
+                    Err(e) => {
+                        // TODO: Make explicit instructions for Integer and String input.
+                        warn!(
+                            "Failed to parse input as integer: {e}. Pushing input as string instead."
+                        );
+                        input.chars().for_each(|c| self.push(Text(c)))
+                    }
                 }
             }
             FileRead => todo!(),

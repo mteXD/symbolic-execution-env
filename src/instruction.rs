@@ -66,5 +66,5 @@ pub enum Instruction {
     AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Vec<Instruction>),
     AluFunction(FunctionOp, String),
-    AluIntrinsic(IntrinsicOp),
+    AluIntrinsic(IntrinsicOp, CellIndex),
 }
