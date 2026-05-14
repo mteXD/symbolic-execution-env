@@ -17,6 +17,9 @@ macro_rules! add_instr {
     (fun $op:ident, $name:expr) => {
         AluFunction(FunctionOp::$op, $name)
     };
+    (io $op:ident, $a:expr) => {
+        AluIntrinsic(IntrinsicOp::$op, $a)
+    }
 }
 
 #[macro_export]

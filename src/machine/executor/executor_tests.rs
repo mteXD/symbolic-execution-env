@@ -4,7 +4,9 @@ use crate::{
     add_instr,
     instruction::{
         BinaryOp, FunctionOp,
-        Instruction::{AluBinary, AluFunction, AluNullary, AluUnaryCell, AluUnaryImm, Block},
+        Instruction::{
+            AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm, Block,
+        },
         NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::CoreError,
@@ -380,6 +382,23 @@ mod functions {
                 FunctionDataError::FunctionUndefined(_)
             )))
         ));
+    }
+}
+
+mod intrinsics {
+    use super::*;
+    use crate::instruction::IntrinsicOp::*;
+
+    #[test]
+    fn test_print() {
+        let program = vec![
+            add_instr!(Push, 123),
+            add_instr!(io Print, 0), // Should print 123
+        ];
+
+        let mut machine = Executor::new(&program);
+        let last = machine.eval().unwrap();
+        assert_eq!(last, Some(&Cell::Integer(123)));
     }
 }
 

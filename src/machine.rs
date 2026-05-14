@@ -84,12 +84,12 @@ impl<'a> CoreMachine<'a> {
 
         debug!("Function '{}' will point to {:?}", name, current);
 
-        self.function_insert(name, current.to_owned()) // TODO: Oprimize to_owned
+        self.function_insert(name, current.to_owned()) // PERF: to_owned()
     }
 
     pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
         Self {
-            function_data: self.function_data.clone(), // TODO: Optimize clone()
+            function_data: self.function_data.clone(), // PERF: clone()
             program_data: ProgramData::new(program),
             output: self.output.clone(),
             input: self.input.clone(),

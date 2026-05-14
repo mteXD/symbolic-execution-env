@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    instruction::{BinaryOp, FunctionOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpImm},
+    instruction::{
+        BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+    },
     machine::{CoreError, CoreMachine},
     types::{Cell, CellIndex, Immediate},
 };
@@ -119,7 +121,7 @@ impl<'a> Executor<'a> {
                 AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
                 Block(instrs) => self.eval_block(instrs),
                 AluFunction(instr, fun) => self.eval_function(instr, fun),
-                AluIntrinsic(instr, arg) => todo!(),
+                AluIntrinsic(instr, arg) => self.eval_intrinsic(instr, *arg),
             }?;
 
             if let Block(_) = instr {
@@ -290,6 +292,41 @@ impl<'a> Executor<'a> {
                     self.push(*val);
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn eval_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
+        use IntrinsicOp::*;
+
+        match instr {
+            Print => {
+                let val = self.read(arg)?;
+                print!("{val}");
+            }
+            Input => {
+                let mut input: String = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .expect("Failed to read input");
+
+                // TODO: Make explicit instructions for Integer and String input.
+                let result = input.trim().parse::<i64>();
+
+                match result {
+                    Ok(val) => self.push(Integer(val)),
+                    Err(e) => {
+                        // TODO: Make explicit instructions for Integer and String input.
+                        warn!(
+                            "Failed to parse input as integer: {e}. Pushing input as string instead."
+                        );
+                        input.chars().for_each(|c| self.push(Text(c)))
+                    }
+                }
+            }
+            FileRead => todo!(),
+            FileWrite => todo!(),
         }
 
         Ok(())
