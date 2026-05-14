@@ -1,4 +1,4 @@
-use crate::types::{Cell, Immediate};
+use crate::types::{CellIndex, Immediate};
 
 #[derive(Debug, Clone)]
 pub enum NullaryOp {
@@ -51,11 +51,20 @@ pub enum FunctionOp {
 }
 
 #[derive(Debug, Clone)]
+pub enum IntrinsicOp {
+    Print,
+    Input,
+    FileRead,
+    FileWrite,
+}
+
+#[derive(Debug, Clone)]
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
-    AluUnaryCell(UnaryOpCell, Cell),
-    AluBinary(BinaryOp, Cell, Cell),
+    AluUnaryCell(UnaryOpCell, CellIndex),
+    AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Vec<Instruction>),
     AluFunction(FunctionOp, String),
+    AluIntrinsic(IntrinsicOp),
 }

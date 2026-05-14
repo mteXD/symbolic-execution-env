@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Formatter},
     ops::{Add, AddAssign, Sub},
 };
 
@@ -8,8 +8,37 @@ use log::{error};
 
 use crate::instruction::Instruction;
 
-pub type Cell = u16;
+pub type CellIndex = u16;
 pub type Immediate = i64;
+
+// PERF: Copy for Strings can be expensive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Cell {
+    Integer(Immediate),
+    Text(char),
+}
+
+impl PartialEq<Immediate> for Cell {
+    fn eq(&self, other: &Immediate) -> bool {
+        use Cell::*;
+
+        match self {
+            Integer(i) => i == other,
+            Text(_) => false,
+        }
+    }
+}
+
+impl Display for Cell {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use Cell::*;
+
+        match self {
+            Integer(i) => write!(f, "{}", i),
+            Text(s) => write!(f, "{}", s),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Copy)]
 pub enum Address {
@@ -30,7 +59,7 @@ impl Address {
 }
 
 impl Display for Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use Address::*;
 
         match self {

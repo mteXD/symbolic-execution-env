@@ -13,6 +13,20 @@ use crate::{
     types::FunctionDataError,
 };
 
+macro_rules! assert_eq_last {
+    ($prog:expr, $value:expr) => {
+        let mut machine = Executor::new(&$prog);
+        let val = machine.eval().expect("Program should execute successfully");
+        assert_eq!(val, $value);
+    };
+}
+
+macro_rules! assert_eq_last_Int {
+    ($prog:expr, $value:expr) => {
+        assert_eq_last!($prog, Some(&Cell::Integer($value)));
+    };
+}
+
 macro_rules! test_binop {
     ($name:ident, $a:expr, $b:expr, $op:ident => $expected:expr) => {
         #[test]
@@ -22,9 +36,7 @@ macro_rules! test_binop {
                 add_instr!(Push, $b),
                 add_instr!($op, 0, 1),
             ];
-            let mut machine = Executor::new(&program);
-            let last = machine.eval().unwrap();
-            assert_eq!(last, Some(&$expected));
+            assert_eq_last_Int!(program, $expected);
         }
     };
 }
@@ -51,19 +63,13 @@ mod basic {
         assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
 
         program.push(add_instr!(R Pop, 1));
-        let mut machine = Executor::new(&program);
-        let val = machine.eval().unwrap();
-        assert_eq!(val, Some(&4));
+        assert_eq_last_Int!(program, 4);
 
         program.push(add_instr!(R Pop, 2));
-        let mut machine = Executor::new(&program);
-        let val = machine.eval().unwrap();
-        assert_eq!(val, Some(&2));
+        assert_eq_last_Int!(program, 2);
 
         program.push(add_instr!(R Pop, 2));
-        let mut machine = Executor::new(&program);
-        let val = machine.eval().unwrap();
-        assert_eq!(val, None);
+        assert_eq_last!(program, None);
 
         program.push(add_instr!(R Pop, 1));
         let mut machine = Executor::new(&program);
@@ -80,7 +86,7 @@ mod basic {
         ];
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&100));
+        assert_eq!(last, Some(&Cell::Integer(100)));
         assert_eq!(machine.cells[0], 100);
         assert_eq!(machine.cells[1], 200);
     }
@@ -93,9 +99,7 @@ mod basic {
             add_instr!(Push, 30),
             add_instr!(R ReadReverse, 1), // Should read 20
         ];
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&20));
+        assert_eq_last_Int!(program, 20);
     }
 
     test_binop!(test_add, 10, 20, Add => 30);
@@ -122,9 +126,7 @@ mod basic {
     #[test]
     fn test_not() {
         let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&(!0b1100)));
+        assert_eq_last_Int!(program, !0b1100);
     }
 
     test_binop!(test_slt, 10, 20, SetLessThan => 1);
@@ -155,9 +157,7 @@ mod basic {
             add_instr!(Add, 0, 1), // 50 + 70 = 120
             add_instr!(Div, 3, 2), // 120 / 10 = 12
         ];
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&12));
+        assert_eq_last_Int!(program, 12);
     }
 }
 
@@ -179,7 +179,7 @@ mod blocks {
 
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&90)); // (10 + 20) + ((10 + 20) * 2) = 90
+        assert_eq!(last, Some(&Cell::Integer(90))); // (10 + 20) + ((10 + 20) * 2) = 90
 
         assert_eq!(machine.cells[0], 10);
         assert_eq!(machine.cells[1], 20);
@@ -205,7 +205,7 @@ mod blocks {
         ];
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&23));
+        assert_eq!(last, Some(&Cell::Integer(23)));
         assert_eq!(machine.cells[0], 3);
         assert_eq!(machine.cells[1], 23);
     }
@@ -227,7 +227,7 @@ mod blocks {
 
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&16));
+        assert_eq!(last, Some(&Cell::Integer(16))); // (2^2)^2 = 16
     }
 
     #[test]
@@ -243,9 +243,7 @@ mod blocks {
             add_instr!(Mul, 0, 1), // 3 * 5 = 15
         ];
 
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&15));
+        assert_eq_last_Int!(program, 15);
     }
 
     #[test]
@@ -264,7 +262,7 @@ mod blocks {
         ];
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&15));
+        assert_eq!(last, Some(&Cell::Integer(15)));
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 15);
     }
@@ -287,7 +285,7 @@ mod blocks {
         ];
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&15));
+        assert_eq!(last, Some(&Cell::Integer(15)));
         assert_eq!(machine.cells[0], 2);
         assert_eq!(machine.cells[1], 15);
     }
@@ -308,7 +306,7 @@ mod blocks {
 
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&235));
+        assert_eq!(last, Some(&Cell::Integer(235))); // 5^2 + 42*5 = 25 + 210 = 235
         assert_eq!(machine.cells[0], 5);
         assert_eq!(machine.cells[1], 235);
         assert_eq!(machine.cells.len(), 2);
@@ -333,7 +331,7 @@ mod functions {
 
         let mut machine = Executor::new(&program);
         let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&9));
+        assert_eq!(last, Some(&Cell::Integer(9))); // 3^2 = 9
     }
 
     #[test]
@@ -370,9 +368,7 @@ mod functions {
         ];
 
         // Outer function call should work
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&42));
+        assert_eq_last_Int!(program, 42);
 
         // Inner function call should fail
         program.push(add_instr!(fun FunctionCall, String::from("inner")));
@@ -437,9 +433,7 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("factorial")),
         ];
 
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&factorial(number)));
+        assert_eq_last_Int!(program, factorial(number));
     }
 
     #[test]
@@ -475,8 +469,6 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("fibonacci")),
         ];
 
-        let mut machine = Executor::new(&program);
-        let last = machine.eval().unwrap();
-        assert_eq!(last, Some(&fib(number)));
+        assert_eq_last_Int!(program, fib(number));
     }
 }

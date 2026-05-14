@@ -1,9 +1,33 @@
 use crate::{
     add_instr,
     instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
-    machine::verifier::Verifier,
+    machine::verifier::{Verifier, VerifierError},
     make_block,
 };
+
+use VerifierError::*;
+
+macro_rules! assert_last {
+    ($prog:expr) => {
+        let mut verifier = Verifier::new(&$prog);
+        let result = verifier.verify();
+        assert!(result.is_ok(), "Verification failed: {:?}", result.err());
+    };
+}
+
+macro_rules! assert_last_err {
+    ($prog:expr, $err:pat) => {
+        let mut verifier = Verifier::new(&$prog);
+        let result = verifier.verify();
+        assert!(matches!(result, Err($err)));
+    };
+}
+
+macro_rules! assert_last_Int {
+    ($prog:expr) => {
+        assert_last!($prog);
+    };
+}
 
 macro_rules! test_binop {
     ($name:ident, $op:ident) => {
@@ -17,34 +41,33 @@ macro_rules! test_binop {
 
             let mut verifier = Verifier::new(&program);
             assert!(verifier.verify().is_ok());
+
+            assert_last_Int!(program);
         }
     };
 }
 
 #[test]
 fn test_push() {
-    let prog = vec![
+    let program = vec![
         add_instr!(Push, 1),
         add_instr!(Push, 2),
         add_instr!(Push, 3),
         add_instr!(Push, 4),
         add_instr!(Push, 5),
     ];
-    let mut verifier = Verifier::new(&prog);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
 fn test_pop_good() {
-    let prog = vec![add_instr!(Push, 1), add_instr!(R Pop, 1)];
-
-    let mut verifier = Verifier::new(&prog);
-    assert!(verifier.verify().is_ok());
+    let program = vec![add_instr!(Push, 1), add_instr!(R Pop, 1)];
+    assert_last!(program);
 }
 
 #[test]
 fn test_pop_multiple_good() {
-    let prog = vec![
+    let program = vec![
         add_instr!(Push, 1),
         add_instr!(Push, 2),
         add_instr!(Push, 3),
@@ -53,32 +76,26 @@ fn test_pop_multiple_good() {
         add_instr!(Push, 4),
         add_instr!(R Pop, 4),
     ];
-
-    let mut verifier = Verifier::new(&prog);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
 fn test_pop_bad() {
-    let prog = vec![
+    let program = vec![
         add_instr!(R Pop, 1), // Trying to pop from empty cells
     ];
-
-    let mut verifier = Verifier::new(&prog);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, StackUnderflow);
 }
 
 #[test]
 fn test_pop_multiple_bad() {
-    let prog = vec![
+    let program = vec![
         add_instr!(Push, 1),
         add_instr!(Push, 2),
         add_instr!(Push, 3),
         add_instr!(R Pop, 4), // 3 elements available, but trying to pop 4
     ];
-
-    let mut verifier = Verifier::new(&prog);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, StackUnderflow);
 }
 
 #[test]
@@ -88,25 +105,19 @@ fn test_read() {
         add_instr!(Push, 200),
         add_instr!(R Read, 0), // Read from cell 0
     ];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
 fn test_read_bad_empty() {
     let program = vec![add_instr!(R Read, 0)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 }
 
 #[test]
 fn test_read_bad_index() {
     let program = vec![add_instr!(Push, 100), add_instr!(R Read, 1)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 }
 
 #[test]
@@ -117,9 +128,7 @@ fn test_read_reverse() {
         add_instr!(Push, 30),
         add_instr!(R ReadReverse, 1), // Should read 20
     ];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
@@ -127,16 +136,12 @@ fn test_read_reverse_bad_empty() {
     // PART 1
 
     let program = vec![add_instr!(R ReadReverse, 0)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 
     // PART 2
 
     let program = vec![add_instr!(R ReadReverse, 42)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 }
 
 #[test]
@@ -144,16 +149,12 @@ fn test_read_reverse_bad_index() {
     // PART 1
 
     let program = vec![add_instr!(Push, 10), add_instr!(R ReadReverse, 1)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 
     // PART 2
 
     let program = vec![add_instr!(Push, 10), add_instr!(R ReadReverse, 42)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 }
 
 test_binop!(test_add, Add);
@@ -180,32 +181,25 @@ fn test_div_bad() {
         add_instr!(Push, 0),
         add_instr!(Div, 0, 1),
     ];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, DivisionByZero);
 }
 
 #[test]
 fn test_not() {
     let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
 fn test_not_bad() {
     let program = vec![add_instr!(R Not, 0)];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_err());
+    assert_last_err!(program, InvalidCell);
 }
 
 #[test]
 fn nop() {
     let program = vec![add_instr!(Nop)];
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 #[test]
@@ -217,9 +211,7 @@ fn math_with_read() {
         add_instr!(Add, 0, 1), // 50 + 70 = 120
         add_instr!(Div, 3, 2), // 120 / 10 = 12
     ];
-
-    let mut verifier = Verifier::new(&program);
-    assert!(verifier.verify().is_ok());
+    assert_last!(program);
 }
 
 mod blocks {
@@ -237,9 +229,7 @@ mod blocks {
             ),
             add_instr!(Add, 2, 3),
         ];
-
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -255,9 +245,7 @@ mod blocks {
                 add_instr!(Add, 0, 2) // 3 + 20 = 23
             ),
         ];
-
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -274,9 +262,7 @@ mod blocks {
             square_block.clone(),
             square_block.clone(),
         ];
-
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -292,8 +278,7 @@ mod blocks {
             add_instr!(Mul, 0, 1), // 3 * 5 = 15
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -311,8 +296,7 @@ mod blocks {
             ),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -332,8 +316,7 @@ mod blocks {
             ),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -350,12 +333,13 @@ mod blocks {
             ),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 }
 
 mod functions {
+    use crate::{machine::CoreError, types::FunctionDataError};
+
     use super::*;
 
     #[test]
@@ -371,8 +355,7 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("square")),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -386,8 +369,7 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("push2_2")),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
@@ -403,26 +385,30 @@ mod functions {
         ];
 
         // Outer function call should work
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     #[test]
     fn test_nested_functions_bad() {
+        use crate::types::FunctionDataError::FunctionUndefined;
+        use CoreError::FunctionDataError;
+
+        let outer = String::from("outer");
+        let inner = String::from("inner");
+
         let program = vec![
-            add_instr!(fun FunctionDefine, String::from("outer")),
+            add_instr!(fun FunctionDefine, outer.clone()),
             make_block!(
-                add_instr!(fun FunctionDefine, String::from("inner")),
+                add_instr!(fun FunctionDefine, inner.clone()),
                 make_block!(add_instr!(Push, 42)),
-                add_instr!(fun FunctionCall, String::from("inner"))
+                add_instr!(fun FunctionCall, inner.clone())
             ),
-            add_instr!(fun FunctionCall, String::from("outer")),
-            add_instr!(fun FunctionCall, String::from("inner")), // This should fail
+            add_instr!(fun FunctionCall, outer.clone()),
+            add_instr!(fun FunctionCall, inner.clone()), // This should fail
         ];
 
         // Inner function call should fail
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_err());
+        assert_last_err!(program, Core(FunctionDataError(FunctionUndefined(_))));
     }
 
     #[test]
@@ -435,7 +421,7 @@ mod functions {
                 add_instr!(R ReadReverse, 2),
                 add_instr!(Rebase),
                 add_instr!(Add, 0, 1), // a + b
-                add_instr!(Add, 3, 2) // (a + b) + c
+                add_instr!(Add, 3, 2)  // (a + b) + c
             ),
             add_instr!(Push, 10),
             add_instr!(Push, 20),
@@ -443,8 +429,7 @@ mod functions {
             add_instr!(fun FunctionCall, String::from("add_three")),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 }
 
@@ -474,8 +459,7 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("factorial")),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 
     /*
@@ -544,7 +528,6 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("fibonacci")),
         ];
 
-        let mut verifier = Verifier::new(&program);
-        assert!(verifier.verify().is_ok());
+        assert_last!(program);
     }
 }
