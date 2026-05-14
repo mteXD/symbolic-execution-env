@@ -2,6 +2,9 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display, Formatter},
     ops::{Add, AddAssign, Sub},
+    rc::Rc,
+    cell::RefCell,
+    io::{self, Read, Write},
 };
 
 use log::{error};
@@ -164,5 +167,63 @@ impl<'a> Iterator for ProgramData<'a> {
         self.pc.inc();
         let instr = self.program.get::<usize>(self.pc.try_into().ok()?)?;
         Some(instr)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Output {
+    Stdout,
+    File(String),
+    Buffer(Rc<RefCell<Vec<u8>>>),
+}
+
+#[derive(Debug, Clone)]
+pub enum Input {
+    Stdin,
+    File(String),
+    Buffer(Rc<RefCell<Vec<u8>>>),
+}
+
+impl Output {
+    pub fn write(&mut self, data: &[u8]) {
+        match self {
+            Output::Stdout => {
+                let mut out = io::stdout();
+                let _ = out.write_all(data);
+            }
+            Output::File(path) => {
+                use std::fs::OpenOptions;
+
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap();
+
+                let _ = file.write_all(data);
+            }
+            Output::Buffer(buf) => {
+                let mut buf = buf.borrow_mut();
+                buf.extend_from_slice(data);
+            }
+        }
+    }
+}
+
+impl Input {
+    pub fn read_all(&mut self) -> Vec<u8> {
+        match self {
+            Input::Stdin => {
+                let mut buf = Vec::new();
+                io::stdin().read_to_end(&mut buf).unwrap();
+                buf
+            }
+            Input::File(path) => std::fs::read(path).unwrap(),
+            Input::Buffer(data) => {
+                let mut buf = Vec::new();
+                data.borrow().iter().for_each(|byte| buf.push(*byte));
+                buf
+            }
+        }
     }
 }

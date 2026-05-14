@@ -21,4 +21,4 @@ pub mod types;
 pub mod logging;
 
 #[macro_use]
-mod macros;
+pub mod macros;

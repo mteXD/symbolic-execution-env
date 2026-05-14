@@ -34,8 +34,8 @@ type Result<T> = std::result::Result<T, ExecutorError>;
 pub struct Executor<'a> {
     machine: CoreMachine<'a>,
     cells: Vec<Cell>,
-    base: usize, // The index in `cells` where the current block/function's cells start.
-    base_stack: Vec<usize>,
+    pub base: usize, // The index in `cells` where the current block/function's cells start.
+    pub base_stack: Vec<usize>,
 }
 
 impl<'a> Executor<'a> {
@@ -58,17 +58,6 @@ impl<'a> Executor<'a> {
         }
     }
 
-    pub fn sub_machine_block(&self, program: &'a [Instruction]) -> Self {
-        let mut sub_machine = self.sub_machine(program);
-        sub_machine.base_stack.push(self.base);
-        sub_machine.base = self.cells.len();
-        sub_machine
-    }
-
-    pub fn sub_machine_function(&self, program: &'a [Instruction]) -> Self {
-        self.sub_machine(program)
-    }
-
     pub fn push(&mut self, value: Cell) {
         self.cells.push(value);
     }
@@ -77,37 +66,8 @@ impl<'a> Executor<'a> {
         self.cells.pop()
     }
 
-    pub fn base_pop(&mut self) -> Option<usize> {
-        self.base_stack.pop()
-    }
-
-    pub fn set_base(&mut self, new_base: usize) {
-        self.base = new_base;
-    }
-
-    pub fn cells_len(&self) -> usize {
-        self.cells.len()
-    }
-
-    pub fn multi_pop(&mut self, n: CellIndex) -> Result<()> {
-        for _ in 0..n {
-            self.pop().ok_or(StackUnderflow)?; // Discard the popped value
-        }
-        Ok(())
-    }
-
     pub fn read(&self, reg: CellIndex) -> Result<&Cell> {
         self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
-    }
-
-    pub fn rebase(&mut self) -> Result<()> {
-        if self.base > self.cells.len() {
-            return Err(RebaseError);
-        }
-
-        self.cells = self.cells.split_off(self.base);
-
-        Ok(())
     }
 
     pub fn eval(&mut self) -> Result<Option<&Cell>> {
@@ -139,7 +99,13 @@ impl<'a> Executor<'a> {
 
         match instr {
             Nop => {}
-            Rebase => self.rebase()?,
+            Rebase => {
+                if self.base > self.cells.len() {
+                    return Err(RebaseError);
+                }
+
+                self.cells = self.cells.split_off(self.base);
+            }
             Cond => match self.pop() {
                 Some(Integer(0)) => {
                     self.machine.next(); // Skip the next instruction
@@ -193,7 +159,7 @@ impl<'a> Executor<'a> {
             }
             ReadReverse => {
                 // like python's negative indexing.
-                let index = u16::try_from(self.cells_len())
+                let index = u16::try_from(self.cells.len())
                     .ok()
                     .and_then(|len| len.checked_sub(1))
                     .and_then(|len| len.checked_sub(arg))
@@ -202,7 +168,9 @@ impl<'a> Executor<'a> {
                 self.push(val.clone());
             }
             Pop => {
-                self.multi_pop(arg)?;
+                for _ in 0..arg {
+                    self.pop().ok_or(StackUnderflow)?; // Discard the popped value
+                }
             }
         }
 
@@ -263,7 +231,9 @@ impl<'a> Executor<'a> {
          * save the ENTIRE state of cells, copying it twice.
          */
 
-        let mut block_self = self.sub_machine_block(instrs);
+        let mut block_self = self.sub_machine(instrs);
+        block_self.base_stack.push(self.base);
+        block_self.base = self.cells.len();
 
         let block_result = block_self.eval()?;
 
@@ -272,7 +242,7 @@ impl<'a> Executor<'a> {
             self.push(*val);
         }
 
-        self.set_base(block_self.base_pop().ok_or(RebaseError)?.clone());
+        self.base = block_self.base_stack.pop().ok_or(RebaseError)?.clone();
 
         Ok(())
     }
@@ -285,7 +255,7 @@ impl<'a> Executor<'a> {
             FunctionCall => {
                 let instr = self.machine.function_get(&arg).map(std::slice::from_ref)?;
 
-                let mut function_self = self.sub_machine_function(instr);
+                let mut function_self = self.sub_machine(instr);
                 let function_result = function_self.eval()?;
 
                 if let Some(val) = function_result {

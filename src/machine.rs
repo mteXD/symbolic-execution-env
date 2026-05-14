@@ -1,21 +1,16 @@
 use log::{debug, error, warn};
-use std::{
-    cell::RefCell,
-    fmt::Debug,
-    io::{self, Read, Write},
-    rc::Rc,
-};
+use std::fmt::Debug;
 
 use crate::{
     instruction::{
         FunctionOp,
         Instruction::{self},
     },
-    types::{FunctionData, FunctionDataError, ProgramData, ProgramDataError},
+    types::{FunctionData, FunctionDataError, Input, Output, ProgramData, ProgramDataError},
 };
 
-mod executor;
-mod verifier;
+pub mod executor;
+pub mod verifier;
 
 #[derive(Debug, Clone)]
 pub enum CoreError {
@@ -38,20 +33,6 @@ impl From<ProgramDataError> for CoreError {
 }
 
 type Result<T> = std::result::Result<T, CoreError>;
-
-#[derive(Debug, Clone)]
-enum Output {
-    Stdout,
-    File(String),
-    Buffer(Rc<RefCell<Vec<u8>>>),
-}
-
-#[derive(Debug, Clone)]
-enum Input {
-    Stdin,
-    File(String),
-    Buffer(Rc<RefCell<Vec<u8>>>),
-}
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
@@ -134,49 +115,5 @@ impl<'a> Iterator for CoreMachine<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.program_data.next()
-    }
-}
-
-impl Output {
-    pub fn write(&mut self, data: &[u8]) {
-        match self {
-            Output::Stdout => {
-                let mut out = io::stdout();
-                let _ = out.write_all(data);
-            }
-            Output::File(path) => {
-                use std::fs::OpenOptions;
-
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .unwrap();
-
-                let _ = file.write_all(data);
-            }
-            Output::Buffer(buf) => {
-                let mut buf = buf.borrow_mut();
-                buf.extend_from_slice(data);
-            }
-        }
-    }
-}
-
-impl Input {
-    pub fn read_all(&mut self) -> Vec<u8> {
-        match self {
-            Input::Stdin => {
-                let mut buf = Vec::new();
-                io::stdin().read_to_end(&mut buf).unwrap();
-                buf
-            }
-            Input::File(path) => std::fs::read(path).unwrap(),
-            Input::Buffer(data) => {
-                let mut buf = Vec::new();
-                data.borrow().iter().for_each(|byte| buf.push(*byte));
-                buf
-            }
-        }
     }
 }
