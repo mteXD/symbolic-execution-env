@@ -37,9 +37,9 @@ type Result<T> = std::result::Result<T, CoreError>;
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
     function_data: FunctionData,
-    program_data: ProgramData<'a>,
-    output: Output,
-    input: Input,
+    pub program_data: ProgramData<'a>,
+    pub output: Output,
+    pub input: Input,
 }
 
 impl<'a> CoreMachine<'a> {

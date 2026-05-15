@@ -158,6 +158,10 @@ impl<'a> ProgramData<'a> {
     pub fn get_current(&self) -> Result<&Instruction, ProgramDataError> {
         self.get_at(self.pc)
     }
+
+    pub fn get_program(&self) -> &'a [Instruction] {
+        self.program
+    }
 }
 
 impl<'a> Iterator for ProgramData<'a> {

@@ -1,3 +1,5 @@
+use std::ops::{self, Add, BitAnd, Div, Mul};
+
 use crate::{
     instruction::{
         BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
@@ -6,28 +8,35 @@ use crate::{
         CoreError::{self},
         CoreMachine,
     },
-    types::{Cell, CellIndex, Immediate},
+    types::{Address, Cell, CellIndex, Immediate, ProgramDataError},
 };
 use Cell::*;
 use VerifierError::*;
-use log::warn;
+use log::{debug, trace, warn};
 
 #[derive(Debug, Clone)]
 pub enum VerifierError {
     Core(CoreError),
     RebaseError,
-    InvalidCell,
+    InvalidCell {
+        instr: Instruction,
+        cell_index: CellIndex,
+        cells: Vec<ValueSpan>,
+        prog: Vec<Instruction>,
+    },
     ArithmeticOverflow,
     DivisionByZero,
     TypeError {
-        expected: Cell,
-        found: Cell,
+        expected: ValueSpan,
+        found: ValueSpan,
     },
     NotEnoughCells {
         required: CellIndex,
         available: usize,
     },
     StackUnderflow,
+    UnsafeCondPlacement,
+    DebugError(&'static str),
 }
 
 impl From<CoreError> for VerifierError {
@@ -36,12 +45,168 @@ impl From<CoreError> for VerifierError {
     }
 }
 
+impl From<ProgramDataError> for VerifierError {
+    fn from(e: ProgramDataError) -> Self {
+        VerifierError::Core(e.into())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MemorizedIndex {
+    Normal(CellIndex),
+    Reverse(CellIndex),
+}
+
+#[derive(Debug, Clone, Default)]
+struct FunctionDefiningInfo {
+    function_name: String,
+    arg_positions: Vec<MemorizedIndex>,
+}
+
+impl FunctionDefiningInfo {
+    fn required_arguments(&self) -> usize {
+        self.arg_positions.len()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Findings {
+    values_after_rebase: Option<usize>,
+    func_defining: Option<FunctionDefiningInfo>,
+    processed_instructions: usize,
+}
+
+impl Findings {
+    #[inline]
+    fn is_collecting_func_args(&self) -> bool {
+        self.func_defining.is_some() && self.values_after_rebase.is_none()
+    }
+}
+
+enum Comparator {
+    LessThan,
+    Equal,
+    GreaterThan,
+    NotEqual,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
+}
+
+struct ConvergenceInfo {
+    critical_cell_index: CellIndex,
+    critical_cell_value_span: ValueSpan,
+    critical_ref_cell_index: CellIndex,
+    critical_ref_cell_value_span: ValueSpan,
+    comparator: Comparator,
+    does_converge: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSpan {
+    pub min: Immediate,
+    pub max: Immediate,
+}
+
+impl ValueSpan {
+    fn new(min: Immediate, max: Immediate) -> Self {
+        Self { min, max }
+    }
+
+    fn inf() -> Self {
+        Self {
+            min: Immediate::MIN,
+            max: Immediate::MAX,
+        }
+    }
+}
+
+impl Add<Immediate> for ValueSpan {
+    type Output = Self;
+
+    fn add(self, rhs: Immediate) -> Self::Output {
+        Self {
+            min: self.min.checked_add(rhs).unwrap_or(Immediate::MIN),
+            max: self.max.checked_add(rhs).unwrap_or(Immediate::MAX),
+        }
+    }
+}
+
+impl Add<ValueSpan> for ValueSpan {
+    type Output = Self;
+
+    fn add(self, rhs: ValueSpan) -> Self::Output {
+        Self {
+            min: self.min.checked_add(rhs.min).unwrap_or(Immediate::MIN),
+            max: self.max.checked_add(rhs.max).unwrap_or(Immediate::MAX),
+        }
+    }
+}
+
+impl Mul<ValueSpan> for ValueSpan {
+    type Output = Self;
+
+    fn mul(self, rhs: ValueSpan) -> Self::Output {
+        let candidates = [
+            self.min.checked_mul(rhs.min),
+            self.min.checked_mul(rhs.max),
+            self.max.checked_mul(rhs.min),
+            self.max.checked_mul(rhs.max),
+        ];
+
+        // PERF: Perhaps inefficient
+        let min = candidates
+            .iter()
+            .filter_map(|&x| x)
+            .min()
+            .unwrap_or(Immediate::MIN);
+        let max = candidates
+            .iter()
+            .filter_map(|&x| x)
+            .max()
+            .unwrap_or(Immediate::MAX);
+
+        Self { min, max }
+    }
+}
+
+impl Div<ValueSpan> for ValueSpan {
+    type Output = Self;
+
+    fn div(self, rhs: ValueSpan) -> Self::Output {
+        if rhs.min <= 0 && rhs.max >= 0 {
+            // Division by zero is possible, so we return the widest possible range.
+            return Self::inf();
+        }
+
+        let candidates = [
+            self.min.checked_div(rhs.min),
+            self.min.checked_div(rhs.max),
+            self.max.checked_div(rhs.min),
+            self.max.checked_div(rhs.max),
+        ];
+
+        let min = candidates
+            .iter()
+            .filter_map(|&x| x)
+            .min()
+            .unwrap_or(Immediate::MIN);
+        let max = candidates
+            .iter()
+            .filter_map(|&x| x)
+            .max()
+            .unwrap_or(Immediate::MAX);
+
+        Self { min, max }
+    }
+}
+
 // #[derive(Clone)]
 pub struct Verifier<'a> {
     machine: CoreMachine<'a>,
-    cells: Vec<Cell>,
+    cells: Vec<ValueSpan>,
     base: usize,
     base_stack: Vec<usize>,
+    findings: Findings,
 }
 
 impl<'a> Verifier<'a> {
@@ -51,6 +216,7 @@ impl<'a> Verifier<'a> {
             cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
+            findings: Findings::default(),
         }
     }
 
@@ -60,6 +226,7 @@ impl<'a> Verifier<'a> {
             cells: self.cells.clone(),
             base: 0,
             base_stack: Vec::new(),
+            findings: Findings::default(),
         }
     }
 
@@ -69,7 +236,7 @@ impl<'a> Verifier<'a> {
         if self.cells.len()
             < required
                 .try_into()
-                .expect("Cell value should fit into usize")
+                .expect("CellIndex value should fit into usize")
         {
             return Err(NotEnoughCells {
                 required,
@@ -80,21 +247,34 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    pub fn push(&mut self, value: Cell) {
+    pub fn push(&mut self, value: ValueSpan) {
         self.cells.push(value);
     }
 
-    pub fn pop(&mut self) -> Option<Cell> {
+    pub fn pop(&mut self) -> Option<ValueSpan> {
         self.cells.pop()
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<&Cell, VerifierError> {
-        self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
+    pub fn read(&self, reg: CellIndex) -> Result<Option<&ValueSpan>, VerifierError> {
+        if self.findings.is_collecting_func_args() {
+            return Result::Ok(None);
+        }
+
+        self.cells
+            .get::<usize>(reg.into())
+            .ok_or(InvalidCell {
+                instr: self.machine.program_data.get_current()?.clone(),
+                cell_index: reg,
+                cells: self.cells.clone(),
+                prog: self.machine.program_data.get_program().to_vec(),
+            })
+            .map(Some)
     }
 
-    pub fn verify(&mut self) -> Result<Option<&Cell>, VerifierError> {
+    pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
         while let Some(instr) = self.machine.next() {
-            self.verify_instruction(instr)?
+            self.verify_instruction(instr)?;
+            self.findings.processed_instructions += 1;
         }
 
         Ok(self.cells.last())
@@ -102,6 +282,11 @@ impl<'a> Verifier<'a> {
 
     fn verify_instruction(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
         use Instruction::*;
+
+        match instr {
+            Block(_) => {}
+            _ => debug!("Verifying instruction: {:#?}", instr),
+        }
 
         match instr {
             AluNullary(instr) => self.verify_alu_nullary(instr),
@@ -127,8 +312,54 @@ impl<'a> Verifier<'a> {
                 }
 
                 self.cells = self.cells.split_off(self.base);
+
+                let avail_values = self.cells.len();
+                self.findings.values_after_rebase = Some(avail_values);
             }
-            Cond => todo!(),
+            Cond => {
+                use BinaryOp::*;
+                use Comparator::*;
+                use Instruction::AluBinary;
+
+                /* First, check if the previous instr was a comparison instr.
+                 * If not, warn that this is not really safe.
+                 *
+                 *  next,
+                 */
+
+                self.cells.pop().ok_or(StackUnderflow)?;
+
+                let pc = match self.machine.program_data.get_pc() {
+                    Address::Null => {
+                        panic!("PC cannot be null here, program already started executing.")
+                    }
+                    Address::Value(0) => {
+                        return Err(VerifierError::NotEnoughCells {
+                            required: 1,
+                            available: 0,
+                        });
+                    }
+                    Address::Value(v) => v - 1,
+                };
+
+                let i = self.machine.program_data.get_at(Address::Value(pc))?;
+
+                let comp_info = match i {
+                    AluBinary(SetEqual, _, _) => Some(Equal),
+                    AluBinary(SetNotEqual, _, _) => Some(NotEqual),
+                    AluBinary(SetLessThan, _, _) => Some(LessThan),
+                    AluBinary(SetLessThanOrEqual, _, _) => Some(LessThanOrEqual),
+                    AluBinary(SetGreaterThan, _, _) => Some(GreaterThan),
+                    AluBinary(SetGreaterThanOrEqual, _, _) => Some(GreaterThanOrEqual),
+                    _ => {
+                        warn!(
+                            "Condition instruction not preceded by a comparison instruction. This is unsafe."
+                        );
+                        // None
+                        return Err(VerifierError::UnsafeCondPlacement);
+                    }
+                };
+            }
         }
 
         Ok(())
@@ -142,7 +373,7 @@ impl<'a> Verifier<'a> {
         use UnaryOpImm::*;
 
         match instr {
-            Push => self.push(Integer(arg)),
+            Push => self.push(ValueSpan::new(arg, arg)),
         }
 
         Ok(())
@@ -158,28 +389,79 @@ impl<'a> Verifier<'a> {
         match instr {
             Not => {
                 let val = self.read(arg)?;
-                if let Integer(val) = val {
-                    self.push(Integer(!*val));
-                } else {
-                    return Err(TypeError {
-                        expected: Integer(0),
-                        found: val.clone(),
-                    });
+
+                match val {
+                    Some(ValueSpan { min, max }) if min == max => {
+                        self.push(ValueSpan::new(!*min, !*max));
+                    }
+                    Some(_) => {
+                        self.push(ValueSpan::inf());
+                    }
+                    None => {
+                        // When collecting function arguments
+                        match self.findings.func_defining.as_mut() {
+                            Some(func_info) => {
+                                func_info.arg_positions.push(MemorizedIndex::Normal(arg));
+                            }
+                            None => panic!(
+                                "We got None, which can only happen when collecting function arguments."
+                            ),
+                        }
+                    }
                 }
             }
             Read => {
                 let val = self.read(arg)?;
-                self.push(*val);
+
+                match val {
+                    Some(v) => self.push(v.clone()),
+                    None => {
+                        // When collecting function arguments
+                        match self.findings.func_defining.as_mut() {
+                            Some(func_info) => {
+                                func_info.arg_positions.push(MemorizedIndex::Normal(arg));
+                            }
+                            None => panic!(
+                                "We got None, which can only happen when collecting function arguments."
+                            ),
+                        }
+                    }
+                }
             }
             ReadReverse => {
-                // like python's negative indexing.
-                let index = u16::try_from(self.cells.len())
-                    .ok()
-                    .and_then(|len| len.checked_sub(1))
-                    .and_then(|len| len.checked_sub(arg))
-                    .ok_or(InvalidCell)?;
-                let val = *self.read(index)?;
-                self.push(val);
+                debug!("ReadReverse with arg: {}", arg);
+                match self.findings.func_defining.as_mut() {
+                    Some(func_info) => {
+                        trace!("Collecting argument for function '{}'", func_info.function_name);
+                        func_info.arg_positions.push(MemorizedIndex::Reverse(arg));
+                        self.push(ValueSpan::inf());
+                    }
+                    None => {
+                        trace!("Not collecting function arguments, performing normal read with reverse indexing.");
+                        // like python's negative indexing.
+                        let index = u16::try_from(self.cells.len())
+                            .ok()
+                            .and_then(|len| len.checked_sub(1))
+                            .and_then(|len| len.checked_sub(arg))
+                            .ok_or(InvalidCell {
+                                instr: self.machine.program_data.get_current()?.clone(),
+                                cell_index: arg,
+                                cells: self.cells.clone(),
+                                prog: self.machine.program_data.get_program().to_vec(),
+                            })?;
+
+                        let val = self.read(index)?;
+
+                        match val {
+                            Some(v) => self.push(v.clone()),
+                            None => {
+                                panic!(
+                                    "We got None, which can only happen when collecting function arguments."
+                                )
+                            }
+                        }
+                    }
+                }
             }
             Pop => {
                 for _ in 0..arg {
@@ -206,37 +488,30 @@ impl<'a> Verifier<'a> {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        if let (Integer(a), Integer(b)) = (a, b) {
+        if let (Some(a), Some(b)) = (a, b) {
+            let a = *a;
+            let b = *b;
             let calculated_value = match instr {
-                Add => a.checked_add(*b).ok_or(ArithmeticOverflow)?,
-                Mul => a.checked_mul(*b).ok_or(ArithmeticOverflow)?,
-                Div => a.checked_div(*b).ok_or(DivisionByZero)?,
-                And => a & b,
-                Or => a | b,
-                Xor => a ^ b,
-                ShiftLeftLogical => a << b,
-                ShiftRightLogical => ((*a as u64) >> b) as i64,
-                ShiftRightArithmetic => a >> b,
-                SetEqual => from_bool(a == b),
-                SetNotEqual => from_bool(a != b),
-                SetLessThan => from_bool(a < b),
-                SetLessThanOrEqual => from_bool(a <= b),
-                SetGreaterThan => from_bool(a > b),
-                SetGreaterThanOrEqual => from_bool(a >= b),
+                Add => a + b,
+                Mul => a * b,
+                Div => {
+                    if b == ValueSpan::new(0, 0) {
+                        return Err(DivisionByZero);
+                    }
+                    a / b
+                }
+                And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
+                    ValueSpan::inf()
+                }
+                SetEqual
+                | SetNotEqual
+                | SetLessThan
+                | SetLessThanOrEqual
+                | SetGreaterThan
+                | SetGreaterThanOrEqual => ValueSpan::new(0, 1),
             };
 
-            self.push(Integer(calculated_value));
-        } else {
-            return Err(TypeError {
-                expected: Integer(0),
-                found: if let Integer(_) = a {
-                    b.clone()
-                } else if let Integer(_) = b {
-                    a.clone()
-                } else {
-                    panic!("Both operands should be integers, but neither is.")
-                },
-            });
+            self.push(calculated_value);
         }
 
         Ok(())
@@ -246,6 +521,7 @@ impl<'a> Verifier<'a> {
         let mut block_verifier = self.sub_machine(instrs);
         block_verifier.base_stack.push(self.base);
         block_verifier.base = self.cells.len();
+        block_verifier.findings = self.findings.clone(); // PERF: clone()
 
         let block_result = block_verifier.verify()?;
 
@@ -265,9 +541,20 @@ impl<'a> Verifier<'a> {
         match instr {
             FunctionDefine => {
                 self.machine.common_function_logic(arg)?;
+
+                // Shadowing will not be permitted, as compilers could generate function names
+                // easily and we can avoid complexity and ambiguity this way.
+                let current_instr = &self.machine.program_data.get_current()?.clone();
+                let mut function_verifier = self.sub_machine(std::slice::from_ref(current_instr));
+                function_verifier.findings.func_defining = Some(FunctionDefiningInfo {
+                    function_name: arg.to_owned(),
+                    arg_positions: Vec::new(),
+                });
+                function_verifier.verify()?;
             }
             FunctionCall => {
                 self.machine.function_get(&arg)?;
+                self.push(ValueSpan::inf());
 
                 // TODO: Check for infinite recursion.
             }
@@ -279,35 +566,13 @@ impl<'a> Verifier<'a> {
     fn verify_intrinsic(
         &mut self,
         instr: &IntrinsicOp,
-        arg: CellIndex,
+        _arg: CellIndex,
     ) -> Result<(), VerifierError> {
         use IntrinsicOp::*;
 
         match instr {
-            Print => {
-                let val = self.read(arg)?;
-                print!("{val}");
-            }
-            Input => {
-                let mut input: String = String::new();
-                std::io::stdin()
-                    .read_line(&mut input)
-                    .expect("Failed to read input");
-
-                // TODO: Make explicit instructions for Integer and String input.
-                let result = input.trim().parse::<i64>();
-
-                match result {
-                    Ok(val) => self.push(Integer(val)),
-                    Err(e) => {
-                        // TODO: Make explicit instructions for Integer and String input.
-                        warn!(
-                            "Failed to parse input as integer: {e}. Pushing input as string instead."
-                        );
-                        input.chars().for_each(|c| self.push(Text(c)))
-                    }
-                }
-            }
+            Print => todo!(),
+            Input => todo!(),
             FileRead => todo!(),
             FileWrite => todo!(),
         }

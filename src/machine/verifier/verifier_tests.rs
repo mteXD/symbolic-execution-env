@@ -1,7 +1,7 @@
 use crate::{
     add_instr,
     instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
-    machine::verifier::{Verifier, VerifierError},
+    machine::verifier::{ValueSpan, Verifier, VerifierError},
     make_block,
 };
 
@@ -19,7 +19,11 @@ macro_rules! assert_last_err {
     ($prog:expr, $err:pat) => {
         let mut verifier = Verifier::new(&$prog);
         let result = verifier.verify();
-        assert!(matches!(result, Err($err)));
+        if let Err($err) = result {
+            // Test passed
+        } else {
+            panic!("Expected error {:?}, but got {:?}", stringify!($err), result);
+        }
     };
 }
 
@@ -214,6 +218,26 @@ fn math_with_read() {
     assert_last!(program);
 }
 
+#[test]
+#[ignore]
+fn conditional() {
+    use crate::types::Cell;
+
+    let program = vec![
+        add_instr!(Push, 10),
+        add_instr!(Push, 20),
+        add_instr!(SetGreaterThan, 0, 1), // 10 > 20 = 0
+        add_instr!(Cond),                 // Skip block
+        add_instr!(Push, 999),            // This should be skipped
+        add_instr!(Push, 42),             // This should be the last instruction executed
+    ];
+    let mut verifier = Verifier::new(&program);
+    let result = verifier.verify();
+    assert!(result.is_ok(), "Verification failed: {:?}", result.err());
+    let result = result.unwrap();
+    assert_eq!(result, Some(&ValueSpan { min: 42, max: 42 }));
+}
+
 mod blocks {
     use super::*;
 
@@ -337,6 +361,16 @@ mod blocks {
     }
 }
 
+mod value_span {
+    use super::*;
+    use crate::machine::verifier::ValueSpan;
+
+    #[test]
+    fn bitand() {
+        let vs1 = ValueSpan { min: 0, max: 0b1111 };
+    }
+}
+
 mod functions {
     use crate::{machine::CoreError, types::FunctionDataError};
 
@@ -437,9 +471,7 @@ mod intrinsics {
     use super::*;
 
     #[test]
-    fn test_print() {
-        
-    }
+    fn test_print() {}
 }
 
 mod programs {
@@ -537,6 +569,7 @@ mod programs {
             add_instr!(fun FunctionCall, String::from("fibonacci")),
         ];
 
+        // panic!("Termination.");
         assert_last!(program);
     }
 }
