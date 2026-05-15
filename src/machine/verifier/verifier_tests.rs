@@ -361,16 +361,6 @@ mod blocks {
     }
 }
 
-mod value_span {
-    use super::*;
-    use crate::machine::verifier::ValueSpan;
-
-    #[test]
-    fn bitand() {
-        let vs1 = ValueSpan { min: 0, max: 0b1111 };
-    }
-}
-
 mod functions {
     use crate::{machine::CoreError, types::FunctionDataError};
 

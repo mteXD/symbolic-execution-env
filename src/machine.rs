@@ -6,7 +6,7 @@ use crate::{
         FunctionOp,
         Instruction::{self},
     },
-    types::{FunctionData, FunctionDataError, Input, Output, ProgramData, ProgramDataError},
+    types::{FdEntry, FunctionData, FunctionDataError, Input, Output, ProgramData, ProgramDataError},
 };
 
 pub mod executor;
@@ -36,7 +36,7 @@ type Result<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
-    function_data: FunctionData,
+    pub function_data: FunctionData,
     pub program_data: ProgramData<'a>,
     pub output: Output,
     pub input: Input,
@@ -56,8 +56,8 @@ impl<'a> CoreMachine<'a> {
         Ok(self.function_data.get(name)?)
     }
 
-    pub fn function_insert(&mut self, name: String, instr: Instruction) -> Result<()> {
-        Ok(self.function_data.insert(name, instr)?)
+    pub fn function_insert(&mut self, name: String, entry: FdEntry) -> Result<()> {
+        Ok(self.function_data.insert(name, entry)?)
     }
 
     pub fn function_insert_current(&mut self, name: String) -> Result<()> {
@@ -65,7 +65,7 @@ impl<'a> CoreMachine<'a> {
 
         debug!("Function '{}' will point to {:?}", name, current);
 
-        self.function_insert(name, current.to_owned()) // PERF: to_owned()
+        self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
     }
 
     pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
@@ -79,7 +79,6 @@ impl<'a> CoreMachine<'a> {
 
     pub fn common_function_logic(&mut self, arg: &str) -> Result<()> {
         let mut definitions = Vec::new();
-        definitions.push(arg);
 
         while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
             debug!("Found consecutive definition: '{}'", name);
@@ -102,8 +101,10 @@ impl<'a> CoreMachine<'a> {
             }
         }
 
+        self.function_insert_current(arg.to_owned())?;
+
         for name in definitions {
-            self.function_insert_current(name.to_owned())?;
+            self.function_insert(name.to_owned(), FdEntry::Str(arg.to_owned()))?; // PERF: to_owned()
         }
 
         Ok(())

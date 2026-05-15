@@ -1,13 +1,13 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Formatter},
+    io::{self, Read, Write},
     ops::{Add, AddAssign, Sub},
     rc::Rc,
-    cell::RefCell,
-    io::{self, Read, Write},
 };
 
-use log::{error};
+use log::error;
 
 use crate::instruction::Instruction;
 
@@ -80,10 +80,16 @@ impl TryInto<usize> for Address {
             Address::Null => {
                 error!("Address struct Null to usize");
                 Err(InvalidPC { pc: self })
-            },
+            }
             Address::Value(v) => Ok(v),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum FdEntry {
+    Str(String),
+    Inst(Instruction),
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +101,7 @@ use FunctionDataError::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct FunctionData {
-    function_table: HashMap<String, Instruction>,
+    pub function_table: HashMap<String, FdEntry>,
 }
 
 impl FunctionData {
@@ -103,20 +109,44 @@ impl FunctionData {
         FunctionData::default()
     }
 
-    pub fn insert(&mut self, name: String, instr: Instruction) -> Result<(), FunctionDataError> {
+    pub fn insert(&mut self, name: String, entry: FdEntry) -> Result<(), FunctionDataError> {
         if self.function_table.contains_key(&name) {
             return Err(FunctionRedefinition(name));
         }
 
-        self.function_table.insert(name, instr);
+        self.function_table.insert(name, entry);
 
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Result<&Instruction, FunctionDataError> {
+    fn internal_get(&self, name: &str) -> Result<&FdEntry, FunctionDataError> {
         self.function_table
             .get(name)
             .ok_or(FunctionUndefined(name.to_owned()))
+    }
+
+    pub fn get(&self, name: &str) -> Result<&Instruction, FunctionDataError> {
+        let mut maybe_instr = self.internal_get(name)?;
+        let max_defs = self.function_table.len();
+        let mut counter = 0;
+
+        let instr: &Instruction = {
+            loop {
+                match maybe_instr {
+                    FdEntry::Str(s) => maybe_instr = self.internal_get(s)?,
+                    FdEntry::Inst(i) => break i,
+                }
+                
+                counter += 1;
+
+                if counter > max_defs {
+                    error!("Cyclic function definition detected for '{}'", name);
+                    return Err(FunctionUndefined(name.to_owned()));
+                }
+            }
+        };
+
+        Ok(instr)
     }
 
     pub fn contains_key(&self, name: &str) -> bool {
@@ -126,9 +156,7 @@ impl FunctionData {
 
 #[derive(Debug, Clone)]
 pub enum ProgramDataError {
-    InvalidPC {
-        pc: Address,
-    },
+    InvalidPC { pc: Address },
 }
 use ProgramDataError::*;
 
@@ -140,7 +168,10 @@ pub struct ProgramData<'a> {
 
 impl<'a> ProgramData<'a> {
     pub fn new(program: &'a [Instruction]) -> Self {
-        Self { program, pc: Address::Null }
+        Self {
+            program,
+            pc: Address::Null,
+        }
     }
 
     pub fn reset(&mut self) {
@@ -152,7 +183,9 @@ impl<'a> ProgramData<'a> {
     }
 
     pub fn get_at(&self, pc: Address) -> Result<&Instruction, ProgramDataError> {
-        self.program.get::<usize>(pc.try_into()?).ok_or(InvalidPC { pc })
+        self.program
+            .get::<usize>(pc.try_into()?)
+            .ok_or(InvalidPC { pc })
     }
 
     pub fn get_current(&self) -> Result<&Instruction, ProgramDataError> {

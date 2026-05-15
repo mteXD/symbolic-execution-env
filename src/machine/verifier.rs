@@ -1,4 +1,7 @@
-use std::ops::{self, Add, BitAnd, Div, Mul};
+use std::{
+    collections::HashMap,
+    ops::{self, Add, BitAnd, Div, Mul},
+};
 
 use crate::{
     instruction::{
@@ -8,7 +11,7 @@ use crate::{
         CoreError::{self},
         CoreMachine,
     },
-    types::{Address, Cell, CellIndex, Immediate, ProgramDataError},
+    types::{Address, Cell, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError},
 };
 use Cell::*;
 use VerifierError::*;
@@ -34,6 +37,10 @@ pub enum VerifierError {
         required: CellIndex,
         available: usize,
     },
+    NotEnoughArguments {
+        required: CellIndex,
+        available: usize,
+    },
     StackUnderflow,
     UnsafeCondPlacement,
     DebugError(&'static str),
@@ -47,6 +54,12 @@ impl From<CoreError> for VerifierError {
 
 impl From<ProgramDataError> for VerifierError {
     fn from(e: ProgramDataError) -> Self {
+        VerifierError::Core(e.into())
+    }
+}
+
+impl From<FunctionDataError> for VerifierError {
+    fn from(e: FunctionDataError) -> Self {
         VerifierError::Core(e.into())
     }
 }
@@ -73,6 +86,7 @@ impl FunctionDefiningInfo {
 struct Findings {
     values_after_rebase: Option<usize>,
     func_defining: Option<FunctionDefiningInfo>,
+    func_data: HashMap<String, FunctionDefiningInfo>,
     processed_instructions: usize,
 }
 
@@ -80,6 +94,12 @@ impl Findings {
     #[inline]
     fn is_collecting_func_args(&self) -> bool {
         self.func_defining.is_some() && self.values_after_rebase.is_none()
+    }
+
+    fn func_required_arguments(&self, func_name: &str) -> Option<usize> {
+        self.func_data
+            .get(func_name)
+            .map(|info| info.required_arguments())
     }
 }
 
@@ -432,12 +452,17 @@ impl<'a> Verifier<'a> {
                 debug!("ReadReverse with arg: {}", arg);
                 match self.findings.func_defining.as_mut() {
                     Some(func_info) => {
-                        trace!("Collecting argument for function '{}'", func_info.function_name);
+                        trace!(
+                            "Collecting argument for function '{}'",
+                            func_info.function_name
+                        );
                         func_info.arg_positions.push(MemorizedIndex::Reverse(arg));
                         self.push(ValueSpan::inf());
                     }
                     None => {
-                        trace!("Not collecting function arguments, performing normal read with reverse indexing.");
+                        trace!(
+                            "Not collecting function arguments, performing normal read with reverse indexing."
+                        );
                         // like python's negative indexing.
                         let index = u16::try_from(self.cells.len())
                             .ok()
@@ -536,6 +561,7 @@ impl<'a> Verifier<'a> {
     }
 
     fn verify_function(&mut self, instr: &FunctionOp, arg: &str) -> Result<(), VerifierError> {
+        use FunctionDataError::FunctionUndefined;
         use FunctionOp::*;
 
         match instr {
@@ -550,10 +576,62 @@ impl<'a> Verifier<'a> {
                     function_name: arg.to_owned(),
                     arg_positions: Vec::new(),
                 });
+                function_verifier.findings.func_data = self.findings.func_data.clone(); // PERF: clone()
+                function_verifier.findings.func_data.insert(
+                    arg.to_owned(),
+                    FunctionDefiningInfo {
+                        function_name: arg.to_owned(),
+                        arg_positions: Vec::new(),
+                    },
+                );
                 function_verifier.verify()?;
+
+                // PERF: For now, iterate over the whole hashmap and find the keys that have the
+                // current function as the value.
+                for (k, v) in &function_verifier.machine.function_data.function_table {
+                    if let FdEntry::Str(s) = v {
+                        self.findings.func_data.insert(
+                            k.to_owned(),
+                            FunctionDefiningInfo {
+                                function_name: k.to_owned(),
+                                arg_positions: function_verifier
+                                    .findings
+                                    .func_defining
+                                    .as_ref()
+                                    .expect("FunctionDefiningInfo should be set during function verification.")
+                                    .arg_positions
+                                    .clone(), // PERF: clone()
+                            },
+                        );
+                    }
+                }
+
+                self.findings.func_data.insert(
+                    arg.to_owned(),
+                    function_verifier
+                        .findings
+                        .func_defining
+                        .expect("FunctionDefiningInfo should be set during function verification."),
+                );
             }
             FunctionCall => {
                 self.machine.function_get(&arg)?;
+
+                let required_args = self
+                    .findings
+                    .func_required_arguments(arg)
+                    .ok_or(FunctionUndefined(arg.to_owned()))?;
+                let available_args = self.cells.len();
+
+                if available_args < required_args {
+                    return Err(NotEnoughArguments {
+                        required: required_args
+                            .try_into()
+                            .expect("Required arguments should fit into CellIndex"),
+                        available: available_args,
+                    });
+                }
+
                 self.push(ValueSpan::inf());
 
                 // TODO: Check for infinite recursion.
