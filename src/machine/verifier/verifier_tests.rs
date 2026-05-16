@@ -1,8 +1,10 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::{
     add_instr,
-    instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
+    instruction::{BinaryOp, FunctionOp, Instruction::*, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm},
     machine::verifier::{ValueSpan, Verifier, VerifierError},
-    make_block,
+    make_block, types::{self, Immediate},
 };
 
 use VerifierError::*;
@@ -22,7 +24,11 @@ macro_rules! assert_last_err {
         if let Err($err) = result {
             // Test passed
         } else {
-            panic!("Expected error {:?}, but got {:?}", stringify!($err), result);
+            panic!(
+                "Expected error {:?}, but got {:?}",
+                stringify!($err),
+                result
+            );
         }
     };
 }
@@ -219,10 +225,7 @@ fn math_with_read() {
 }
 
 #[test]
-#[ignore]
 fn conditional() {
-    use crate::types::Cell;
-
     let program = vec![
         add_instr!(Push, 10),
         add_instr!(Push, 20),
@@ -236,6 +239,31 @@ fn conditional() {
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     let result = result.unwrap();
     assert_eq!(result, Some(&ValueSpan { min: 42, max: 42 }));
+}
+
+#[test]
+fn conditional_problem() {
+    let program = vec![
+        add_instr!(io Input, 0),
+        add_instr!(Push, 20),
+        add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
+        add_instr!(Cond),                 // Skip block
+        add_instr!(Push, 999),            // This should be skipped
+        add_instr!(Push, 42),             // This should be the last instruction executed
+        add_instr!(Add, 3, 4),
+    ];
+    let mut verifier = Verifier::new(&program);
+
+    let new_input: Rc<RefCell<Vec<Immediate>>> = Rc::new(RefCell::new(vec![10]));
+    verifier.redirect_input(types::Input::Buffer(new_input.clone()));
+
+    let result = verifier.verify();
+    // assert!(result.is_ok(), "Verification failed: {:?}", result.err());
+    // let result = result.unwrap();
+    match result {
+        Err(VerifierError::CondInvalidCell { instr: _, cell_index: _, cells: _, prog: _, location: _, }) => {}
+        _ => panic!("Expected CondInvalidCell error, but got {:?}", result),
+    }
 }
 
 mod blocks {
@@ -397,6 +425,101 @@ mod functions {
     }
 
     #[test]
+    fn sequential_defs_loop() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("push2_1")),
+            add_instr!(fun FunctionDefine, String::from("push2_2")),
+            add_instr!(fun FunctionDefine, String::from("push2_3")),
+            add_instr!(fun FunctionCall, String::from("push2_1")),
+            add_instr!(fun FunctionCall, String::from("push2_1")),
+        ];
+        assert_last!(program);
+    }
+
+    #[test]
+    fn smaller_recursion() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("countdown")),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(Rebase),
+                add_instr!(Push, -1),
+                add_instr!(Push, 0),
+                add_instr!(Add, 0, 1),
+                add_instr!(SetGreaterThan, 3, 2), // Add > 0
+                add_instr!(Cond),
+                add_instr!(fun FunctionCall, String::from("countdown"))
+            ),
+        ];
+        assert_last!(program);
+    }
+
+    #[test]
+    fn small_recursion() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("countdown")),
+            make_block!(
+                add_instr!(R ReadReverse, 0),     // Read the argument n
+                add_instr!(Rebase),               // Rebase to make n the only argument
+                add_instr!(Push, 0),              // This is the bound
+                add_instr!(SetGreaterThan, 0, 1), // 0 -> arg, 1 -> bound.
+                add_instr!(Cond),                 // if n <= 0, skip to return
+                make_block!(
+                    add_instr!(Push, -1),  // Push 1 as the base case result
+                    add_instr!(Add, 0, 2), // n - 1
+                    add_instr!(fun FunctionCall, String::from("countdown")) // else, calculate countdown(n - 1)
+                )
+            ),
+            add_instr!(Push, 5),
+            add_instr!(fun FunctionCall, String::from("countdown")),
+        ];
+
+        assert_last!(program);
+    }
+
+    #[test]
+    fn small_recursion_bad() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("countdown")),
+            make_block!(
+                add_instr!(R ReadReverse, 0),     // Read the argument n
+                add_instr!(Rebase),               // Rebase to make n the only argument
+                add_instr!(Push, 0),              // This is the bound
+                add_instr!(SetGreaterThan, 0, 1), // 0 -> critical value, 1 -> bound.
+                add_instr!(Cond),                 // if n <= 0, skip to return
+                make_block!(
+                    // Here, we forget to decrease the critical value.
+                    add_instr!(fun FunctionCall, String::from("countdown")) // else, calculate countdown(n - 1)
+                )
+            ),
+            add_instr!(Push, 5),
+            add_instr!(fun FunctionCall, String::from("countdown")),
+        ];
+
+        assert_last_err!(
+            program,
+            InfiniteRecursion {
+                function_name: "countdown"
+            }
+        );
+    }
+
+    #[test]
+    fn recursion_nested_definition() {
+        let program = vec![
+            add_instr!(fun FunctionDefine, String::from("outer")),
+            make_block!(
+                add_instr!(fun FunctionDefine, String::from("inner")),
+                make_block!(add_instr!(Push, 42)),
+                add_instr!(fun FunctionCall, String::from("outer"))
+            ),
+            add_instr!(fun FunctionCall, String::from("outer")),
+        ];
+
+        assert_last!(program);
+    }
+
+    #[test]
     fn test_nested_functions() {
         let program = vec![
             add_instr!(fun FunctionDefine, String::from("outer")),
@@ -459,9 +582,27 @@ mod functions {
 
 mod intrinsics {
     use super::*;
+    use crate::instruction::{
+        // self,
+        IntrinsicOp,
+    };
 
     #[test]
-    fn test_print() {}
+    #[ignore]
+    fn print() {
+        todo!()
+    }
+
+    #[test]
+    fn input() {
+        let program = vec![add_instr!(io Input, 0)];
+
+        let mut verifier = Verifier::new(&program);
+        let result = verifier.verify();
+        assert!(result.is_ok(), "Verification failed: {:?}", result.err());
+        let result = result.unwrap();
+        assert_eq!(result, Some(&ValueSpan::inf()));
+    }
 }
 
 mod programs {

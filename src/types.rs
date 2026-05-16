@@ -136,12 +136,12 @@ impl FunctionData {
                     FdEntry::Str(s) => maybe_instr = self.internal_get(s)?,
                     FdEntry::Inst(i) => break i,
                 }
-                
+
                 counter += 1;
 
                 if counter > max_defs {
-                    error!("Cyclic function definition detected for '{}'", name);
-                    return Err(FunctionUndefined(name.to_owned()));
+                    panic!("Cyclic function definition detected for '{}'", name);
+                    // return Err(FunctionUndefined(name.to_owned()));
                 }
             }
         };
@@ -211,22 +211,24 @@ impl<'a> Iterator for ProgramData<'a> {
 pub enum Output {
     Stdout,
     File(String),
-    Buffer(Rc<RefCell<Vec<u8>>>),
+    Buffer(Rc<RefCell<Vec<Immediate>>>),
 }
 
 #[derive(Debug, Clone)]
 pub enum Input {
     Stdin,
     File(String),
-    Buffer(Rc<RefCell<Vec<u8>>>),
+    Buffer(Rc<RefCell<Vec<Immediate>>>),
 }
 
 impl Output {
-    pub fn write(&mut self, data: &[u8]) {
+    pub fn write(&mut self, data: &[Immediate]) {
+        let vec = data.iter().map(|byte| *byte as u8).collect::<Vec<u8>>();
+
         match self {
             Output::Stdout => {
                 let mut out = io::stdout();
-                let _ = out.write_all(data);
+                let _ = out.write_all(vec.as_slice());
             }
             Output::File(path) => {
                 use std::fs::OpenOptions;
@@ -237,7 +239,7 @@ impl Output {
                     .open(path)
                     .unwrap();
 
-                let _ = file.write_all(data);
+                let _ = file.write_all(vec.as_slice());
             }
             Output::Buffer(buf) => {
                 let mut buf = buf.borrow_mut();
@@ -248,14 +250,19 @@ impl Output {
 }
 
 impl Input {
-    pub fn read_all(&mut self) -> Vec<u8> {
+    pub fn read_all(&mut self) -> Vec<Immediate> {
         match self {
             Input::Stdin => {
-                let mut buf = Vec::new();
+                let mut buf: Vec<u8> = Vec::new();
                 io::stdin().read_to_end(&mut buf).unwrap();
-                buf
+
+                buf.iter().map(|byte| *byte as Immediate).collect()
             }
-            Input::File(path) => std::fs::read(path).unwrap(),
+            Input::File(path) => std::fs::read(path)
+                .unwrap()
+                .iter()
+                .map(|byte| *byte as Immediate)
+                .collect(),
             Input::Buffer(data) => {
                 let mut buf = Vec::new();
                 data.borrow().iter().for_each(|byte| buf.push(*byte));

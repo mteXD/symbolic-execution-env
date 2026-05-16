@@ -4,7 +4,7 @@ use crate::{
         BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::{CoreError, CoreMachine},
-    types::{Cell, CellIndex, Immediate},
+    types::{self, Cell, CellIndex, Immediate},
 };
 use Cell::*;
 use ExecutorError::*;
@@ -92,6 +92,14 @@ impl<'a> Executor<'a> {
         }
 
         Ok(self.cells.last())
+    }
+
+    pub fn redirect_input(&mut self, new_input: types::Input) {
+        self.machine.input = new_input;
+    }
+
+    pub fn redirect_output(&mut self, new_output: types::Output) {
+        self.machine.output = new_output;
     }
 
     fn eval_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
@@ -269,6 +277,7 @@ impl<'a> Executor<'a> {
 
     fn eval_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
         use IntrinsicOp::*;
+        use types::Input;
 
         match instr {
             Print => {
@@ -276,22 +285,33 @@ impl<'a> Executor<'a> {
                 print!("{val}");
             }
             Input => {
-                let mut input: String = String::new();
-                std::io::stdin()
-                    .read_line(&mut input)
-                    .expect("Failed to read input");
+                match &self.machine.input {
+                    Input::Stdin => {
+                        let mut input: String = String::new();
+                        std::io::stdin()
+                            .read_line(&mut input)
+                            .expect("Failed to read input");
 
-                // TODO: Make explicit instructions for Integer and String input.
-                let result = input.trim().parse::<i64>();
-
-                match result {
-                    Ok(val) => self.push(Integer(val)),
-                    Err(e) => {
                         // TODO: Make explicit instructions for Integer and String input.
-                        warn!(
-                            "Failed to parse input as integer: {e}. Pushing input as string instead."
-                        );
-                        input.chars().for_each(|c| self.push(Text(c)))
+                        let result = input.trim().parse::<i64>();
+
+                        match result {
+                            Ok(val) => self.push(Integer(val)),
+                            Err(e) => {
+                                todo!("For now, invalid input is a fatal error: {e}");
+                            }
+                        }
+                    }
+                    Input::File(_) => todo!(),
+                    Input::Buffer(ref_cell) => {
+                        let new_val = ref_cell
+                            .borrow_mut()
+                            .pop()
+                            .expect("Not enough input in buffer")
+                            .clone();
+                        self.push(Cell::Integer(
+                            new_val.try_into().expect("Couldn't transform u8 into i64?"),
+                        ));
                     }
                 }
             }

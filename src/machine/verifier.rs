@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ops::{self, Add, BitAnd, Div, Mul},
+    u128,
 };
 
 use crate::{
@@ -11,11 +12,13 @@ use crate::{
         CoreError::{self},
         CoreMachine,
     },
-    types::{Address, Cell, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError},
+    types::{
+        self, Address, Cell, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError,
+    },
 };
 use Cell::*;
 use VerifierError::*;
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 
 #[derive(Debug, Clone)]
 pub enum VerifierError {
@@ -26,6 +29,7 @@ pub enum VerifierError {
         cell_index: CellIndex,
         cells: Vec<ValueSpan>,
         prog: Vec<Instruction>,
+        location: &'static str,
     },
     ArithmeticOverflow,
     DivisionByZero,
@@ -44,6 +48,16 @@ pub enum VerifierError {
     StackUnderflow,
     UnsafeCondPlacement,
     DebugError(&'static str),
+    InfiniteRecursion {
+        function_name: &'static str,
+    },
+    CondInvalidCell {
+        instr: Instruction,
+        cell_index: CellIndex,
+        cells: Vec<ValueSpan>,
+        prog: Vec<Instruction>,
+        location: &'static str,
+    },
 }
 
 impl From<CoreError> for VerifierError {
@@ -64,45 +78,7 @@ impl From<FunctionDataError> for VerifierError {
     }
 }
 
-#[derive(Debug, Clone)]
-enum MemorizedIndex {
-    Normal(CellIndex),
-    Reverse(CellIndex),
-}
-
-#[derive(Debug, Clone, Default)]
-struct FunctionDefiningInfo {
-    function_name: String,
-    arg_positions: Vec<MemorizedIndex>,
-}
-
-impl FunctionDefiningInfo {
-    fn required_arguments(&self) -> usize {
-        self.arg_positions.len()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct Findings {
-    values_after_rebase: Option<usize>,
-    func_defining: Option<FunctionDefiningInfo>,
-    func_data: HashMap<String, FunctionDefiningInfo>,
-    processed_instructions: usize,
-}
-
-impl Findings {
-    #[inline]
-    fn is_collecting_func_args(&self) -> bool {
-        self.func_defining.is_some() && self.values_after_rebase.is_none()
-    }
-
-    fn func_required_arguments(&self, func_name: &str) -> Option<usize> {
-        self.func_data
-            .get(func_name)
-            .map(|info| info.required_arguments())
-    }
-}
-
+#[derive(Debug, Clone, Copy)]
 enum Comparator {
     LessThan,
     Equal,
@@ -112,13 +88,15 @@ enum Comparator {
     GreaterThanOrEqual,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ConvergenceInfo {
-    critical_cell_index: CellIndex,
-    critical_cell_value_span: ValueSpan,
-    critical_ref_cell_index: CellIndex,
-    critical_ref_cell_value_span: ValueSpan,
+    critical_cell1_index: CellIndex,
+    critical_cell1_value_span: ValueSpan,
     comparator: Comparator,
+    critical_cell2_index: CellIndex,
+    critical_cell2_value_span: ValueSpan,
     does_converge: bool,
+    keep: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +107,23 @@ pub struct ValueSpan {
 
 impl ValueSpan {
     fn new(min: Immediate, max: Immediate) -> Self {
+        if min > max {
+            panic!(
+                "ValueSpan cannot have min greater than max. Got min: {}, max: {}",
+                min, max
+            );
+        }
         Self { min, max }
+    }
+
+    fn size(&self) -> u128 {
+        (self.max as u128)
+            .saturating_sub(self.min as u128)
+            .saturating_add(1)
+    }
+
+    fn smaller_than(&self, other: &ValueSpan) -> bool {
+        self.size() < other.size()
     }
 
     fn inf() -> Self {
@@ -137,6 +131,18 @@ impl ValueSpan {
             min: Immediate::MIN,
             max: Immediate::MAX,
         }
+    }
+
+    fn includes_zero(&self) -> bool {
+        self.min <= 0 && self.max >= 0
+    }
+
+    fn disjunct(&self, other: &ValueSpan) -> bool {
+        self.max < other.min || other.max < self.min
+    }
+
+    fn is_single_value(&self) -> bool {
+        self.min == self.max
     }
 }
 
@@ -220,7 +226,56 @@ impl Div<ValueSpan> for ValueSpan {
     }
 }
 
-// #[derive(Clone)]
+#[derive(Debug, Clone)]
+enum MemorizedIndex {
+    Normal(CellIndex),
+    Reverse(CellIndex),
+}
+
+#[derive(Debug, Clone, Default)]
+struct FunctionDefiningInfo {
+    function_name: String,
+    arg_positions: Vec<MemorizedIndex>,
+}
+
+impl FunctionDefiningInfo {
+    fn required_arguments(&self) -> usize {
+        self.arg_positions.len()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Findings {
+    values_after_rebase: Option<usize>,
+    func_defining: Option<FunctionDefiningInfo>,
+    func_data: HashMap<String, FunctionDefiningInfo>,
+    processed_instructions: usize,
+    is_conditional: bool,
+    recursion_info: Vec<ConvergenceInfo>,
+    cond_machine_depth: Option<usize>,
+}
+
+impl Findings {
+    #[inline]
+    fn is_collecting_func_args(&self) -> bool {
+        self.func_defining.is_some() && self.values_after_rebase.is_none()
+    }
+
+    fn inc_cond_depth(&mut self) {
+        self.cond_machine_depth = match self.cond_machine_depth {
+            Some(depth) => Some(depth + 1),
+            None => Some(0),
+        };
+    }
+
+    fn func_required_arguments(&self, func_name: &str) -> Option<usize> {
+        self.func_data
+            .get(func_name)
+            .map(|info| info.required_arguments())
+    }
+}
+
+#[derive(Clone)]
 pub struct Verifier<'a> {
     machine: CoreMachine<'a>,
     cells: Vec<ValueSpan>,
@@ -238,6 +293,21 @@ impl<'a> Verifier<'a> {
             base_stack: Vec::new(),
             findings: Findings::default(),
         }
+    }
+
+    fn new_cond_machine(&self) -> Verifier<'_> {
+        let mut cond_machine = self.clone();
+        cond_machine.findings.is_conditional = true;
+        cond_machine.findings.inc_cond_depth();
+        cond_machine
+    }
+
+    pub fn redirect_input(&mut self, new_input: types::Input) {
+        self.machine.input = new_input;
+    }
+
+    pub fn redirect_output(&mut self, new_output: types::Output) {
+        self.machine.output = new_output;
     }
 
     pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
@@ -287,8 +357,28 @@ impl<'a> Verifier<'a> {
                 cell_index: reg,
                 cells: self.cells.clone(),
                 prog: self.machine.program_data.get_program().to_vec(),
+                location: "Verifier::read, get()",
             })
             .map(Some)
+    }
+
+    fn get_prev_instr(&self) -> Result<&Instruction, VerifierError> {
+        let pc = match self.machine.program_data.get_pc() {
+            Address::Null => {
+                panic!("PC cannot be null here, program already started executing.")
+            }
+            Address::Value(0) => {
+                return Err(VerifierError::NotEnoughCells {
+                    required: 1,
+                    available: 0,
+                });
+            }
+            Address::Value(v) => v - 1,
+        };
+        self.machine
+            .program_data
+            .get_at(Address::Value(pc))
+            .map_err(Into::into)
     }
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
@@ -306,6 +396,32 @@ impl<'a> Verifier<'a> {
         match instr {
             Block(_) => {}
             _ => debug!("Verifying instruction: {:#?}", instr),
+        }
+
+        if self.findings.is_conditional {
+            let mut cond_machine = self.new_cond_machine();
+            let res = cond_machine.verify();
+            match res {
+                Err(InvalidCell {
+                    instr,
+                    cell_index,
+                    cells,
+                    prog,
+                    location,
+                }) => {
+                    return Err(CondInvalidCell {
+                        instr,
+                        cell_index,
+                        cells,
+                        prog,
+                        location,
+                    });
+                }
+                Err(e) => return Err(e),
+                Ok(_) => (),
+            }
+
+            self.findings.is_conditional = false;
         }
 
         match instr {
@@ -339,46 +455,66 @@ impl<'a> Verifier<'a> {
             Cond => {
                 use BinaryOp::*;
                 use Comparator::*;
-                use Instruction::AluBinary;
+                use Instruction::{AluBinary, AluUnaryImm};
 
                 /* First, check if the previous instr was a comparison instr.
-                 * If not, warn that this is not really safe.
-                 *
-                 *  next,
-                 */
+                If not, warn that this is not really safe. */
 
                 self.cells.pop().ok_or(StackUnderflow)?;
 
-                let pc = match self.machine.program_data.get_pc() {
-                    Address::Null => {
-                        panic!("PC cannot be null here, program already started executing.")
-                    }
-                    Address::Value(0) => {
-                        return Err(VerifierError::NotEnoughCells {
-                            required: 1,
-                            available: 0,
+                let get_val = |r| match self.read(r) {
+                    Ok(Some(vs)) => *vs,
+                    Ok(None) => ValueSpan::inf(),
+                    Err(e) => panic!("Error reading cell during convergence analysis: {:?}", e),
+                };
+
+                let throw_err = || {
+                    error!(
+                        "Condition instruction not preceded by a comparison instruction. This is unsafe."
+                    );
+                    return Err(VerifierError::UnsafeCondPlacement);
+                };
+
+                match self.get_prev_instr()? {
+                    AluBinary(cmp, r1, r2) => {
+                        let comparator = match cmp {
+                            SetNotEqual => NotEqual,
+                            SetLessThan => LessThan,
+                            SetLessThanOrEqual => LessThanOrEqual,
+                            SetGreaterThan => GreaterThan,
+                            SetGreaterThanOrEqual => GreaterThanOrEqual,
+                            _ => return throw_err(),
+                        };
+
+                        self.findings.recursion_info.push(ConvergenceInfo {
+                            critical_cell1_index: *r1,
+                            critical_cell1_value_span: get_val(*r1),
+                            comparator: comparator,
+                            critical_cell2_index: *r2,
+                            critical_cell2_value_span: get_val(*r2),
+                            does_converge: false,
+                            keep: false,
                         });
                     }
-                    Address::Value(v) => v - 1,
-                };
-
-                let i = self.machine.program_data.get_at(Address::Value(pc))?;
-
-                let comp_info = match i {
-                    AluBinary(SetEqual, _, _) => Some(Equal),
-                    AluBinary(SetNotEqual, _, _) => Some(NotEqual),
-                    AluBinary(SetLessThan, _, _) => Some(LessThan),
-                    AluBinary(SetLessThanOrEqual, _, _) => Some(LessThanOrEqual),
-                    AluBinary(SetGreaterThan, _, _) => Some(GreaterThan),
-                    AluBinary(SetGreaterThanOrEqual, _, _) => Some(GreaterThanOrEqual),
+                    AluUnaryImm(UnaryOpImm::Push, x) => {
+                        if *x == 0 {
+                            warn!("Condition will always be false, skipping the next instruction.");
+                        } else {
+                            warn!("Condition will always be true, executing the next instruction.");
+                        }
+                    }
                     _ => {
-                        warn!(
-                            "Condition instruction not preceded by a comparison instruction. This is unsafe."
-                        );
-                        // None
-                        return Err(VerifierError::UnsafeCondPlacement);
+                        return throw_err();
                     }
                 };
+
+                let last = self.cells.last().ok_or(StackUnderflow)?;
+                if last.is_single_value() && last.min == 0 {
+                    self.findings.recursion_info.pop();
+                    self.machine.next();
+                }
+
+                self.findings.is_conditional = true;
             }
         }
 
@@ -473,6 +609,7 @@ impl<'a> Verifier<'a> {
                                 cell_index: arg,
                                 cells: self.cells.clone(),
                                 prog: self.machine.program_data.get_program().to_vec(),
+                                location: "Verifier::verify_alu_unary_cell, calculating reverse index",
                             })?;
 
                         let val = self.read(index)?;
@@ -528,12 +665,68 @@ impl<'a> Verifier<'a> {
                 And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
                     ValueSpan::inf()
                 }
-                SetEqual
-                | SetNotEqual
-                | SetLessThan
-                | SetLessThanOrEqual
-                | SetGreaterThan
-                | SetGreaterThanOrEqual => ValueSpan::new(0, 1),
+                SetEqual => {
+                    if a.is_single_value() && b.is_single_value() {
+                        if a.min == b.min {
+                            ValueSpan::new(1, 1)
+                        } else {
+                            ValueSpan::new(0, 0)
+                        }
+                    } else if a.disjunct(&b) {
+                        ValueSpan::new(0, 0)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
+                SetNotEqual => {
+                    if a.is_single_value() && b.is_single_value() {
+                        if a.min != b.min {
+                            ValueSpan::new(1, 1)
+                        } else {
+                            ValueSpan::new(0, 0)
+                        }
+                    } else if a.disjunct(&b) {
+                        ValueSpan::new(1, 1)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
+                SetLessThan => {
+                    if a.max < b.min {
+                        ValueSpan::new(1, 1)
+                    } else if a.min >= b.max {
+                        ValueSpan::new(0, 0)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
+                SetLessThanOrEqual => {
+                    if a.max <= b.min {
+                        ValueSpan::new(1, 1)
+                    } else if a.min > b.max {
+                        ValueSpan::new(0, 0)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
+                SetGreaterThan => {
+                    if a.min > b.max {
+                        ValueSpan::new(1, 1)
+                    } else if a.max <= b.min {
+                        ValueSpan::new(0, 0)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
+                SetGreaterThanOrEqual => {
+                    if a.min >= b.max {
+                        ValueSpan::new(1, 1)
+                    } else if a.max < b.min {
+                        ValueSpan::new(0, 0)
+                    } else {
+                        ValueSpan::new(0, 1)
+                    }
+                }
             };
 
             self.push(calculated_value);
@@ -590,19 +783,21 @@ impl<'a> Verifier<'a> {
                 // current function as the value.
                 for (k, v) in &function_verifier.machine.function_data.function_table {
                     if let FdEntry::Str(s) = v {
-                        self.findings.func_data.insert(
-                            k.to_owned(),
-                            FunctionDefiningInfo {
-                                function_name: k.to_owned(),
-                                arg_positions: function_verifier
-                                    .findings
-                                    .func_defining
-                                    .as_ref()
-                                    .expect("FunctionDefiningInfo should be set during function verification.")
-                                    .arg_positions
-                                    .clone(), // PERF: clone()
-                            },
-                        );
+                        if s == arg {
+                            self.findings.func_data.insert(
+                                k.to_owned(),
+                                FunctionDefiningInfo {
+                                    function_name: k.to_owned(),
+                                    arg_positions: function_verifier
+                                        .findings
+                                        .func_defining
+                                        .as_ref()
+                                        .expect("FunctionDefiningInfo should be set during function verification.")
+                                        .arg_positions
+                                        .clone(), // PERF: clone()
+                                },
+                            );
+                        }
                     }
                 }
 
@@ -633,8 +828,6 @@ impl<'a> Verifier<'a> {
                 }
 
                 self.push(ValueSpan::inf());
-
-                // TODO: Check for infinite recursion.
             }
         }
 
@@ -650,8 +843,8 @@ impl<'a> Verifier<'a> {
 
         match instr {
             Print => todo!(),
-            Input => todo!(),
-            FileRead => todo!(),
+            Input => self.push(ValueSpan::inf()),
+            FileRead => self.push(ValueSpan::inf()),
             FileWrite => todo!(),
         }
 

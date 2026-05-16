@@ -19,7 +19,7 @@ flamegraph test:
     cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}
 
 [group('dev')]
-test arg="":
+test arg="" $RUST_LOG="trace":
     cargo test {{arg}} --
 
 [group('dev')]
