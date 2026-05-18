@@ -1,17 +1,15 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use virtual_machine::{
-    Instruction::{self, AluUnaryImm, AluBinary},
-    UnaryOpImm::{
-        self
+    add_instr,
+    instruction::{
+        BinaryOp::{self},
+        Instruction::{self, AluBinary, AluUnaryImm},
+        UnaryOpImm::{self},
     },
-    BinaryOp::{
-        self
-    },
-    macros::add_instr,
+    machine::executor::Executor,
 };
 
 fn bench1(c: &mut Criterion) {
-    let mut machine = virtual_machine::Machine::new();
     let program: Vec<Instruction> = std::hint::black_box(
         vec![
             (0..10000)
@@ -27,11 +25,11 @@ fn bench1(c: &mut Criterion) {
         .cloned()
         .collect(),
     );
-    machine.load_program(&program);
+    let mut machine = Executor::new(&program);
 
     c.bench_function("simple addition", |b| {
         b.iter(|| {
-            let _ = machine.run().expect("Failed to run the program");
+            let _ = machine.eval().expect("Failed to run the program");
         })
     });
 }
