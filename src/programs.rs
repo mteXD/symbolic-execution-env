@@ -355,5 +355,10 @@ new_programs! {
 
     input {
        add_instr!(io Input, 0)
+    },
+
+    // This function is a void function.
+    text_print {
+        add_instr!(io Print, 0)
     }
 }

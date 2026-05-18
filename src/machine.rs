@@ -3,10 +3,14 @@ use std::fmt::Debug;
 
 use crate::{
     instruction::{
-        FunctionOp,
+        BinaryOp, FunctionOp,
         Instruction::{self},
+        IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
-    types::{FdEntry, FunctionData, FunctionDataError, Input, Output, ProgramData, ProgramDataError},
+    types::{
+        Cell, CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
+        ProgramData, ProgramDataError,
+    },
 };
 
 pub mod executor;
@@ -32,7 +36,7 @@ impl From<ProgramDataError> for CoreError {
     }
 }
 
-type Result<T> = std::result::Result<T, CoreError>;
+type CoreResult<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<'a> {
@@ -52,15 +56,15 @@ impl<'a> CoreMachine<'a> {
         }
     }
 
-    pub fn function_get(&self, name: &str) -> Result<&Instruction> {
+    pub fn function_get(&self, name: &str) -> CoreResult<&Instruction> {
         Ok(self.function_data.get(name)?)
     }
 
-    pub fn function_insert(&mut self, name: String, entry: FdEntry) -> Result<()> {
+    pub fn function_insert(&mut self, name: String, entry: FdEntry) -> CoreResult<()> {
         Ok(self.function_data.insert(name, entry)?)
     }
 
-    pub fn function_insert_current(&mut self, name: String) -> Result<()> {
+    pub fn function_insert_current(&mut self, name: String) -> CoreResult<()> {
         let current = self.program_data.get_current()?;
 
         debug!("Function '{}' will point to {:?}", name, current);
@@ -77,7 +81,7 @@ impl<'a> CoreMachine<'a> {
         }
     }
 
-    pub fn common_function_logic(&mut self, arg: &str) -> Result<()> {
+    pub fn common_function_logic(&mut self, arg: &str) -> CoreResult<()> {
         let mut definitions = Vec::new();
 
         while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
@@ -117,4 +121,49 @@ impl<'a> Iterator for CoreMachine<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.program_data.next()
     }
+}
+
+trait Evaluate {
+    type Error;
+
+    fn evaluate_instruction(&mut self, instr: &Instruction) -> Result<(), Self::Error> {
+        use Instruction::*;
+
+        match instr {
+            AluNullary(instr) => self.evaluate_alu_nullary(instr),
+            AluUnaryImm(instr, imm) => self.evaluate_alu_unary_imm(instr, *imm),
+            AluUnaryCell(instr, cell) => self.evaluate_alu_unary_cell(instr, *cell),
+            AluBinary(instr, arg1, arg2) => self.evaluate_alu_binary(instr, *arg1, *arg2),
+            Block(instrs) => self.evaluate_block(instrs),
+            AluFunction(instr, fun) => self.evaluate_function(instr, fun),
+            AluIntrinsic(instr, arg) => self.evaluate_intrinsic(instr, *arg),
+        }?;
+
+        Ok(())
+    }
+
+    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error>;
+    fn evaluate_alu_unary_imm(
+        &mut self,
+        instr: &UnaryOpImm,
+        arg: Immediate,
+    ) -> Result<(), Self::Error>;
+    fn evaluate_alu_unary_cell(
+        &mut self,
+        instr: &UnaryOpCell,
+        arg: CellIndex,
+    ) -> Result<(), Self::Error>;
+    fn evaluate_alu_binary(
+        &mut self,
+        instr: &BinaryOp,
+        arg1: CellIndex,
+        arg2: CellIndex,
+    ) -> Result<(), Self::Error>;
+    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<(), Self::Error>;
+    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<(), Self::Error>;
+    fn evaluate_intrinsic(
+        &mut self,
+        instr: &IntrinsicOp,
+        arg: CellIndex,
+    ) -> Result<(), Self::Error>;
 }

@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     ops::{self, Add, BitAnd, Div, Mul},
-    u128,
 };
 
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
     },
     machine::{
         CoreError::{self},
-        CoreMachine,
+        CoreMachine, Evaluate,
     },
     types::{
         self, Address, Cell, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError,
@@ -382,62 +381,52 @@ impl<'a> Verifier<'a> {
     }
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
+        use Instruction::Block;
+
         while let Some(instr) = self.machine.next() {
-            self.verify_instruction(instr)?;
-            self.findings.processed_instructions += 1;
-        }
+            match instr {
+                Block(_) => {}
+                _ => debug!("Verifying instruction: {:#?}", instr),
+            }
 
-        Ok(self.cells.last())
-    }
-
-    fn verify_instruction(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
-        use Instruction::*;
-
-        match instr {
-            Block(_) => {}
-            _ => debug!("Verifying instruction: {:#?}", instr),
-        }
-
-        if self.findings.is_conditional {
-            let mut cond_machine = self.new_cond_machine();
-            let res = cond_machine.verify();
-            match res {
-                Err(InvalidCell {
-                    instr,
-                    cell_index,
-                    cells,
-                    prog,
-                    location,
-                }) => {
-                    return Err(CondInvalidCell {
+            if self.findings.is_conditional {
+                let mut cond_machine = self.new_cond_machine();
+                let res = cond_machine.verify();
+                match res {
+                    Err(InvalidCell {
                         instr,
                         cell_index,
                         cells,
                         prog,
                         location,
-                    });
+                    }) => {
+                        return Err(CondInvalidCell {
+                            instr,
+                            cell_index,
+                            cells,
+                            prog,
+                            location,
+                        });
+                    }
+                    Err(e) => return Err(e),
+                    Ok(_) => (),
                 }
-                Err(e) => return Err(e),
-                Ok(_) => (),
+
+                self.findings.is_conditional = false;
             }
 
-            self.findings.is_conditional = false;
+            self.evaluate_instruction(instr)?;
+            self.findings.processed_instructions += 1;
         }
 
-        match instr {
-            AluNullary(instr) => self.verify_alu_nullary(instr),
-            AluUnaryImm(instr, imm) => self.verify_alu_unary_imm(instr, *imm),
-            AluUnaryCell(instr, cell) => self.verify_alu_unary_cell(instr, *cell),
-            AluBinary(instr, arg1, arg2) => self.verify_alu_binary(instr, *arg1, *arg2),
-            Block(instrs) => self.verify_block(instrs),
-            AluFunction(instr, fun) => self.verify_function(instr, fun),
-            AluIntrinsic(instr, arg) => self.verify_intrinsic(instr, *arg),
-        }?;
-
-        Ok(())
+        Ok(self.cells.last())
     }
+}
 
-    fn verify_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), VerifierError> {
+impl Evaluate for Verifier<'_> {
+    type Error = VerifierError;
+
+    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
         use NullaryOp::*;
 
         match instr {
@@ -521,11 +510,11 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_alu_unary_imm(
+    fn evaluate_alu_unary_imm(
         &mut self,
         instr: &UnaryOpImm,
         arg: Immediate,
-    ) -> Result<(), VerifierError> {
+    ) -> Result<(), Self::Error> {
         use UnaryOpImm::*;
 
         match instr {
@@ -535,11 +524,11 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_alu_unary_cell(
+    fn evaluate_alu_unary_cell(
         &mut self,
         instr: &UnaryOpCell,
         arg: CellIndex,
-    ) -> Result<(), VerifierError> {
+    ) -> Result<(), Self::Error> {
         use UnaryOpCell::*;
 
         match instr {
@@ -635,12 +624,12 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_alu_binary(
+    fn evaluate_alu_binary(
         &mut self,
         instr: &BinaryOp,
         arg1: CellIndex,
         arg2: CellIndex,
-    ) -> Result<(), VerifierError> {
+    ) -> Result<(), Self::Error> {
         use BinaryOp::*;
 
         fn from_bool<T: From<bool>>(value: bool) -> T {
@@ -735,7 +724,7 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_block(&mut self, instrs: &[Instruction]) -> Result<(), VerifierError> {
+    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<(), Self::Error> {
         let mut block_verifier = self.sub_machine(instrs);
         block_verifier.base_stack.push(self.base);
         block_verifier.base = self.cells.len();
@@ -753,27 +742,27 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_function(&mut self, instr: &FunctionOp, arg: &str) -> Result<(), VerifierError> {
+    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<(), Self::Error> {
         use FunctionDataError::FunctionUndefined;
         use FunctionOp::*;
 
         match instr {
             FunctionDefine => {
-                self.machine.common_function_logic(arg)?;
+                self.machine.common_function_logic(fun)?;
 
                 // Shadowing will not be permitted, as compilers could generate function names
                 // easily and we can avoid complexity and ambiguity this way.
                 let current_instr = &self.machine.program_data.get_current()?.clone();
                 let mut function_verifier = self.sub_machine(std::slice::from_ref(current_instr));
                 function_verifier.findings.func_defining = Some(FunctionDefiningInfo {
-                    function_name: arg.to_owned(),
+                    function_name: fun.to_owned(),
                     arg_positions: Vec::new(),
                 });
                 function_verifier.findings.func_data = self.findings.func_data.clone(); // PERF: clone()
                 function_verifier.findings.func_data.insert(
-                    arg.to_owned(),
+                    fun.to_owned(),
                     FunctionDefiningInfo {
-                        function_name: arg.to_owned(),
+                        function_name: fun.to_owned(),
                         arg_positions: Vec::new(),
                     },
                 );
@@ -783,7 +772,7 @@ impl<'a> Verifier<'a> {
                 // current function as the value.
                 for (k, v) in &function_verifier.machine.function_data.function_table {
                     if let FdEntry::Str(s) = v {
-                        if s == arg {
+                        if s == fun {
                             self.findings.func_data.insert(
                                 k.to_owned(),
                                 FunctionDefiningInfo {
@@ -802,7 +791,7 @@ impl<'a> Verifier<'a> {
                 }
 
                 self.findings.func_data.insert(
-                    arg.to_owned(),
+                    fun.to_owned(),
                     function_verifier
                         .findings
                         .func_defining
@@ -810,12 +799,12 @@ impl<'a> Verifier<'a> {
                 );
             }
             FunctionCall => {
-                self.machine.function_get(&arg)?;
+                self.machine.function_get(&fun)?;
 
                 let required_args = self
                     .findings
-                    .func_required_arguments(arg)
-                    .ok_or(FunctionUndefined(arg.to_owned()))?;
+                    .func_required_arguments(fun)
+                    .ok_or(FunctionUndefined(fun.to_owned()))?;
                 let available_args = self.cells.len();
 
                 if available_args < required_args {
@@ -834,11 +823,11 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
-    fn verify_intrinsic(
+    fn evaluate_intrinsic(
         &mut self,
         instr: &IntrinsicOp,
-        _arg: CellIndex,
-    ) -> Result<(), VerifierError> {
+        arg: CellIndex,
+    ) -> Result<(), Self::Error> {
         use IntrinsicOp::*;
 
         match instr {
@@ -851,6 +840,15 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 }
+
+/*
+    fn verify_instruction(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
+        use Instruction::*;
+
+
+        Ok(())
+    }
+*/
 
 #[cfg(test)]
 pub mod verifier_tests;
