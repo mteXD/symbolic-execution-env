@@ -23,7 +23,7 @@ test arg="" $RUST_LOG="trace":
     cargo test {{arg}} --
 
 [group('dev')]
-test-backtrace arg="" $RUST_BACKTRACE="1":
+test-backtrace arg="" $RUST_BACKTRACE="1" $RUST_LOG="trace":
     cargo test {{arg}} --
 
 [group('dev')]

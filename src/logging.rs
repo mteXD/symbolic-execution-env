@@ -1,6 +1,3 @@
-use log::{debug, error, info, warn};
-use std::io::Write;
-
 pub static mut INDENT_AMNT: usize = 0;
 
 pub fn init() {

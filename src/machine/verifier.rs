@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::{self, Add, BitAnd, Div, Mul},
+    ops::{Add, Div, Mul},
 };
 
 use crate::{
@@ -11,11 +11,8 @@ use crate::{
         CoreError::{self},
         CoreMachine, Evaluate,
     },
-    types::{
-        self, Address, Cell, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError,
-    },
+    types::{self, Address, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramDataError},
 };
-use Cell::*;
 use VerifierError::*;
 use log::{debug, error, trace, warn};
 
@@ -57,6 +54,7 @@ pub enum VerifierError {
         prog: Vec<Instruction>,
         location: &'static str,
     },
+    BlockHasEmptyStack,
 }
 
 impl From<CoreError> for VerifierError {
@@ -384,11 +382,6 @@ impl<'a> Verifier<'a> {
         use Instruction::Block;
 
         while let Some(instr) = self.machine.next() {
-            match instr {
-                Block(_) => {}
-                _ => debug!("Verifying instruction: {:#?}", instr),
-            }
-
             if self.findings.is_conditional {
                 let mut cond_machine = self.new_cond_machine();
                 let res = cond_machine.verify();
@@ -730,11 +723,12 @@ impl Evaluate for Verifier<'_> {
         block_verifier.base = self.cells.len();
         block_verifier.findings = self.findings.clone(); // PERF: clone()
 
-        let block_result = block_verifier.verify()?;
-
-        // WARN: What if this block returns "void"? Add this to checker.
-        if let Some(val) = block_result {
-            self.push(val.clone());
+        // We recognize an empty stack of the block_verifier as an error.
+        // This way, each block is guaranteed to leave at least one value on the stack, and user can
+        // then discard this value, producing a "void" block.
+        match block_verifier.verify()?.cloned() {
+            Some(val) => self.push(val.clone()),
+            None => return Err(BlockHasEmptyStack),
         }
 
         self.base = block_verifier.base_stack.pop().ok_or(RebaseError)?.clone();
@@ -783,7 +777,7 @@ impl Evaluate for Verifier<'_> {
                                         .as_ref()
                                         .expect("FunctionDefiningInfo should be set during function verification.")
                                         .arg_positions
-                                        .clone(), // PERF: clone()
+                                        .clone(),
                                 },
                             );
                         }
@@ -823,15 +817,11 @@ impl Evaluate for Verifier<'_> {
         Ok(())
     }
 
-    fn evaluate_intrinsic(
-        &mut self,
-        instr: &IntrinsicOp,
-        arg: CellIndex,
-    ) -> Result<(), Self::Error> {
+    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, _: CellIndex) -> Result<(), Self::Error> {
         use IntrinsicOp::*;
 
         match instr {
-            Print => todo!(),
+            Print => {}
             Input => self.push(ValueSpan::inf()),
             FileRead => self.push(ValueSpan::inf()),
             FileWrite => todo!(),
@@ -840,15 +830,6 @@ impl Evaluate for Verifier<'_> {
         Ok(())
     }
 }
-
-/*
-    fn verify_instruction(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
-        use Instruction::*;
-
-
-        Ok(())
-    }
-*/
 
 #[cfg(test)]
 pub mod verifier_tests;

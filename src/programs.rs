@@ -24,26 +24,18 @@ macro_rules! add_instr {
     };
     (io $op:ident, $a:expr) => {
         AluIntrinsic(IntrinsicOp::$op, $a)
-    }
+    };
 }
 
 #[macro_export]
 macro_rules! make_block {
     ($($instr:expr),+) => { // Variadic arguments, at least one
-        Block(vec![ $( $instr ),* ])
+        Block(vec![ $( $instr ),* ],)
     };
 }
 
 // pub use add_instr;
 // pub use make_block;
-
-macro_rules! new_program {
-    ($name:ident { $( $instr:expr ),* $(,)? }) => {
-        fn $name() -> Vec<Instruction> {
-            vec![ $( $instr ),* ]
-        }
-    };
-}
 
 macro_rules! new_programs {
     (
@@ -164,7 +156,8 @@ new_programs! {
         add_instr!(Push, 3),
         add_instr!(Push, 5),
         make_block!(
-            add_instr!(R Pop, 2) // Pop inside block does not affect the outer block
+            add_instr!(R Pop, 2), // Pop the 20, leaving only 30
+            add_instr!(Push, 0) // Required, at least something must be on stack
         ),
         add_instr!(Mul, 0, 1), // 3 * 5 = 15
     },
@@ -358,7 +351,21 @@ new_programs! {
     },
 
     // This function is a void function.
-    text_print {
-        add_instr!(io Print, 0)
+    void_print_block {
+        add_instr!(Push, 42),
+        make_block!(
+            add_instr!(io Print, 0)
+        ),
+        add_instr!(R Pop, 1), 
+        add_instr!(R Read, 0)
+    },
+
+    block_with_pops_only {
+        add_instr!(Push, 1),
+        add_instr!(Push, 2),
+        make_block!(
+            add_instr!(R Pop, 2)
+        ),
+        add_instr!(Add, 0, 1) // This should still work, block has no effect on the outer code
     }
 }

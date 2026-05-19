@@ -2,12 +2,11 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     add_instr,
-    programs,
     instruction::{
         BinaryOp, FunctionOp, Instruction::*, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::verifier::{ValueSpan, Verifier, VerifierError},
-    make_block,
+    make_block, programs,
     types::{self, Immediate},
 };
 
@@ -245,6 +244,29 @@ mod blocks {
     create_test!(block_nested_rebase_1);
     create_test!(block_nested_rebase_2);
     create_test!(square_add_42);
+
+    #[test]
+    fn void_print_block() {
+        let program = programs::void_print_block();
+
+        let mut verifier = Verifier::new(&program);
+        let result = verifier.verify();
+        assert!(result.is_ok(), "Verification failed: {:?}", result.err());
+
+        assert_eq!(verifier.cells.len(), 2);
+    }
+
+    #[test]
+    fn block_with_pops_only() {
+        let program = programs::block_with_pops_only();
+
+        let mut verifier = Verifier::new(&program);
+        let result = verifier.verify();
+        match result {
+            Err(BlockHasEmptyStack) => {}
+            _ => panic!("Expected BlockHasEmptyStack error, but got {:?}", result),
+        }
+    }
 }
 
 mod intrinsics {

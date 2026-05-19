@@ -128,15 +128,37 @@ trait Evaluate {
 
     fn evaluate_instruction(&mut self, instr: &Instruction) -> Result<(), Self::Error> {
         use Instruction::*;
+        use log::debug;
 
         match instr {
-            AluNullary(instr) => self.evaluate_alu_nullary(instr),
-            AluUnaryImm(instr, imm) => self.evaluate_alu_unary_imm(instr, *imm),
-            AluUnaryCell(instr, cell) => self.evaluate_alu_unary_cell(instr, *cell),
-            AluBinary(instr, arg1, arg2) => self.evaluate_alu_binary(instr, *arg1, *arg2),
-            Block(instrs) => self.evaluate_block(instrs),
-            AluFunction(instr, fun) => self.evaluate_function(instr, fun),
-            AluIntrinsic(instr, arg) => self.evaluate_intrinsic(instr, *arg),
+            AluNullary(instr) => {
+                debug!("Evaling: {:?}", instr);
+                self.evaluate_alu_nullary(instr)
+            }
+            AluUnaryImm(instr, imm) => {
+                debug!("Evaling: {:?}, imm: {:?}", instr, imm);
+                self.evaluate_alu_unary_imm(instr, *imm)
+            }
+            AluUnaryCell(instr, cell) => {
+                debug!("Evaling: {:?}, cell: {:?}", instr, cell);
+                self.evaluate_alu_unary_cell(instr, *cell)
+            }
+            AluBinary(instr, arg1, arg2) => {
+                debug!("Evaling: {:?}; args: {:?}, {:?}", instr, arg1, arg2);
+                self.evaluate_alu_binary(instr, *arg1, *arg2)
+            }
+            Block(instrs) => {
+                debug!("Entering block...");
+                self.evaluate_block(instrs)
+            }
+            AluFunction(instr, fun) => {
+                debug!("Evaling: {:?}, fun: '{}'", instr, fun);
+                self.evaluate_function(instr, fun)
+            }
+            AluIntrinsic(instr, arg) => {
+                debug!("Evaling: {:?}, arg: {:?}", instr, arg);
+                self.evaluate_intrinsic(instr, *arg)
+            }
         }?;
 
         Ok(())

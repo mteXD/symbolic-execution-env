@@ -8,7 +8,6 @@ use crate::{
 };
 use Cell::*;
 use ExecutorError::*;
-use log::debug;
 
 #[derive(Debug, Clone)]
 pub enum ExecutorError {
@@ -20,6 +19,7 @@ pub enum ExecutorError {
     NoRebasedCells,
     InvalidCell,
     TypeError { expected: Cell, found: Cell },
+    BlockHasEmptyStack,
     Core(CoreError),
 }
 
@@ -36,6 +36,7 @@ pub struct Executor<'a> {
     cells: Vec<Cell>,
     pub base: usize, // The index in `cells` where the current block/function's cells start.
     pub base_stack: Vec<usize>,
+    cells_pushed: usize,
 }
 
 impl<'a> Executor<'a> {
@@ -45,6 +46,7 @@ impl<'a> Executor<'a> {
             cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
+            cells_pushed: 0,
         }
     }
 
@@ -55,7 +57,16 @@ impl<'a> Executor<'a> {
             cells: self.cells.clone(),
             base: 0,
             base_stack: Vec::new(),
+            cells_pushed: 0,
         }
+    }
+
+    pub fn redirect_input(&mut self, new_input: types::Input) {
+        self.machine.input = new_input;
+    }
+
+    pub fn redirect_output(&mut self, new_output: types::Output) {
+        self.machine.output = new_output;
     }
 
     pub fn push(&mut self, value: Cell) {
@@ -70,39 +81,19 @@ impl<'a> Executor<'a> {
         self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
     }
 
-    pub fn eval(&mut self) -> Result<Option<&Cell>> {
+    pub fn exec(&mut self) -> Result<Option<&Cell>> {
         while let Some(instr) = self.machine.next() {
-            use Instruction::*;
-
-            match instr {
-                AluNullary(instr) => self.eval_alu_nullary(instr),
-                AluUnaryImm(instr, imm) => self.eval_alu_unary_imm(instr, *imm),
-                AluUnaryCell(instr, cell) => self.eval_alu_unary_cell(instr, *cell),
-                AluBinary(instr, arg1, arg2) => self.eval_alu_binary(instr, *arg1, *arg2),
-                Block(instrs) => self.eval_block(instrs),
-                AluFunction(instr, fun) => self.eval_function(instr, fun),
-                AluIntrinsic(instr, arg) => self.eval_intrinsic(instr, *arg),
-            }?;
-
-            if let Block(_) = instr {
-                debug!("Done with Block");
-            } else {
-                debug!("Done with {:#?},\ncells: {:#?}", instr, self.cells);
-            }
+            self.evaluate_instruction(instr)?;
         }
 
         Ok(self.cells.last())
     }
+}
 
-    pub fn redirect_input(&mut self, new_input: types::Input) {
-        self.machine.input = new_input;
-    }
+impl Evaluate for Executor<'_> {
+    type Error = ExecutorError;
 
-    pub fn redirect_output(&mut self, new_output: types::Output) {
-        self.machine.output = new_output;
-    }
-
-    fn eval_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
+    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
         use NullaryOp::*;
 
         match instr {
@@ -136,7 +127,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_alu_unary_imm(&mut self, instr: &UnaryOpImm, arg: Immediate) -> Result<()> {
+    fn evaluate_alu_unary_imm(&mut self, instr: &UnaryOpImm, arg: Immediate) -> Result<()> {
         use UnaryOpImm::*;
 
         match instr {
@@ -146,7 +137,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_alu_unary_cell(&mut self, instr: &UnaryOpCell, arg: CellIndex) -> Result<()> {
+    fn evaluate_alu_unary_cell(&mut self, instr: &UnaryOpCell, arg: CellIndex) -> Result<()> {
         use UnaryOpCell::*;
 
         match instr {
@@ -185,7 +176,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_alu_binary(
+    fn evaluate_alu_binary(
         &mut self,
         instr: &BinaryOp,
         arg1: CellIndex,
@@ -198,6 +189,8 @@ impl<'a> Executor<'a> {
 
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
+
+        debug!("Evaluating binary operation: {:?} with operands {:?} and {:?}", instr, a, b);
 
         if let (Integer(a), Integer(b)) = (a, b) {
             let calculated_value = match instr {
@@ -233,38 +226,39 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_block(&mut self, instrs: &'a [Instruction]) -> Result<()> {
+    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<()> {
         /* NOTE:
          * Since it is likely that more pops than pushes occur, we must
          * save the ENTIRE state of cells, copying it twice.
          */
 
-        let mut block_self = self.sub_machine(instrs);
-        block_self.base_stack.push(self.base);
-        block_self.base = self.cells.len();
+        let mut block_executor = self.sub_machine(instrs);
+        block_executor.base_stack.push(self.base);
+        block_executor.base = self.cells.len();
 
-        let block_result = block_self.eval()?;
-
-        // WARN: What if this block returns "void"? Add this to checker.
-        if let Some(val) = block_result {
-            self.push(*val);
+        // We recognize an empty stack of the block_verifier as an error.
+        // This way, each block is guaranteed to leave at least one value on the stack, and user can
+        // then discard this value, producing a "void" block.
+        match block_executor.exec()?.cloned() {
+            Some(val) => self.push(val.clone()),
+            None => return Err(BlockHasEmptyStack),
         }
-
-        self.base = block_self.base_stack.pop().ok_or(RebaseError)?.clone();
+        
+        self.base = block_executor.base_stack.pop().ok_or(RebaseError)?.clone();
 
         Ok(())
     }
 
-    fn eval_function(&mut self, instr: &FunctionOp, arg: &str) -> Result<()> {
+    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<()> {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => self.machine.common_function_logic(arg)?,
+            FunctionDefine => self.machine.common_function_logic(fun)?,
             FunctionCall => {
-                let instr = self.machine.function_get(&arg).map(std::slice::from_ref)?;
+                let instr = self.machine.function_get(&fun).map(std::slice::from_ref)?;
 
                 let mut function_self = self.sub_machine(instr);
-                let function_result = function_self.eval()?;
+                let function_result = function_self.exec()?;
 
                 if let Some(val) = function_result {
                     self.push(*val);
@@ -275,7 +269,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn eval_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
+    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
         use IntrinsicOp::*;
         use types::Input;
 
