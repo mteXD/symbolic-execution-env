@@ -36,7 +36,6 @@ pub struct Executor<'a> {
     cells: Vec<Cell>,
     pub base: usize, // The index in `cells` where the current block/function's cells start.
     pub base_stack: Vec<usize>,
-    cells_pushed: usize,
 }
 
 impl<'a> Executor<'a> {
@@ -46,7 +45,6 @@ impl<'a> Executor<'a> {
             cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
-            cells_pushed: 0,
         }
     }
 
@@ -57,7 +55,6 @@ impl<'a> Executor<'a> {
             cells: self.cells.clone(),
             base: 0,
             base_stack: Vec::new(),
-            cells_pushed: 0,
         }
     }
 
