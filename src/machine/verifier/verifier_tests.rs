@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use crate::{
     add_instr,
     instruction::{
-        BinaryOp, FunctionOp, Instruction::*, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::verifier::{ValueSpan, Verifier, VerifierError},
     make_block, programs,
@@ -137,7 +137,7 @@ fn pop_multiple_bad() {
 #[test]
 fn read_bad_index() {
     let program = programs::read_bad_index();
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 }
 
 create_test!(read_reverse);
@@ -146,22 +146,22 @@ create_test!(read_reverse);
 fn test_read_reverse_bad_empty() {
     // PART 1
     let program = programs::read_reverse_bad_empty_1();
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 
     // PART 2
     let program = programs::read_reverse_bad_empty_2();
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 }
 
 #[test]
 fn test_read_reverse_bad_index() {
     // PART 1
     let program = programs::read_reverse_bad_index_1();
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 
     // PART 2
     let program = programs::read_reverse_bad_index_2();
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 }
 
 test_binop!(test_add, Add);
@@ -197,7 +197,7 @@ create_test!(bitwise_not);
 #[test]
 fn test_not_bad() {
     let program = vec![add_instr!(R Not, 0)];
-    assert_last_err!(program, InvalidCell);
+    assert_last_err!(program, _InvalidCell);
 }
 
 create_test!(math_with_read);

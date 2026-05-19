@@ -8,7 +8,7 @@ use crate::{
         IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     types::{
-        Cell, CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
+        CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
         ProgramData, ProgramDataError,
     },
 };

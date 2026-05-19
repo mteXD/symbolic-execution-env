@@ -1,11 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
-use log::{debug, error, info, warn};
+use log::info;
 use virtual_machine::{
     instruction::{
-        BinaryOp,
-        Instruction::{self, *},
-        IntrinsicOp, UnaryOpCell, UnaryOpImm,
+        Instruction::*,
+        IntrinsicOp, UnaryOpImm,
     },
     logging,
     machine::executor::Executor,
@@ -17,7 +16,7 @@ fn main() {
     logging::init();
     info!("SYMBOLIC EXECUTION ENVIRONMENT");
 
-    let program = vec![
+    let _program = vec![
         add_instr!(Push, 123),
         add_instr!(io Print, 0), // Should print 123
     ];

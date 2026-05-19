@@ -379,7 +379,7 @@ impl<'a> Verifier<'a> {
     }
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
-        use Instruction::Block;
+        
 
         while let Some(instr) = self.machine.next() {
             if self.findings.is_conditional {
