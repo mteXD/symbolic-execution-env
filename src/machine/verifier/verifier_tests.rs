@@ -276,6 +276,7 @@ mod intrinsics {
         IntrinsicOp,
     };
 
+    // print probably doesn't need to be tested
     #[test]
     #[ignore]
     fn print() {

@@ -20,7 +20,7 @@ macro_rules! add_instr {
         AluBinary(BinaryOp::$op, $a, $b)
     };
     (fun $op:ident, $name:expr) => {
-        AluFunction(FunctionOp::$op, $name)
+        AluFunction(FunctionOp::$op, String::from($name))
     };
     (io $op:ident, $a:expr) => {
         AluIntrinsic(IntrinsicOp::$op, $a)
@@ -53,6 +53,11 @@ macro_rules! new_programs {
         )*
     };
 }
+
+const FUNC_NAME: &str = "generic_function_name";
+const COUNTDOWN: &str = "countdown";
+const INNER: &str = "inner";
+const OUTER: &str = "outer";
 
 new_programs! {
     push5 {
@@ -223,35 +228,35 @@ new_programs! {
     },
 
     simple_function {
-        add_instr!(fun FunctionDefine, String::from("square")),
+        add_instr!(fun FunctionDefine, FUNC_NAME),
         make_block!(
             add_instr!(R ReadReverse, 0),
             add_instr!(Rebase),
             add_instr!(Mul, 0, 0) // Multiply input by 2
         ),
         add_instr!(Push, 3),
-        add_instr!(fun FunctionCall, String::from("square")),
+        add_instr!(fun FunctionCall, FUNC_NAME),
     },
 
     sequential_fn_defs {
-        add_instr!(fun FunctionDefine, String::from("push2_1")),
-        add_instr!(fun FunctionDefine, String::from("push2_2")),
-        add_instr!(fun FunctionDefine, String::from("push2_3")),
+        add_instr!(fun FunctionDefine, "push2_1"),
+        add_instr!(fun FunctionDefine, "push2_2"),
+        add_instr!(fun FunctionDefine, "push2_3"),
         add_instr!(Push, 2),
-        add_instr!(fun FunctionCall, String::from("push2_1")),
-        add_instr!(fun FunctionCall, String::from("push2_2")),
+        add_instr!(fun FunctionCall, "push2_1"),
+        add_instr!(fun FunctionCall, "push2_2"),
     },
 
     sequential_fn_defs_loop {
-        add_instr!(fun FunctionDefine, String::from("push2_1")),
-        add_instr!(fun FunctionDefine, String::from("push2_2")),
-        add_instr!(fun FunctionDefine, String::from("push2_3")),
-        add_instr!(fun FunctionCall, String::from("push2_1")),
-        add_instr!(fun FunctionCall, String::from("push2_1")),
+        add_instr!(fun FunctionDefine, "push2_1"),
+        add_instr!(fun FunctionDefine, "push2_2"),
+        add_instr!(fun FunctionDefine, "push2_3"),
+        add_instr!(fun FunctionCall, "push2_1"),
+        add_instr!(fun FunctionCall, "push2_1"),
     },
 
     smaller_recursion {
-        add_instr!(fun FunctionDefine, String::from("countdown")),
+        add_instr!(fun FunctionDefine, COUNTDOWN),
         make_block!(
             add_instr!(R ReadReverse, 0),
             add_instr!(Rebase),
@@ -260,12 +265,12 @@ new_programs! {
             add_instr!(Add, 0, 1),
             add_instr!(SetGreaterThan, 3, 2), // Add > 0
             add_instr!(Cond),
-            add_instr!(fun FunctionCall, String::from("countdown"))
+            add_instr!(fun FunctionCall, COUNTDOWN)
         ),
     },
 
     small_recursion {
-        add_instr!(fun FunctionDefine, String::from("countdown")),
+        add_instr!(fun FunctionDefine, COUNTDOWN),
         make_block!(
             add_instr!(R ReadReverse, 0),     // Read the argument n
             add_instr!(Rebase),               // Rebase to make n the only argument
@@ -275,15 +280,15 @@ new_programs! {
             make_block!(
                 add_instr!(Push, -1),  // Push 1 as the base case result
                 add_instr!(Add, 0, 2), // n - 1
-                add_instr!(fun FunctionCall, String::from("countdown")) // else, calculate countdown(n - 1)
+                add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
             )
         ),
         add_instr!(Push, 5),
-        add_instr!(fun FunctionCall, String::from("countdown")),
+        add_instr!(fun FunctionCall, COUNTDOWN),
     },
 
     small_recursion_bad {
-        add_instr!(fun FunctionDefine, String::from("countdown")),
+        add_instr!(fun FunctionDefine, COUNTDOWN),
         make_block!(
             add_instr!(R ReadReverse, 0),     // Read the argument n
             add_instr!(Rebase),               // Rebase to make n the only argument
@@ -292,46 +297,46 @@ new_programs! {
             add_instr!(Cond),                 // if n <= 0, skip to return
             make_block!(
                 // Here, we forget to decrease the critical value.
-                add_instr!(fun FunctionCall, String::from("countdown")) // else, calculate countdown(n - 1)
+                add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
             )
         ),
         add_instr!(Push, 5),
-        add_instr!(fun FunctionCall, String::from("countdown")),
+        add_instr!(fun FunctionCall, COUNTDOWN),
     },
 
     recursion_nested_fn_def {
-        add_instr!(fun FunctionDefine, String::from("outer")),
+        add_instr!(fun FunctionDefine, OUTER),
         make_block!(
-            add_instr!(fun FunctionDefine, String::from("inner")),
+            add_instr!(fun FunctionDefine, INNER),
             make_block!(add_instr!(Push, 42)),
-            add_instr!(fun FunctionCall, String::from("outer"))
+            add_instr!(fun FunctionCall, OUTER)
         ),
-        add_instr!(fun FunctionCall, String::from("outer")),
+        add_instr!(fun FunctionCall, OUTER),
     },
 
     nested_functions {
-        add_instr!(fun FunctionDefine, String::from("outer")),
+        add_instr!(fun FunctionDefine, OUTER),
         make_block!(
-            add_instr!(fun FunctionDefine, String::from("inner")),
+            add_instr!(fun FunctionDefine, INNER),
             make_block!(add_instr!(Push, 42)),
-            add_instr!(fun FunctionCall, String::from("inner"))
+            add_instr!(fun FunctionCall, INNER)
         ),
-        add_instr!(fun FunctionCall, String::from("outer")),
+        add_instr!(fun FunctionCall, OUTER),
     },
 
     nested_functions_bad {
-        add_instr!(fun FunctionDefine, String::from("outer")),
+        add_instr!(fun FunctionDefine, OUTER),
         make_block!(
-            add_instr!(fun FunctionDefine, String::from("inner")),
+            add_instr!(fun FunctionDefine, INNER),
             make_block!(add_instr!(Push, 42)),
-            add_instr!(fun FunctionCall, String::from("inner"))
+            add_instr!(fun FunctionCall, INNER)
         ),
-        add_instr!(fun FunctionCall, String::from("inner")),
-        add_instr!(fun FunctionCall, String::from("inner")), // This should fail
+        add_instr!(fun FunctionCall, INNER),
+        add_instr!(fun FunctionCall, INNER), // This should fail
     },
 
     function_multi_args {
-        add_instr!(fun FunctionDefine, String::from("add_three")),
+        add_instr!(fun FunctionDefine, FUNC_NAME),
         make_block!(
             add_instr!(R ReadReverse, 0),
             add_instr!(R ReadReverse, 1),
@@ -343,7 +348,7 @@ new_programs! {
         add_instr!(Push, 10),
         add_instr!(Push, 20),
         add_instr!(Push, 30),
-        add_instr!(fun FunctionCall, String::from("add_three")),
+        add_instr!(fun FunctionCall, FUNC_NAME),
     },
 
     input {
