@@ -34,9 +34,6 @@ macro_rules! make_block {
     };
 }
 
-// pub use add_instr;
-// pub use make_block;
-
 macro_rules! new_programs {
     (
         $(

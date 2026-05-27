@@ -141,6 +141,74 @@ impl ValueSpan {
     fn is_single_value(&self) -> bool {
         self.min == self.max
     }
+
+    fn chck_eq(&self, other: &Self) -> Self {
+        if self.is_single_value() && other.is_single_value() {
+            if self.min == other.min {
+                ValueSpan::new(1, 1)
+            } else {
+                ValueSpan::new(0, 0)
+            }
+        } else if self.disjunct(&other) {
+            ValueSpan::new(0, 0)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
+
+    fn chck_neq(&self, other: &Self) -> Self {
+        if self.is_single_value() && other.is_single_value() {
+            if self.min != other.min {
+                ValueSpan::new(1, 1)
+            } else {
+                ValueSpan::new(0, 0)
+            }
+        } else if self.disjunct(other) {
+            ValueSpan::new(1, 1)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
+
+    fn chck_lt(&self, other: &Self) -> Self {
+        if self.max < other.min {
+            ValueSpan::new(1, 1)
+        } else if self.min >= other.max {
+            ValueSpan::new(0, 0)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
+
+    fn chck_gt(&self, other: &Self) -> Self {
+        if self.min > other.max {
+            ValueSpan::new(1, 1)
+        } else if self.max <= other.min {
+            ValueSpan::new(0, 0)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
+
+    fn chck_lte(&self, other: &Self) -> Self {
+        if self.max <= other.min {
+            ValueSpan::new(1, 1)
+        } else if self.min > other.max {
+            ValueSpan::new(0, 0)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
+
+    fn chck_gte(&self, other: &Self) -> Self {
+        if self.min >= other.max {
+            ValueSpan::new(1, 1)
+        } else if self.max < other.min {
+            ValueSpan::new(0, 0)
+        } else {
+            ValueSpan::new(0, 1)
+        }
+    }
 }
 
 impl Add<Immediate> for ValueSpan {
@@ -248,7 +316,6 @@ struct Findings {
     func_data: HashMap<String, FunctionDefiningInfo>,
     processed_instructions: usize,
     is_conditional: bool,
-    recursion_info: Vec<ConvergenceInfo>,
     cond_machine_depth: Option<usize>,
 }
 
@@ -379,8 +446,6 @@ impl<'a> Verifier<'a> {
     }
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
-        
-
         while let Some(instr) = self.machine.next() {
             if self.findings.is_conditional {
                 let mut cond_machine = self.new_cond_machine();
@@ -444,12 +509,6 @@ impl Evaluate for Verifier<'_> {
 
                 self.cells.pop().ok_or(StackUnderflow)?;
 
-                let get_val = |r| match self.read(r) {
-                    Ok(Some(vs)) => *vs,
-                    Ok(None) => ValueSpan::inf(),
-                    Err(e) => panic!("Error reading cell during convergence analysis: {:?}", e),
-                };
-
                 let throw_err = || {
                     error!(
                         "Condition instruction not preceded by a comparison instruction. This is unsafe."
@@ -467,16 +526,6 @@ impl Evaluate for Verifier<'_> {
                             SetGreaterThanOrEqual => GreaterThanOrEqual,
                             _ => return throw_err(),
                         };
-
-                        self.findings.recursion_info.push(ConvergenceInfo {
-                            critical_cell1_index: *r1,
-                            critical_cell1_value_span: get_val(*r1),
-                            comparator: comparator,
-                            critical_cell2_index: *r2,
-                            critical_cell2_value_span: get_val(*r2),
-                            does_converge: false,
-                            keep: false,
-                        });
                     }
                     AluUnaryImm(UnaryOpImm::Push, x) => {
                         if *x == 0 {
@@ -492,7 +541,6 @@ impl Evaluate for Verifier<'_> {
 
                 let last = self.cells.last().ok_or(StackUnderflow)?;
                 if last.is_single_value() && last.min == 0 {
-                    self.findings.recursion_info.pop();
                     self.machine.next();
                 }
 
@@ -632,9 +680,7 @@ impl Evaluate for Verifier<'_> {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        if let (Some(a), Some(b)) = (a, b) {
-            let a = *a;
-            let b = *b;
+        if let (Some(&a), Some(&b)) = (a, b) {
             let calculated_value = match instr {
                 Add => a + b,
                 Mul => a * b,
@@ -647,68 +693,12 @@ impl Evaluate for Verifier<'_> {
                 And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
                     ValueSpan::inf()
                 }
-                SetEqual => {
-                    if a.is_single_value() && b.is_single_value() {
-                        if a.min == b.min {
-                            ValueSpan::new(1, 1)
-                        } else {
-                            ValueSpan::new(0, 0)
-                        }
-                    } else if a.disjunct(&b) {
-                        ValueSpan::new(0, 0)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
-                SetNotEqual => {
-                    if a.is_single_value() && b.is_single_value() {
-                        if a.min != b.min {
-                            ValueSpan::new(1, 1)
-                        } else {
-                            ValueSpan::new(0, 0)
-                        }
-                    } else if a.disjunct(&b) {
-                        ValueSpan::new(1, 1)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
-                SetLessThan => {
-                    if a.max < b.min {
-                        ValueSpan::new(1, 1)
-                    } else if a.min >= b.max {
-                        ValueSpan::new(0, 0)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
-                SetLessThanOrEqual => {
-                    if a.max <= b.min {
-                        ValueSpan::new(1, 1)
-                    } else if a.min > b.max {
-                        ValueSpan::new(0, 0)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
-                SetGreaterThan => {
-                    if a.min > b.max {
-                        ValueSpan::new(1, 1)
-                    } else if a.max <= b.min {
-                        ValueSpan::new(0, 0)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
-                SetGreaterThanOrEqual => {
-                    if a.min >= b.max {
-                        ValueSpan::new(1, 1)
-                    } else if a.max < b.min {
-                        ValueSpan::new(0, 0)
-                    } else {
-                        ValueSpan::new(0, 1)
-                    }
-                }
+                SetEqual => a.chck_eq(&b),
+                SetNotEqual => a.chck_neq(&b),
+                SetLessThan => a.chck_lt(&b),
+                SetLessThanOrEqual => a.chck_lte(&b),
+                SetGreaterThan => a.chck_gt(&b),
+                SetGreaterThanOrEqual => a.chck_gte(&b),
             };
 
             self.push(calculated_value);
@@ -796,8 +786,8 @@ impl Evaluate for Verifier<'_> {
                 self.machine.function_get(&fun)?;
 
                 // Recursion check
-                // check if 
-                
+                // check if
+
                 // Argument check
                 let required_args = self
                     .findings
