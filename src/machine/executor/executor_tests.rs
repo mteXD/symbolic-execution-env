@@ -432,3 +432,40 @@ fn test_fibonacci() {
 
     assert_eq_last_Int!(program, fib(number));
 }
+
+#[test]
+#[ignore]
+fn test_fibonacci_bad() {
+    fn fib(n: i64) -> i64 {
+        if n <= 1 {
+            return 1;
+        }
+        fib(n - 1) + fib(n - 2)
+    }
+
+    init();
+    let number = 4;
+
+    let program = vec![
+        add_instr!(fun FunctionDefine, String::from("fibonacci")),
+        make_block!(
+            add_instr!(R ReadReverse, 0), // n
+            add_instr!(Rebase),
+            add_instr!(Push, 1),              // 1
+            add_instr!(SetGreaterThan, 0, 1), // n > 1
+            add_instr!(Cond),                 // if n <= 1, skip to return
+            make_block!(
+                add_instr!(Push, -1),  // Push 1 as the base case result
+                add_instr!(Add, 0, 2), // n - 1
+                add_instr!(fun FunctionCall, String::from("fibonacci")), // else, calculate fibonacci(n - 1)
+                add_instr!(Add, 3, 2),                                   // (n - 1) - 1 = n - 2
+                add_instr!(fun FunctionCall, String::from("fibonacci")), // else, calculate fibonacci(n - 2)
+                add_instr!(Add, 4, 6) // fibonacci(n - 1) + fibonacci(n - 2)
+            )
+        ),
+        // add_instr!(Push, number),
+        add_instr!(fun FunctionCall, String::from("fibonacci")),
+    ];
+
+    assert_eq_last_Int!(program, fib(number));
+}

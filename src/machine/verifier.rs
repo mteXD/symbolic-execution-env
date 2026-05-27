@@ -795,6 +795,10 @@ impl Evaluate for Verifier<'_> {
             FunctionCall => {
                 self.machine.function_get(&fun)?;
 
+                // Recursion check
+                // check if 
+                
+                // Argument check
                 let required_args = self
                     .findings
                     .func_required_arguments(fun)
