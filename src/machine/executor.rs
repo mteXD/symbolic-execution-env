@@ -106,8 +106,7 @@ impl Evaluate for Executor<'_> {
                 }
 
                 self.cells = self.cells.split_off(self.base);
-            } // Cond => match self.pop() {
-              // },
+            } 
         }
 
         Ok(())
