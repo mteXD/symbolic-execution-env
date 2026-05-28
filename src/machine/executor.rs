@@ -31,11 +31,14 @@ impl From<CoreError> for ExecutorError {
 
 type Result<T> = std::result::Result<T, ExecutorError>;
 
+const RECURSION_LIMIT: usize = 5;
+
 pub struct Executor<'a> {
     machine: CoreMachine<'a>,
     cells: Vec<Cell>,
     pub base: usize, // The index in `cells` where the current block/function's cells start.
     pub base_stack: Vec<usize>,
+    recursion_depth: usize,
 }
 
 impl<'a> Executor<'a> {
@@ -45,6 +48,7 @@ impl<'a> Executor<'a> {
             cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
+            recursion_depth: 0,
         }
     }
 
@@ -55,6 +59,7 @@ impl<'a> Executor<'a> {
             cells: self.cells.clone(),
             base: 0,
             base_stack: Vec::new(),
+            recursion_depth: 0,
         }
     }
 
@@ -101,24 +106,8 @@ impl Evaluate for Executor<'_> {
                 }
 
                 self.cells = self.cells.split_off(self.base);
-            }
-            Cond => match self.pop() {
-                Some(Integer(0)) => {
-                    self.machine.next(); // Skip the next instruction
-                }
-                Some(Integer(_)) => (),
-                Some(_) => {
-                    return Err(TypeError {
-                        expected: Integer(0),
-                        found: self
-                            .cells
-                            .last()
-                            .cloned()
-                            .expect("Stack should not be empty here"),
-                    });
-                }
-                None => return Err(StackUnderflow),
-            },
+            } // Cond => match self.pop() {
+              // },
         }
 
         Ok(())
@@ -187,7 +176,10 @@ impl Evaluate for Executor<'_> {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        debug!("Evaluating binary operation: {:?} with operands {:?} and {:?}", instr, a, b);
+        debug!(
+            "Evaluating binary: {:?} {:?} {:?}",
+            a, instr, b
+        );
 
         if let (Integer(a), Integer(b)) = (a, b) {
             let calculated_value = match instr {
@@ -240,7 +232,7 @@ impl Evaluate for Executor<'_> {
             Some(val) => self.push(val.clone()),
             None => return Err(BlockHasEmptyStack),
         }
-        
+
         self.base = block_executor.base_stack.pop().ok_or(RebaseError)?.clone();
 
         Ok(())
@@ -255,6 +247,10 @@ impl Evaluate for Executor<'_> {
                 let instr = self.machine.function_get(&fun).map(std::slice::from_ref)?;
 
                 let mut function_self = self.sub_machine(instr);
+                function_self.recursion_depth = self.recursion_depth + 1;
+                if function_self.recursion_depth > RECURSION_LIMIT {
+                    panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{fun}'");
+                }
                 let function_result = function_self.exec()?;
 
                 if let Some(val) = function_result {
@@ -308,6 +304,39 @@ impl Evaluate for Executor<'_> {
             }
             FileRead => todo!(),
             FileWrite => todo!(),
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_ifelse(
+        &mut self,
+        when_true: Rc<Instruction>,
+        when_false: Rc<Instruction>,
+    ) -> Result<()> {
+        let branch = match self.cells.last() {
+            Some(Integer(0)) => when_false,
+            Some(Integer(_)) => when_true,
+            Some(_) => {
+                return Err(TypeError {
+                    expected: Integer(0),
+                    found: self
+                        .cells
+                        .last()
+                        .cloned()
+                        .expect("Stack should not be empty here"),
+                });
+            }
+            None => return Err(StackUnderflow),
+        };
+
+        let mut machine = self.sub_machine(std::slice::from_ref(&branch));
+        machine.base_stack.push(self.base);
+        machine.base = self.cells.len();
+
+        match machine.exec()?.cloned() {
+            Some(val) => self.push(val.clone()),
+            None => return Err(BlockHasEmptyStack),
         }
 
         Ok(())

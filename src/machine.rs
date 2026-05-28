@@ -1,5 +1,5 @@
 use log::{debug, error, warn};
-use std::fmt::Debug;
+use std::{fmt::Debug, rc::Rc};
 
 use crate::{
     instruction::{
@@ -8,8 +8,8 @@ use crate::{
         IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     types::{
-        CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
-        ProgramData, ProgramDataError,
+        CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output, ProgramData,
+        ProgramDataError,
     },
 };
 
@@ -151,6 +151,10 @@ trait Evaluate {
                 debug!("Entering block...");
                 self.evaluate_block(instrs)
             }
+            IfElse(when_true, when_false) => {
+                debug!("Entering if-else block...");
+                self.evaluate_ifelse(when_true.clone(), when_false.clone()) // Cheap clone
+            }
             AluFunction(instr, fun) => {
                 debug!("Evaling: {:?}, fun: '{}'", instr, fun);
                 self.evaluate_function(instr, fun)
@@ -182,6 +186,11 @@ trait Evaluate {
         arg2: CellIndex,
     ) -> Result<(), Self::Error>;
     fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<(), Self::Error>;
+    fn evaluate_ifelse(
+        &mut self,
+        when_true: Rc<Instruction>,
+        when_false: Rc<Instruction>,
+    ) -> Result<(), Self::Error>;
     fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<(), Self::Error>;
     fn evaluate_intrinsic(
         &mut self,

@@ -1,10 +1,11 @@
+use std::rc::Rc;
+
 use crate::types::{CellIndex, Immediate};
 
 #[derive(Debug, Clone)]
 pub enum NullaryOp {
     Nop,
     Rebase,
-    Cond,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ pub enum Instruction {
     AluUnaryCell(UnaryOpCell, CellIndex),
     AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Vec<Instruction>),
+    IfElse(Rc<Instruction>, Rc<Instruction>),
     AluFunction(FunctionOp, String),
     AluIntrinsic(IntrinsicOp, CellIndex),
 }

@@ -1,3 +1,5 @@
+export RUST_LOG := "trace"
+
 [group('building')]
 build:
     @echo "Building the project..."
@@ -19,11 +21,11 @@ flamegraph test:
     cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}
 
 [group('dev')]
-test arg="" $RUST_LOG="trace":
+test arg="":
     cargo test {{arg}} --
 
 [group('dev')]
-test-backtrace arg="" $RUST_BACKTRACE="1" $RUST_LOG="trace":
+test-backtrace arg="" $RUST_BACKTRACE="1":
     cargo test {{arg}} --
 
 [group('dev')]

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ops::{Add, Div, Mul},
+    rc::Rc,
 };
 
 use crate::{
@@ -53,6 +54,10 @@ pub enum VerifierError {
         cells: Vec<ValueSpan>,
         prog: Vec<Instruction>,
         location: &'static str,
+    },
+    CondUnequalStackSizes {
+        true_branch_cells: usize,
+        false_branch_cells: usize,
     },
     BlockHasEmptyStack,
 }
@@ -119,6 +124,13 @@ impl ValueSpan {
 
     fn is_single_value(&self) -> bool {
         self.min == self.max
+    }
+
+    fn combine(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
     }
 
     fn chck_eq(&self, other: &Self) -> Self {
@@ -426,37 +438,54 @@ impl<'a> Verifier<'a> {
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
         while let Some(instr) = self.machine.next() {
-            if self.findings.is_conditional {
-                let mut cond_machine = self.new_cond_machine();
-                let res = cond_machine.verify();
-                match res {
-                    Err(InvalidCell {
-                        instr,
-                        cell_index,
-                        cells,
-                        prog,
-                        location,
-                    }) => {
-                        return Err(CondInvalidCell {
-                            instr,
-                            cell_index,
-                            cells,
-                            prog,
-                            location,
-                        });
-                    }
-                    Err(e) => return Err(e),
-                    Ok(_) => (),
-                }
-
-                self.findings.is_conditional = false;
-            }
-
             self.evaluate_instruction(instr)?;
             self.findings.processed_instructions += 1;
         }
 
         Ok(self.cells.last())
+    }
+
+    fn check_good_if_placement(&self) -> Result<(), VerifierError> {
+        use BinaryOp::*;
+        use Instruction::AluBinary;
+
+        let throw_err = || {
+            error!(
+                "Condition instruction not preceded by a comparison instruction. This is unsafe."
+            );
+            return Err(VerifierError::UnsafeCondPlacement);
+        };
+
+        match self.get_prev_instr()? {
+            AluBinary(cmp, _, _) => {
+                match cmp {
+                    SetNotEqual
+                    | SetLessThan
+                    | SetLessThanOrEqual
+                    | SetGreaterThan
+                    | SetGreaterThanOrEqual => (),
+                    _ => return throw_err(),
+                };
+            }
+            _ => {
+                return throw_err();
+            }
+        };
+        Ok(())
+    }
+
+    fn check_unnecessary_if(last: &ValueSpan) -> Option<bool> {
+        if last.is_single_value() {
+            if last.min == 0 {
+                warn!("Condition will always be false, skipping the next instruction.");
+                Some(false)
+            } else {
+                warn!("Condition will always be true, executing the next instruction.");
+                Some(true)
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -477,52 +506,6 @@ impl Evaluate for Verifier<'_> {
 
                 let avail_values = self.cells.len();
                 self.findings.values_after_rebase = Some(avail_values);
-            }
-            Cond => {
-                use BinaryOp::*;
-                use Instruction::{AluBinary, AluUnaryImm};
-
-                /* First, check if the previous instr was a comparison instr.
-                If not, warn that this is not really safe. */
-
-                self.cells.pop().ok_or(StackUnderflow)?;
-
-                let throw_err = || {
-                    error!(
-                        "Condition instruction not preceded by a comparison instruction. This is unsafe."
-                    );
-                    return Err(VerifierError::UnsafeCondPlacement);
-                };
-
-                match self.get_prev_instr()? {
-                    AluBinary(cmp, _, _) => {
-                        match cmp {
-                            SetNotEqual
-                            | SetLessThan
-                            | SetLessThanOrEqual
-                            | SetGreaterThan
-                            | SetGreaterThanOrEqual => (),
-                            _ => return throw_err(),
-                        };
-                    }
-                    AluUnaryImm(UnaryOpImm::Push, x) => {
-                        if *x == 0 {
-                            warn!("Condition will always be false, skipping the next instruction.");
-                        } else {
-                            warn!("Condition will always be true, executing the next instruction.");
-                        }
-                    }
-                    _ => {
-                        return throw_err();
-                    }
-                };
-
-                let last = self.cells.last().ok_or(StackUnderflow)?;
-                if last.is_single_value() && last.min == 0 {
-                    self.machine.next();
-                }
-
-                self.findings.is_conditional = true;
             }
         }
 
@@ -797,6 +780,54 @@ impl Evaluate for Verifier<'_> {
             FileRead => self.push(ValueSpan::inf()),
             FileWrite => todo!(),
         }
+
+        Ok(())
+    }
+
+    fn evaluate_ifelse(
+        &mut self,
+        when_true: Rc<Instruction>,
+        when_false: Rc<Instruction>,
+    ) -> Result<(), Self::Error> {
+        /* First, check if the previous instr was a comparison instr.
+        If not, warn that this is not really safe. */
+
+        let condition = self.cells.last().ok_or(StackUnderflow)?;
+        self.check_good_if_placement()?;
+        let value = Self::check_unnecessary_if(condition);
+        let ifelse_result = match value {
+            Some(branch) => {
+                let when_instr = if branch { when_true } else { when_false };
+                let mut machine = self.sub_machine(std::slice::from_ref(&when_instr));
+                machine.findings = self.findings.clone();
+                *machine.verify()?.ok_or(BlockHasEmptyStack)?
+            }
+            None => {
+                let mut true_machine = self.sub_machine(std::slice::from_ref(&when_true));
+                true_machine.findings = self.findings.clone();
+                let val1 = *true_machine.verify()?.ok_or(BlockHasEmptyStack)?;
+
+                let mut false_machine = self.sub_machine(std::slice::from_ref(&when_false));
+                false_machine.findings = self.findings.clone();
+                let val2 = *false_machine.verify()?.ok_or(BlockHasEmptyStack)?;
+
+                let true_machine_size = true_machine.cells.len();
+                let false_machine_size = false_machine.cells.len();
+                if true_machine_size != false_machine_size {
+                    return Err(CondUnequalStackSizes {
+                        true_branch_cells: true_machine_size,
+                        false_branch_cells: false_machine_size,
+                    });
+                }
+
+                val1.combine(val2)
+            }
+        };
+
+        self.push(ifelse_result);
+        debug!("Finished verifying ifelse, pushing result: {:?}", ifelse_result);
+
+        self.findings.is_conditional = true;
 
         Ok(())
     }

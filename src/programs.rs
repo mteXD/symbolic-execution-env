@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::instruction::{
     Instruction::{self, *},
     *,
@@ -24,6 +26,9 @@ macro_rules! add_instr {
     };
     (io $op:ident, $a:expr) => {
         AluIntrinsic(IntrinsicOp::$op, $a)
+    };
+    (ifelse $when_true:expr, $when_false:expr) => {
+        IfElse(Rc::new($when_true), Rc::new($when_false))
     };
 }
 
@@ -206,21 +211,32 @@ new_programs! {
     },
 
     conditional {
-        add_instr!(Push, 10),
+        add_instr!(io Input, 0),
         add_instr!(Push, 20),
-        add_instr!(SetGreaterThan, 0, 1), // 10 > 20 = 0
-        add_instr!(Cond),                 // Skip block
-        add_instr!(Push, 999),            // This should be skipped
-        add_instr!(Push, 42),             // This should be the last instruction executed
+        add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
+        add_instr!(ifelse
+            add_instr!(Push, 1),
+            add_instr!(Push, 2)
+        ),
+        add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
+        add_instr!(ifelse
+            add_instr!(Push, 3),
+            add_instr!(Push, 4)
+        ),
+        add_instr!(Add, 3, 5),
     },
 
     conditional_problem {
         add_instr!(io Input, 0),
         add_instr!(Push, 20),
         add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
-        add_instr!(Cond),                 // Skip block
-        add_instr!(Push, 999),            // This should be skipped
-        add_instr!(Push, 42),             // This should be the last instruction executed
+        add_instr!(ifelse
+            make_block!(
+                add_instr!(Push, 999),
+                add_instr!(Push, 999)
+            ),
+            add_instr!(Push, 42)
+        ),
         add_instr!(Add, 3, 4),
     },
 
@@ -261,8 +277,10 @@ new_programs! {
             add_instr!(Push, 0),
             add_instr!(Add, 0, 1),
             add_instr!(SetGreaterThan, 3, 2), // Add > 0
-            add_instr!(Cond),
-            add_instr!(fun FunctionCall, COUNTDOWN)
+            add_instr!(ifelse
+                add_instr!(fun FunctionCall, COUNTDOWN),
+                add_instr!(Push, 1)
+            )
         ),
     },
 
@@ -273,11 +291,13 @@ new_programs! {
             add_instr!(Rebase),               // Rebase to make n the only argument
             add_instr!(Push, 0),              // This is the bound
             add_instr!(SetGreaterThan, 0, 1), // 0 -> arg, 1 -> bound.
-            add_instr!(Cond),                 // if n <= 0, skip to return
-            make_block!(
-                add_instr!(Push, -1),  // Push 1 as the base case result
-                add_instr!(Add, 0, 2), // n - 1
-                add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
+            add_instr!(ifelse
+                make_block!(
+                    add_instr!(Push, -1),  // Push 1 as the base case result
+                    add_instr!(Add, 0, 2), // n - 1
+                    add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
+                ),
+                add_instr!(Push, 0)
             )
         ),
         add_instr!(Push, 5),
@@ -291,11 +311,13 @@ new_programs! {
             add_instr!(Rebase),               // Rebase to make n the only argument
             add_instr!(Push, 0),              // This is the bound
             add_instr!(SetGreaterThan, 0, 1), // 0 -> critical value, 1 -> bound.
-            add_instr!(Cond),                 // if n <= 0, skip to return
-            make_block!(
-                // Here, we forget to decrease the critical value.
-                add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
-            )
+            add_instr!(ifelse
+                make_block!(
+                    // Here, we forget to decrease the critical value.
+                    add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
+                ),
+                add_instr!(Push, 0)
+            )                 // if n <= 0, skip to return
         ),
         add_instr!(Push, 5),
         add_instr!(fun FunctionCall, COUNTDOWN),
@@ -358,7 +380,7 @@ new_programs! {
         make_block!(
             add_instr!(io Print, 0)
         ),
-        add_instr!(R Pop, 1), 
+        add_instr!(R Pop, 1),
         add_instr!(R Read, 0)
     },
 
@@ -370,4 +392,52 @@ new_programs! {
         ),
         add_instr!(Add, 0, 1) // This should still work, block has no effect on the outer code
     }
+}
+
+pub fn prog_factorial(number: i64) -> Vec<Instruction> {
+    vec![
+        add_instr!(fun FunctionDefine, String::from("factorial")),
+        make_block!(
+            add_instr!(R ReadReverse, 0), // n
+            add_instr!(Rebase),
+            add_instr!(Push, 1),              // 1
+            add_instr!(SetGreaterThan, 0, 1), // n > 1
+            add_instr!(ifelse // if n <= 1, skip to return
+                make_block!(
+                    add_instr!(Push, -1),  // Push 1 as the base case result
+                    add_instr!(Add, 0, 3), // n - 1
+                    add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
+                    add_instr!(Mul, 0, 5)                                    // n * factorial(n - 1
+                ),
+                add_instr!(Push, 1)
+            )
+        ),
+        add_instr!(Push, number),
+        add_instr!(fun FunctionCall, String::from("factorial")),
+    ]
+}
+
+pub fn prog_fibonacci(number: i64) -> Vec<Instruction> {
+    vec![
+        add_instr!(fun FunctionDefine, String::from("fibonacci")),
+        make_block!(
+            add_instr!(R ReadReverse, 0), // n
+            add_instr!(Rebase),
+            add_instr!(Push, 1),              // 2
+            add_instr!(SetGreaterThan, 0, 1), // n > 2
+            add_instr!(ifelse // if n <= 1, skip to return
+                make_block!(
+                    add_instr!(Push, -1),
+                    add_instr!(Add, 0, 3), // n - 1
+                    add_instr!(fun FunctionCall, String::from("fibonacci")), // calculate fibonacci(n - 1)
+                    add_instr!(Add, 4, 3),                                   // (n - 1) - 1 = n - 2
+                    add_instr!(fun FunctionCall, String::from("fibonacci")), // calculate fibonacci(n - 2)
+                    add_instr!(Add, 5, 7) // fibonacci(n - 1) + fibonacci(n - 2)
+                ),
+                add_instr!(Push, 1)
+            )
+        ),
+        add_instr!(Push, number),
+        add_instr!(fun FunctionCall, String::from("fibonacci")),
+    ]
 }

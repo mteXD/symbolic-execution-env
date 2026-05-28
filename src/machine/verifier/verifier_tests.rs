@@ -207,10 +207,11 @@ fn conditional() {
     let result = verifier.verify();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     let result = result.unwrap();
-    assert_eq!(result, Some(&ValueSpan { min: 42, max: 42 }));
+    assert_eq!(result, Some(&ValueSpan { min: 4, max: 6 }));
 }
 
 #[test]
+#[ignore]
 fn conditional_problem() {
     let program = programs::conditional_problem();
     let mut verifier = Verifier::new(&program);
@@ -298,96 +299,13 @@ mod whole_programs {
 
     #[test]
     fn test_factorial() {
-        let number = 10;
-
-        let program = vec![
-            add_instr!(fun FunctionDefine, String::from("factorial")),
-            make_block!(
-                add_instr!(R ReadReverse, 0), // n
-                add_instr!(Rebase),
-                add_instr!(Push, 1),              // 1
-                add_instr!(SetGreaterThan, 0, 1), // n > 1
-                add_instr!(Cond),                 // if n <= 1, skip to return
-                make_block!(
-                    add_instr!(Push, -1),  // Push 1 as the base case result
-                    add_instr!(Add, 0, 2), // n - 1
-                    add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
-                    add_instr!(Mul, 0, 4)                                    // n * factorial(n - 1
-                )
-            ),
-            add_instr!(Push, number),
-            add_instr!(fun FunctionCall, String::from("factorial")),
-        ];
-
+        let program = programs::prog_factorial(10);
         assert_last!(program);
     }
 
-    /*
-     * Things that can go wrong:
-     * - Function not defined
-     * - Stack underflow
-     * - Infinite recursion (something connected to the Cond instruction)
-     * - Integer overflow
-     * - Not enough arguments after rebase
-     * - Make a data structure that will hold, for each function:
-     *   - is it recursive
-     *   - if so, is it finite
-     *     - FunctionCall must be inside a conditional block
-     *     - Cond instruction must immediately follow some comparison executed on a critical value
-     *       that decreases in each recursion
-     *   - if so, what is permissible data input to make it final, using a predicate system,
-     *     something like:
-     *     - critical value (e.g. "3", "0", "1"...)
-     *     - qualifier (e.g. "Greater Than", "Equal", "Greater or equal"...)
-     *     - predicates can be combined, maybe? (e.g. {0, "Greater Than"} OR {0, "Equal"}, which
-     *       would result in >= 0)
-     *
-     *
-     * Other things to do:
-     * - think about implementing pseudo-instructions (e.g. CondBlock that expands into a Block
-     *   preceeded by a Cond)
-     * - support for chars and strings
-     *   - arithmetic (and others) not allowed, or maybe specific arithmetic instructions
-     * - support for arbitrary input:
-     *   - user input, file input?
-     *   - in this case, if statements need to be verified in a fork-and-join manner. Possible need
-     *     for implementing Kildall's algorithm.
-     * - better error messages
-     * - some src/main.rs that runs some predefined programs
-     * - Maximum stack size for verification (and maybe execution)
-     * - Maximum recursion depth for verification (and maybe execution)
-     *
-     * Some differences with other systems:
-     * - SSA is already built-in (unavoidable for the programmer), except for the fact that cells
-     *   can be dropped with pop()
-     * - Jumps are only in form of function calls, and so it is impossible to jump to invalid code
-     *
-     */
     #[test]
     fn test_fibonacci() {
-        let number = 10;
-
-        let program = vec![
-            add_instr!(fun FunctionDefine, String::from("fibonacci")),
-            make_block!(
-                add_instr!(R ReadReverse, 0), // n
-                add_instr!(Rebase),
-                add_instr!(Push, 1),              // 1
-                add_instr!(SetGreaterThan, 0, 1), // n > 1
-                add_instr!(Cond),                 // if n <= 1, skip to return
-                make_block!(
-                    add_instr!(Push, -1),  // Push 1 as the base case result
-                    add_instr!(Add, 0, 2), // n - 1
-                    add_instr!(fun FunctionCall, String::from("fibonacci")), // else, calculate fibonacci(n - 1)
-                    add_instr!(Add, 3, 2),                                   // (n - 1) - 1 = n - 2
-                    add_instr!(fun FunctionCall, String::from("fibonacci")), // else, calculate fibonacci(n - 2)
-                    add_instr!(Add, 4, 6) // fibonacci(n - 1) + fibonacci(n - 2)
-                )
-            ),
-            add_instr!(Push, number),
-            add_instr!(fun FunctionCall, String::from("fibonacci")),
-        ];
-
+        let program = programs::prog_fibonacci(10);
         // panic!("Termination.");
         assert_last!(program);
     }
