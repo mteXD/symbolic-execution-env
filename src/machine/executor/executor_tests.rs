@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     add_instr,
     instruction::{
-        BinaryOp, FunctionOp,
+        BinaryOp, FunctionOp, Instruction,
         Instruction::{
             AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm, Block,
         },
@@ -16,7 +16,7 @@ use crate::{
 
 macro_rules! assert_eq_last {
     ($prog:expr, $value:expr) => {
-        let mut executor = Executor::new(&$prog);
+        let mut executor = Executor::new($prog.clone());
         let val = executor
             .exec()
             .expect("Program should execute successfully");
@@ -47,6 +47,7 @@ macro_rules! test_binop {
 #[test]
 fn test_push_pop() {
     fn cell_checker(executor: &Executor, expected_len: usize) {
+        use crate::types::Cell;
         let len = executor.cells.len();
         assert_eq!(len, expected_len);
         for i in 0..len {
@@ -54,8 +55,8 @@ fn test_push_pop() {
         }
     }
 
-    let mut program = programs::push5();
-    let mut executor = Executor::new(&program);
+    let mut program: Vec<Instruction> = programs::push5().to_vec();
+    let mut executor = Executor::new(program.clone());
     let result = executor.exec();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     cell_checker(&executor, 5);
@@ -64,7 +65,7 @@ fn test_push_pop() {
         add_instr!(R Pop, 4),  // Pops 4
         add_instr!(R Read, 0), // Reads remaining one
     ]);
-    let mut executor = Executor::new(&program);
+    let mut executor = Executor::new(program.clone());
     let result = executor.exec();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     assert_eq!(executor.cells.len(), 2);
@@ -74,7 +75,7 @@ fn test_push_pop() {
         add_instr!(R Read, 0), // Should fail
     ]);
 
-    let mut executor = Executor::new(&program);
+    let mut executor = Executor::new(program);
     let result = executor.exec();
     if let Err(ExecutorError::InvalidCell) = result {
         // Test passed
@@ -86,7 +87,7 @@ fn test_push_pop() {
 #[test]
 fn read() {
     let program = programs::read();
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(100)));
     assert_eq!(machine.cells[0], 100);
@@ -107,7 +108,7 @@ test_binop!(test_div, 20, 5, Div => 4);
 #[test]
 fn div_by_0() {
     let program = programs::div_by_0();
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec();
     match last {
         Err(DivisionByZero) => (), // Expected error
@@ -139,7 +140,7 @@ test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
 #[test]
 fn nop() {
     let program = vec![add_instr!(Nop)];
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, None);
 }
@@ -154,7 +155,7 @@ fn math_with_read() {
 fn basic_block() {
     let program = programs::basic_block();
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(90))); // (10 + 20) + ((10 + 20) * 2) = 90
 
@@ -170,7 +171,7 @@ fn basic_block() {
 #[test]
 fn nested_block() {
     let program = programs::nested_block();
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(23)));
     assert_eq!(machine.cells[0], 3);
@@ -192,7 +193,7 @@ fn test_square_fn() {
         square_block.clone(),
     ];
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(16))); // (2^2)^2 = 16
 }
@@ -217,7 +218,7 @@ fn test_nested_rebase_1() {
             add_instr!(Add, 0, 1) // 3 + 12 = 14
         ),
     ];
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(15)));
     assert_eq!(machine.cells[0], 2);
@@ -240,7 +241,7 @@ fn test_nested_rebase_2() {
             add_instr!(Add, 0, 1) // 3 + 12 = 14
         ),
     ];
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(15)));
     assert_eq!(machine.cells[0], 2);
@@ -261,7 +262,7 @@ fn test_square_add_42() {
         ),
     ];
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(235))); // 5^2 + 42*5 = 25 + 210 = 235
     assert_eq!(machine.cells[0], 5);
@@ -282,7 +283,7 @@ fn test_simple_function() {
         add_instr!(fun FunctionCall, String::from("square")),
     ];
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(9))); // 3^2 = 9
 }
@@ -299,7 +300,7 @@ fn test_sequential_definitions() {
         add_instr!(fun FunctionCall, String::from("push2_3")),
     ];
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let _ = machine.exec().unwrap();
 
     assert_eq!(machine.cells[0], 2);
@@ -325,7 +326,7 @@ fn test_nested_functions() {
 
     // Inner function call should fail
     program.push(add_instr!(fun FunctionCall, String::from("inner")));
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec();
     assert!(matches!(
         last,
@@ -342,7 +343,7 @@ fn test_print() {
         add_instr!(io Print, 0), // Should print 123
     ];
 
-    let mut machine = Executor::new(&program);
+    let mut machine = Executor::new(program);
     let last = machine.exec().unwrap();
     assert_eq!(last, Some(&Cell::Integer(123)));
 }

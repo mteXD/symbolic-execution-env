@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::*;
 use crate::{
     instruction::{
@@ -33,16 +35,16 @@ type Result<T> = std::result::Result<T, ExecutorError>;
 
 const RECURSION_LIMIT: usize = 50;
 
-pub struct Executor<'a> {
-    machine: CoreMachine<'a>,
+pub struct Executor {
+    machine: CoreMachine,
     cells: Vec<Cell>,
     pub base: usize, // The index in `cells` where the current block/function's cells start.
     pub base_stack: Vec<usize>,
     function_depth: usize,
 }
 
-impl<'a> Executor<'a> {
-    pub fn new(program: &'a [Instruction]) -> Self {
+impl Executor {
+    pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
             cells: Vec::new(),
@@ -52,7 +54,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    fn sub_machine(&self, program: &'a [Instruction]) -> Self {
+    fn sub_machine(&self, program: impl Into<Rc<[Instruction]>>) -> Self {
         // TODO: Optimize cells cloning (use Rc?)
         Self {
             machine: CoreMachine::sub_machine(&self.machine, program),
@@ -85,14 +87,14 @@ impl<'a> Executor<'a> {
 
     pub fn exec(&mut self) -> Result<Option<&Cell>> {
         while let Some(instr) = self.machine.next() {
-            self.evaluate_instruction(instr)?;
+            self.evaluate_instruction(&instr)?;
         }
 
         Ok(self.cells.last())
     }
 }
 
-impl Evaluate for Executor<'_> {
+impl Evaluate for Executor {
     type Error = ExecutorError;
 
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<()> {
@@ -214,7 +216,7 @@ impl Evaluate for Executor<'_> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<()> {
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<()> {
         /* NOTE:
          * Since it is likely that more pops than pushes occur, we must
          * save the ENTIRE state of cells, copying it twice.
@@ -243,9 +245,9 @@ impl Evaluate for Executor<'_> {
         match instr {
             FunctionDefine => self.machine.common_function_logic(fun)?,
             FunctionCall => {
-                let instr = self.machine.function_get(&fun).map(std::slice::from_ref)?;
+                let instr = self.machine.function_get(&fun)?.clone();
 
-                let mut function_self = self.sub_machine(instr);
+                let mut function_self = self.sub_machine(Rc::<[Instruction]>::from(vec![instr]));
                 function_self.function_depth = self.function_depth + 1;
                 if function_self.function_depth > RECURSION_LIMIT {
                     panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{fun}'");
@@ -330,7 +332,7 @@ impl Evaluate for Executor<'_> {
             None => return Err(StackUnderflow),
         };
 
-        let mut machine = self.sub_machine(std::slice::from_ref(&branch));
+        let mut machine = self.sub_machine(Rc::<[Instruction]>::from(vec![(*branch).clone()]));
         machine.base_stack.push(self.base);
         machine.base = self.cells.len();
 
@@ -343,9 +345,9 @@ impl Evaluate for Executor<'_> {
     }
 }
 
-impl From<Vec<Cell>> for Executor<'_> {
+impl From<Vec<Cell>> for Executor {
     fn from(value: Vec<Cell>) -> Self {
-        let mut machine = Self::new(&[]);
+        let mut machine = Self::new(Vec::<Instruction>::new());
         machine.cells = value;
         machine
     }

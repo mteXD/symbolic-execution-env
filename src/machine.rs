@@ -39,15 +39,15 @@ impl From<ProgramDataError> for CoreError {
 type CoreResult<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone)]
-pub struct CoreMachine<'a> {
+pub struct CoreMachine {
     pub function_data: FunctionData,
-    pub program_data: ProgramData<'a>,
+    pub program_data: ProgramData,
     pub output: Output,
     pub input: Input,
 }
 
-impl<'a> CoreMachine<'a> {
-    pub fn new(program: &'a [Instruction]) -> Self {
+impl CoreMachine {
+    pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             function_data: FunctionData::default(),
             program_data: ProgramData::new(program),
@@ -72,7 +72,7 @@ impl<'a> CoreMachine<'a> {
         self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
     }
 
-    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
+    pub fn sub_machine(&self, program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             function_data: self.function_data.clone(), // PERF: clone()
             program_data: ProgramData::new(program),
@@ -82,7 +82,7 @@ impl<'a> CoreMachine<'a> {
     }
 
     pub fn common_function_logic(&mut self, arg: &str) -> CoreResult<()> {
-        let mut definitions = Vec::new();
+        let mut definitions: Vec<String> = Vec::new();
 
         while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
             debug!("Found consecutive definition: '{}'", name);
@@ -108,15 +108,15 @@ impl<'a> CoreMachine<'a> {
         self.function_insert_current(arg.to_owned())?;
 
         for name in definitions {
-            self.function_insert(name.to_owned(), FdEntry::Str(arg.to_owned()))?; // PERF: to_owned()
+            self.function_insert(name, FdEntry::Str(arg.to_owned()))?; // PERF: to_owned()
         }
 
         Ok(())
     }
 }
 
-impl<'a> Iterator for CoreMachine<'a> {
-    type Item = &'a Instruction;
+impl Iterator for CoreMachine {
+    type Item = Instruction;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.program_data.next()
@@ -149,7 +149,7 @@ trait Evaluate {
             }
             Block(instrs) => {
                 debug!("Entering block...");
-                self.evaluate_block(instrs)
+                self.evaluate_block(instrs.clone())
             }
             IfElse(when_true, when_false) => {
                 debug!("Entering if-else block...");
@@ -185,7 +185,7 @@ trait Evaluate {
         arg1: CellIndex,
         arg2: CellIndex,
     ) -> Result<(), Self::Error>;
-    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<(), Self::Error>;
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<(), Self::Error>;
     fn evaluate_ifelse(
         &mut self,
         when_true: Rc<Instruction>,

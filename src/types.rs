@@ -159,16 +159,16 @@ pub enum ProgramDataError {
 }
 use ProgramDataError::*;
 
-#[derive(Debug, Clone, Default)]
-pub struct ProgramData<'a> {
-    program: &'a [Instruction],
+#[derive(Debug, Clone)]
+pub struct ProgramData {
+    program: Rc<[Instruction]>,
     pc: Address,
 }
 
-impl<'a> ProgramData<'a> {
-    pub fn new(program: &'a [Instruction]) -> Self {
+impl ProgramData {
+    pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
-            program,
+            program: program.into(),
             pc: Address::Null,
         }
     }
@@ -191,18 +191,18 @@ impl<'a> ProgramData<'a> {
         self.get_at(self.pc)
     }
 
-    pub fn get_program(&self) -> &'a [Instruction] {
-        self.program
+    pub fn get_program(&self) -> Rc<[Instruction]> {
+        self.program.clone()
     }
 }
 
-impl<'a> Iterator for ProgramData<'a> {
-    type Item = &'a Instruction;
+impl Iterator for ProgramData {
+    type Item = Instruction;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pc.inc();
         let instr = self.program.get::<usize>(self.pc.try_into().ok()?)?;
-        Some(instr)
+        Some(instr.clone())
     }
 }
 

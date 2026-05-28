@@ -25,7 +25,7 @@ fn main() {
 
     let new_input: Rc<RefCell<Vec<Immediate>>> = Rc::new(RefCell::new(vec![42]));
 
-    let mut executor = Executor::new(&program);
+    let mut executor = Executor::new(program);
     executor.redirect_input(types::Input::Buffer(new_input.clone()));
     executor.exec().unwrap();
     println!()

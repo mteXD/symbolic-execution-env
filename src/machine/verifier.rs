@@ -331,16 +331,16 @@ impl Findings {
 }
 
 #[derive(Clone)]
-pub struct Verifier<'a> {
-    machine: CoreMachine<'a>,
+pub struct Verifier {
+    machine: CoreMachine,
     cells: Vec<ValueSpan>,
     base: usize,
     base_stack: Vec<usize>,
     findings: Findings,
 }
 
-impl<'a> Verifier<'a> {
-    pub fn new(program: &'a [Instruction]) -> Self {
+impl Verifier {
+    pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
             cells: Vec::new(),
@@ -350,7 +350,7 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn new_cond_machine(&self) -> Verifier<'_> {
+    fn new_cond_machine(&self) -> Verifier {
         let mut cond_machine = self.clone();
         cond_machine.findings.is_conditional = true;
         cond_machine.findings.inc_cond_depth();
@@ -365,7 +365,7 @@ impl<'a> Verifier<'a> {
         self.machine.output = new_output;
     }
 
-    pub fn sub_machine(&self, program: &'a [Instruction]) -> Self {
+    pub fn sub_machine(&self, program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::sub_machine(&self.machine, program),
             cells: self.cells.clone(),
@@ -438,7 +438,7 @@ impl<'a> Verifier<'a> {
 
     pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
         while let Some(instr) = self.machine.next() {
-            self.evaluate_instruction(instr)?;
+            self.evaluate_instruction(&instr)?;
             self.findings.processed_instructions += 1;
         }
 
@@ -489,7 +489,7 @@ impl<'a> Verifier<'a> {
     }
 }
 
-impl Evaluate for Verifier<'_> {
+impl Evaluate for Verifier {
     type Error = VerifierError;
 
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
@@ -667,7 +667,7 @@ impl Evaluate for Verifier<'_> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: &[Instruction]) -> Result<(), Self::Error> {
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<(), Self::Error> {
         let mut block_verifier = self.sub_machine(instrs);
         block_verifier.base_stack.push(self.base);
         block_verifier.base = self.cells.len();
@@ -696,8 +696,9 @@ impl Evaluate for Verifier<'_> {
 
                 // Shadowing will not be permitted, as compilers could generate function names
                 // easily and we can avoid complexity and ambiguity this way.
-                let current_instr = &self.machine.program_data.get_current()?.clone();
-                let mut function_verifier = self.sub_machine(std::slice::from_ref(current_instr));
+                let current_instr = self.machine.program_data.get_current()?.clone();
+                let mut function_verifier =
+                    self.sub_machine(Rc::<[Instruction]>::from(vec![current_instr]));
                 function_verifier.findings.func_defining = Some(FunctionDefiningInfo {
                     function_name: fun.to_owned(),
                     arg_positions: Vec::new(),
@@ -798,16 +799,19 @@ impl Evaluate for Verifier<'_> {
         let ifelse_result = match value {
             Some(branch) => {
                 let when_instr = if branch { when_true } else { when_false };
-                let mut machine = self.sub_machine(std::slice::from_ref(&when_instr));
+                let mut machine =
+                    self.sub_machine(Rc::<[Instruction]>::from(vec![(*when_instr).clone()]));
                 machine.findings = self.findings.clone();
                 *machine.verify()?.ok_or(BlockHasEmptyStack)?
             }
             None => {
-                let mut true_machine = self.sub_machine(std::slice::from_ref(&when_true));
+                let mut true_machine =
+                    self.sub_machine(Rc::<[Instruction]>::from(vec![(*when_true).clone()]));
                 true_machine.findings = self.findings.clone();
                 let val1 = *true_machine.verify()?.ok_or(BlockHasEmptyStack)?;
 
-                let mut false_machine = self.sub_machine(std::slice::from_ref(&when_false));
+                let mut false_machine =
+                    self.sub_machine(Rc::<[Instruction]>::from(vec![(*when_false).clone()]));
                 false_machine.findings = self.findings.clone();
                 let val2 = *false_machine.verify()?.ok_or(BlockHasEmptyStack)?;
 

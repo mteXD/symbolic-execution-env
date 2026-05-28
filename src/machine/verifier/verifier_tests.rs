@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     add_instr,
-    instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
+    instruction::{BinaryOp, FunctionOp, Instruction, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
     machine::verifier::{ValueSpan, Verifier, VerifierError},
     make_block, programs,
     types::{self, Immediate},
@@ -12,7 +12,7 @@ use VerifierError::*;
 
 macro_rules! assert_last {
     ($prog:expr) => {
-        let mut verifier = Verifier::new(&$prog);
+        let mut verifier = Verifier::new($prog.clone());
         let result = verifier.verify();
         assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     };
@@ -20,7 +20,7 @@ macro_rules! assert_last {
 
 macro_rules! assert_last_err {
     ($prog:expr, $err:pat) => {
-        let mut verifier = Verifier::new(&$prog);
+        let mut verifier = Verifier::new($prog.clone());
         let result = verifier.verify();
         if let Err($err) = result {
             // Test passed
@@ -50,7 +50,7 @@ macro_rules! test_binop {
                 add_instr!($op, 0, 1),
             ];
 
-            let mut verifier = Verifier::new(&program);
+            let mut verifier = Verifier::new(program.clone());
             assert!(verifier.verify().is_ok());
 
             assert_last_Int!(program);
@@ -70,8 +70,8 @@ macro_rules! create_test {
 
 #[test]
 fn test_push_pop() {
-    let mut program = programs::push5();
-    let mut verifier = Verifier::new(&program);
+    let mut program: Vec<Instruction> = programs::push5().to_vec();
+    let mut verifier = Verifier::new(program.clone());
     let result = verifier.verify();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     let len = verifier.cells.len();
@@ -90,7 +90,7 @@ fn test_push_pop() {
         add_instr!(R Pop, 4),  // Pops 4
         add_instr!(R Read, 0), // Reads remaining one
     ]);
-    let mut verifier = Verifier::new(&program);
+    let mut verifier = Verifier::new(program.clone());
     let result = verifier.verify();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     let len = verifier.cells.len();
@@ -110,7 +110,7 @@ fn test_push_pop() {
         add_instr!(R Read, 0), // Should fail
     ]);
 
-    let mut verifier = Verifier::new(&program);
+    let mut verifier = Verifier::new(program);
     let result = verifier.verify();
     if let Err(VerifierError::InvalidCell {
         instr: _,
@@ -203,7 +203,7 @@ create_test!(math_with_read);
 #[test]
 fn conditional() {
     let program = programs::conditional();
-    let mut verifier = Verifier::new(&program);
+    let mut verifier = Verifier::new(program);
     let result = verifier.verify();
     assert!(result.is_ok(), "Verification failed: {:?}", result.err());
     let result = result.unwrap();
@@ -214,7 +214,7 @@ fn conditional() {
 #[ignore]
 fn conditional_problem() {
     let program = programs::conditional_problem();
-    let mut verifier = Verifier::new(&program);
+    let mut verifier = Verifier::new(program);
 
     let new_input: Rc<RefCell<Vec<Immediate>>> = Rc::new(RefCell::new(vec![10]));
     verifier.redirect_input(types::Input::Buffer(new_input.clone()));
@@ -248,7 +248,7 @@ mod blocks {
     fn void_print_block() {
         let program = programs::void_print_block();
 
-        let mut verifier = Verifier::new(&program);
+        let mut verifier = Verifier::new(program);
         let result = verifier.verify();
         assert!(result.is_ok(), "Verification failed: {:?}", result.err());
 
@@ -259,7 +259,7 @@ mod blocks {
     fn block_with_pops_only() {
         let program = programs::block_with_pops_only();
 
-        let mut verifier = Verifier::new(&program);
+        let mut verifier = Verifier::new(program);
         let result = verifier.verify();
         match result {
             Err(BlockHasEmptyStack) => (),
@@ -286,7 +286,7 @@ mod intrinsics {
     fn input() {
         let program = vec![add_instr!(io Input, 0)];
 
-        let mut verifier = Verifier::new(&program);
+        let mut verifier = Verifier::new(program);
         let result = verifier.verify();
         assert!(result.is_ok(), "Verification failed: {:?}", result.err());
         let result = result.unwrap();

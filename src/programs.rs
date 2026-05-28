@@ -35,7 +35,7 @@ macro_rules! add_instr {
 #[macro_export]
 macro_rules! make_block {
     ($($instr:expr),+) => { // Variadic arguments, at least one
-        Block(vec![ $( $instr ),* ],)
+        Block(std::rc::Rc::<[Instruction]>::from(vec![ $( $instr ),* ]))
     };
 }
 
@@ -49,8 +49,8 @@ macro_rules! new_programs {
     ) => {
         $(
             // #[allow(dead_code)] // TODO: Remove this
-            pub fn $name() -> Vec<Instruction> {
-                vec![ $( $instr ),* ]
+            pub fn $name() -> std::rc::Rc<[Instruction]> {
+                std::rc::Rc::<[Instruction]>::from(vec![ $( $instr ),* ])
             }
         )*
     };
@@ -394,8 +394,8 @@ new_programs! {
     }
 }
 
-pub fn prog_factorial(number: i64) -> Vec<Instruction> {
-    vec![
+pub fn prog_factorial(number: i64) -> Rc<[Instruction]> {
+    Rc::<[Instruction]>::from(vec![
         add_instr!(fun FunctionDefine, String::from("factorial")),
         make_block!(
             add_instr!(R ReadReverse, 0), // n
@@ -414,11 +414,11 @@ pub fn prog_factorial(number: i64) -> Vec<Instruction> {
         ),
         add_instr!(Push, number),
         add_instr!(fun FunctionCall, String::from("factorial")),
-    ]
+    ])
 }
 
-pub fn prog_fibonacci(number: i64) -> Vec<Instruction> {
-    vec![
+pub fn prog_fibonacci(number: i64) -> Rc<[Instruction]> {
+    Rc::<[Instruction]>::from(vec![
         add_instr!(fun FunctionDefine, String::from("fibonacci")),
         make_block!(
             add_instr!(R ReadReverse, 0), // n
@@ -439,5 +439,5 @@ pub fn prog_fibonacci(number: i64) -> Vec<Instruction> {
         ),
         add_instr!(Push, number),
         add_instr!(fun FunctionCall, String::from("fibonacci")),
-    ]
+    ])
 }
