@@ -31,14 +31,14 @@ impl From<CoreError> for ExecutorError {
 
 type Result<T> = std::result::Result<T, ExecutorError>;
 
-const RECURSION_LIMIT: usize = 5;
+const RECURSION_LIMIT: usize = 50;
 
 pub struct Executor<'a> {
     machine: CoreMachine<'a>,
     cells: Vec<Cell>,
     pub base: usize, // The index in `cells` where the current block/function's cells start.
     pub base_stack: Vec<usize>,
-    recursion_depth: usize,
+    function_depth: usize,
 }
 
 impl<'a> Executor<'a> {
@@ -48,7 +48,7 @@ impl<'a> Executor<'a> {
             cells: Vec::new(),
             base: 0,
             base_stack: Vec::new(),
-            recursion_depth: 0,
+            function_depth: 0,
         }
     }
 
@@ -59,7 +59,7 @@ impl<'a> Executor<'a> {
             cells: self.cells.clone(),
             base: 0,
             base_stack: Vec::new(),
-            recursion_depth: 0,
+            function_depth: self.function_depth,
         }
     }
 
@@ -247,10 +247,11 @@ impl Evaluate for Executor<'_> {
                 let instr = self.machine.function_get(&fun).map(std::slice::from_ref)?;
 
                 let mut function_self = self.sub_machine(instr);
-                function_self.recursion_depth = self.recursion_depth + 1;
-                if function_self.recursion_depth > RECURSION_LIMIT {
+                function_self.function_depth = self.function_depth + 1;
+                if function_self.function_depth > RECURSION_LIMIT {
                     panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{fun}'");
                 }
+
                 let function_result = function_self.exec()?;
 
                 if let Some(val) = function_result {

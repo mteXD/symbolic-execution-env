@@ -373,7 +373,7 @@ fn test_factorial() {
     }
 
     init();
-    let number = 5;
+    let number = 10;
 
     let program = programs::prog_factorial(number);
 
@@ -390,7 +390,7 @@ fn test_fibonacci() {
     }
 
     init();
-    let number = 5;
+    let number = 10;
 
     let program = programs::prog_fibonacci(number);
 
