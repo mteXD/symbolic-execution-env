@@ -110,7 +110,7 @@ fn div_by_0() {
     let mut machine = Executor::new(&program);
     let last = machine.exec();
     match last {
-        Err(DivisionByZero) => {} // Expected error
+        Err(DivisionByZero) => (), // Expected error
         _ => panic!("Expected DivisionByZero error, got {:?}", last),
     }
 }

@@ -75,27 +75,6 @@ impl From<FunctionDataError> for VerifierError {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Comparator {
-    LessThan,
-    Equal,
-    GreaterThan,
-    NotEqual,
-    LessThanOrEqual,
-    GreaterThanOrEqual,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ConvergenceInfo {
-    critical_cell1_index: CellIndex,
-    critical_cell1_value_span: ValueSpan,
-    comparator: Comparator,
-    critical_cell2_index: CellIndex,
-    critical_cell2_value_span: ValueSpan,
-    does_converge: bool,
-    keep: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValueSpan {
     pub min: Immediate,
@@ -501,7 +480,6 @@ impl Evaluate for Verifier<'_> {
             }
             Cond => {
                 use BinaryOp::*;
-                use Comparator::*;
                 use Instruction::{AluBinary, AluUnaryImm};
 
                 /* First, check if the previous instr was a comparison instr.
@@ -517,13 +495,13 @@ impl Evaluate for Verifier<'_> {
                 };
 
                 match self.get_prev_instr()? {
-                    AluBinary(cmp, r1, r2) => {
-                        let comparator = match cmp {
-                            SetNotEqual => NotEqual,
-                            SetLessThan => LessThan,
-                            SetLessThanOrEqual => LessThanOrEqual,
-                            SetGreaterThan => GreaterThan,
-                            SetGreaterThanOrEqual => GreaterThanOrEqual,
+                    AluBinary(cmp, _, _) => {
+                        match cmp {
+                            SetNotEqual
+                            | SetLessThan
+                            | SetLessThanOrEqual
+                            | SetGreaterThan
+                            | SetGreaterThanOrEqual => (),
                             _ => return throw_err(),
                         };
                     }
@@ -590,7 +568,7 @@ impl Evaluate for Verifier<'_> {
                                 func_info.arg_positions.push(MemorizedIndex::Normal(arg));
                             }
                             None => panic!(
-                                "We got None, which can only happen when collecting function arguments."
+                                "This case cannot happen, as `func_defining` must be Some if `val` is None"
                             ),
                         }
                     }
@@ -608,7 +586,7 @@ impl Evaluate for Verifier<'_> {
                                 func_info.arg_positions.push(MemorizedIndex::Normal(arg));
                             }
                             None => panic!(
-                                "We got None, which can only happen when collecting function arguments."
+                                "This case cannot happen, as `func_defining` must be Some if `val` is None"
                             ),
                         }
                     }
@@ -643,7 +621,6 @@ impl Evaluate for Verifier<'_> {
                             })?;
 
                         let val = self.read(index)?;
-
                         match val {
                             Some(v) => self.push(v.clone()),
                             None => {
@@ -815,7 +792,7 @@ impl Evaluate for Verifier<'_> {
         use IntrinsicOp::*;
 
         match instr {
-            Print => {}
+            Print => (),
             Input => self.push(ValueSpan::inf()),
             FileRead => self.push(ValueSpan::inf()),
             FileWrite => todo!(),

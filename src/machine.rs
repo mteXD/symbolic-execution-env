@@ -90,7 +90,7 @@ impl<'a> CoreMachine<'a> {
         }
 
         match self.program_data.get_current() {
-            Ok(Instruction::Block(_)) => {}
+            Ok(Instruction::Block(_)) => (),
             Ok(instr) => {
                 warn!(
                     "Expected block after function definitions, but found instruction: {:?}",

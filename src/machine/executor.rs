@@ -94,7 +94,7 @@ impl Evaluate for Executor<'_> {
         use NullaryOp::*;
 
         match instr {
-            Nop => {}
+            Nop => (),
             Rebase => {
                 if self.base > self.cells.len() {
                     return Err(RebaseError);
@@ -106,7 +106,7 @@ impl Evaluate for Executor<'_> {
                 Some(Integer(0)) => {
                     self.machine.next(); // Skip the next instruction
                 }
-                Some(Integer(_)) => {}
+                Some(Integer(_)) => (),
                 Some(_) => {
                     return Err(TypeError {
                         expected: Integer(0),

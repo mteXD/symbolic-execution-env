@@ -2,9 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     add_instr,
-    instruction::{
-        BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm,
-    },
+    instruction::{BinaryOp, FunctionOp, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
     machine::verifier::{ValueSpan, Verifier, VerifierError},
     make_block, programs,
     types::{self, Immediate},
@@ -230,7 +228,7 @@ fn conditional_problem() {
             cells: _,
             prog: _,
             location: _,
-        }) => {}
+        }) => (),
         _ => panic!("Expected CondInvalidCell error, but got {:?}", result),
     }
 }
@@ -263,7 +261,7 @@ mod blocks {
         let mut verifier = Verifier::new(&program);
         let result = verifier.verify();
         match result {
-            Err(BlockHasEmptyStack) => {}
+            Err(BlockHasEmptyStack) => (),
             _ => panic!("Expected BlockHasEmptyStack error, but got {:?}", result),
         }
     }
