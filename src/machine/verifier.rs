@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::{Add, Div, Mul},
+    ops::{Add, Deref, DerefMut, Div, Mul},
     rc::Rc,
 };
 
@@ -10,7 +10,7 @@ use crate::{
     },
     machine::{
         CoreError::{self},
-        CoreMachine, Evaluate,
+        CoreMachine, Evaluate, StackFrames,
     },
     types::{
         self, Address, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramData,
@@ -100,26 +100,12 @@ impl ValueSpan {
         Self { min, max }
     }
 
-    // fn size(&self) -> u128 {
-    //     (self.max as u128)
-    //         .saturating_sub(self.min as u128)
-    //         .saturating_add(1)
-    // }
-    //
-    // fn smaller_than(&self, other: &ValueSpan) -> bool {
-    //     self.size() < other.size()
-    // }
-
     fn inf() -> Self {
         Self {
             min: Immediate::MIN,
             max: Immediate::MAX,
         }
     }
-
-    // fn includes_zero(&self) -> bool {
-    //     self.min <= 0 && self.max >= 0
-    // }
 
     fn disjunct(&self, other: &ValueSpan) -> bool {
         self.max < other.min || other.max < self.min
@@ -325,31 +311,33 @@ impl Findings {
     }
 }
 
-/// See `Frame` in `executor.rs` for the design rationale; this is the verifier's
-/// equivalent, parameterized over `ValueSpan` instead of `Cell`.
-#[derive(Clone)]
-struct Frame {
-    start: usize,
-    saved_below: Vec<ValueSpan>,
-}
-
 #[derive(Clone)]
 pub struct Verifier {
     machine: CoreMachine,
-    cells: Vec<ValueSpan>,
-    base: usize,
+    pub stack: StackFrames<ValueSpan>,
     findings: Findings,
-    frames: Vec<Frame>,
+}
+
+// Convenience: lets `verifier.cells`, `verifier.base`, and the stack methods
+// resolve directly through the inner `StackFrames`.
+impl Deref for Verifier {
+    type Target = StackFrames<ValueSpan>;
+    fn deref(&self) -> &StackFrames<ValueSpan> {
+        &self.stack
+    }
+}
+impl DerefMut for Verifier {
+    fn deref_mut(&mut self) -> &mut StackFrames<ValueSpan> {
+        &mut self.stack
+    }
 }
 
 impl Verifier {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
-            cells: Vec::new(),
-            base: 0,
+            stack: StackFrames::new(),
             findings: Findings::default(),
-            frames: Vec::new(),
         }
     }
 
@@ -361,25 +349,24 @@ impl Verifier {
         self.machine.output = new_output;
     }
 
-    /// Runs `instrs` as a nested context on the shared `cells` vector.
+    fn run_loop(&mut self) -> Result<(), VerifierError> {
+        while let Some(instr) = self.machine.next() {
+            self.evaluate_instruction(&instr)?;
+            self.findings.processed_instructions += 1;
+        }
+        Ok(())
+    }
+
+    /// Low-level nested run: scopes `cells` (via [`StackFrames`]) and `program_data`.
+    /// Returns `(last_cell_at_end_of_body, body_stack_size)`.
     ///
-    /// Returns `(last_cell_above_frame_start, body_stack_size)` on success. The body
-    /// stack size is the number of cells the body left on its local stack (above
-    /// `frame.start`), which callers (e.g. ifelse) may use to compare branches.
-    ///
-    /// This helper handles only cells + program_data + base. Callers that need to
-    /// scope `findings` or `function_data` must save/restore them explicitly.
+    /// Callers needing to also scope `findings` or `function_data` should use
+    /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
         instrs: Rc<[Instruction]>,
     ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
-        self.frames.push(Frame {
-            start: self.cells.len(),
-            saved_below: Vec::new(),
-        });
-        let saved_base = self.base;
-        self.base = self.cells.len();
-
+        let saved_base = self.stack.enter();
         let saved_pd = std::mem::replace(
             &mut self.machine.program_data,
             ProgramData::new(instrs),
@@ -388,28 +375,79 @@ impl Verifier {
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        self.base = saved_base;
-
-        let frame = self.frames.pop().expect("frame must exist");
+        let exit = self.stack.exit(saved_base);
 
         exec_result?;
-
-        let body_stack_size = self.cells.len().saturating_sub(frame.start);
-        // Match legacy semantics: result is the top of the inherited+body stack.
-        let result = self.cells.last().copied();
-
-        self.cells.truncate(frame.start);
-        self.cells
-            .extend(frame.saved_below.iter().rev().copied());
-
-        Ok((result, body_stack_size))
+        Ok(exit)
     }
 
-    fn run_loop(&mut self) -> Result<(), VerifierError> {
-        while let Some(instr) = self.machine.next() {
-            self.evaluate_instruction(&instr)?;
-            self.findings.processed_instructions += 1;
+    /// Runs `instrs` as a fully-scoped block: `cells`, `program_data`,
+    /// `findings`, and `function_data` are all saved on entry and restored on
+    /// exit. Used by `evaluate_block` and `evaluate_ifelse`.
+    fn run_block_scoped(
+        &mut self,
+        instrs: Rc<[Instruction]>,
+    ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
+        let saved_findings = self.findings.clone();
+        let saved_fd = self.machine.function_data.clone();
+
+        let result = self.run_nested(instrs);
+
+        self.machine.function_data = saved_fd;
+        self.findings = saved_findings;
+        result
+    }
+
+    /// Verifies the body of a `FunctionDefine`: runs the body in an inner scope,
+    /// collects the discovered argument positions and any nested function aliases,
+    /// then publishes them into the parent's `findings.func_data`.
+    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError> {
+        self.machine.common_function_logic(fun)?;
+        // Shadowing is not permitted; compilers can generate unique function names.
+        let body = self.machine.program_data.get_current()?.clone();
+
+        // Scope: snapshot findings + function_data so body mutations don't leak.
+        let saved_findings = self.findings.clone();
+        let saved_fd = self.machine.function_data.clone();
+
+        // Seed the body's findings: it is collecting args for `fun`, and `fun`
+        // itself must be visible inside the body (e.g. for recursion checks).
+        let seed = || FunctionDefiningInfo {
+            function_name: fun.to_owned(),
+            arg_positions: Vec::new(),
+        };
+        self.findings.func_defining = Some(seed());
+        self.findings.func_data.insert(fun.to_owned(), seed());
+
+        let run_result = self.run_nested(Rc::<[Instruction]>::from(vec![body]));
+
+        // Capture body-mutated state before restoring the parent's snapshots.
+        let body_func_defining = self.findings.func_defining.take();
+        let body_function_table = self.machine.function_data.function_table.clone();
+
+        self.machine.function_data = saved_fd;
+        self.findings = saved_findings;
+
+        run_result?;
+        let func_defining = body_func_defining
+            .expect("FunctionDefiningInfo should be set during function verification.");
+
+        // Inner names that aliased `fun` (consecutive `FunctionDefine`s) get the
+        // same arg signature in the parent's func_data.
+        // PERF: linear scan; consider an inverse index if this gets hot.
+        for (alias, entry) in &body_function_table {
+            if matches!(entry, FdEntry::Str(s) if s == fun) {
+                self.findings.func_data.insert(
+                    alias.to_owned(),
+                    FunctionDefiningInfo {
+                        function_name: alias.to_owned(),
+                        arg_positions: func_defining.arg_positions.clone(),
+                    },
+                );
+            }
         }
+
+        self.findings.func_data.insert(fun.to_owned(), func_defining);
         Ok(())
     }
 
@@ -430,30 +468,14 @@ impl Verifier {
         Ok(())
     }
 
-    pub fn push(&mut self, value: ValueSpan) {
-        self.cells.push(value);
-    }
-
-    /// Pops the top cell. If the pop reaches into the parent's cells (below the current
-    /// frame's `start`), the popped value is saved for restoration on frame exit.
-    pub fn pop(&mut self) -> Option<ValueSpan> {
-        let popped = self.cells.pop()?;
-        if let Some(frame) = self.frames.last_mut() {
-            if self.cells.len() < frame.start {
-                frame.saved_below.push(popped);
-                frame.start -= 1;
-            }
-        }
-        Some(popped)
-    }
-
-    pub fn read(&self, reg: CellIndex) -> Result<Option<&ValueSpan>, VerifierError> {
+    pub fn read(&self, reg: CellIndex) -> Result<Option<ValueSpan>, VerifierError> {
         if self.findings.is_collecting_func_args() {
             return Result::Ok(None);
         }
 
-        self.cells
-            .get::<usize>(reg.into())
+        self.stack
+            .get(reg.into())
+            .copied()
             .ok_or(InvalidCell {
                 instr: self.machine.program_data.get_current()?.clone(),
                 cell_index: reg,
@@ -541,18 +563,8 @@ impl Evaluate for Verifier {
         match instr {
             Nop => (),
             Rebase => {
-                if self.base > self.cells.len() {
-                    return Err(RebaseError);
-                }
-
-                let drained: Vec<ValueSpan> = self.cells.drain(..self.base).collect();
-                if let Some(frame) = self.frames.last_mut() {
-                    frame.saved_below.extend(drained.into_iter().rev());
-                    frame.start = 0;
-                }
-
-                let avail_values = self.cells.len();
-                self.findings.values_after_rebase = Some(avail_values);
+                self.stack.rebase().map_err(|()| RebaseError)?;
+                self.findings.values_after_rebase = Some(self.cells.len());
             }
         }
 
@@ -586,7 +598,7 @@ impl Evaluate for Verifier {
 
                 match val {
                     Some(ValueSpan { min, max }) if min == max => {
-                        self.push(ValueSpan::new(!*min, !*max));
+                        self.push(ValueSpan::new(!min, !max));
                     }
                     Some(_) => {
                         self.push(ValueSpan::inf());
@@ -687,7 +699,7 @@ impl Evaluate for Verifier {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        if let (Some(&a), Some(&b)) = (a, b) {
+        if let (Some(a), Some(b)) = (a, b) {
             let calculated_value = match instr {
                 Add => a + b,
                 Mul => a * b,
@@ -715,21 +727,10 @@ impl Evaluate for Verifier {
     }
 
     fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<(), Self::Error> {
-        // Findings and function_data are scoped to the block: inner mutations must
-        // not leak back to the parent. Save and restore around the nested run.
-        let saved_findings = self.findings.clone();
-        let saved_fd = self.machine.function_data.clone();
-
-        let result = self.run_nested(instrs);
-
-        self.machine.function_data = saved_fd;
-        self.findings = saved_findings;
-
-        match result?.0 {
+        match self.run_block_scoped(instrs)?.0 {
             Some(val) => self.push(val),
             None => return Err(BlockHasEmptyStack),
         }
-
         Ok(())
     }
 
@@ -738,63 +739,7 @@ impl Evaluate for Verifier {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => {
-                self.machine.common_function_logic(fun)?;
-
-                // Shadowing will not be permitted, as compilers could generate function names
-                // easily and we can avoid complexity and ambiguity this way.
-                let current_instr = self.machine.program_data.get_current()?.clone();
-
-                // Save findings + function_data so the body's mutations don't leak
-                // back to the parent. Set up the body's findings before running.
-                let saved_findings = self.findings.clone();
-                let saved_fd = self.machine.function_data.clone();
-
-                self.findings.func_defining = Some(FunctionDefiningInfo {
-                    function_name: fun.to_owned(),
-                    arg_positions: Vec::new(),
-                });
-                self.findings.func_data.insert(
-                    fun.to_owned(),
-                    FunctionDefiningInfo {
-                        function_name: fun.to_owned(),
-                        arg_positions: Vec::new(),
-                    },
-                );
-
-                let run_result =
-                    self.run_nested(Rc::<[Instruction]>::from(vec![current_instr]));
-
-                // Capture what we need from the body's mutated state before restoring.
-                let inner_func_defining = self.findings.func_defining.take();
-                let inner_function_table = self.machine.function_data.function_table.clone();
-
-                self.machine.function_data = saved_fd;
-                self.findings = saved_findings;
-
-                run_result?;
-
-                let func_defining = inner_func_defining
-                    .expect("FunctionDefiningInfo should be set during function verification.");
-
-                // PERF: For now, iterate over the whole hashmap and find the keys that have the
-                // current function as the value.
-                for (k, v) in &inner_function_table {
-                    if let FdEntry::Str(s) = v {
-                        if s == fun {
-                            self.findings.func_data.insert(
-                                k.to_owned(),
-                                FunctionDefiningInfo {
-                                    function_name: k.to_owned(),
-                                    arg_positions: func_defining.arg_positions.clone(),
-                                },
-                            );
-                        }
-                    }
-                }
-
-                self.findings.func_data.insert(fun.to_owned(), func_defining);
-            }
+            FunctionDefine => self.verify_function_definition(fun)?,
             FunctionCall => {
                 self.machine.function_get(&fun)?;
 
@@ -848,38 +793,23 @@ impl Evaluate for Verifier {
         let condition = self.cells.last().ok_or(StackUnderflow)?;
         self.check_good_if_placement()?;
         let value = Self::check_unnecessary_if(condition);
+        let single_branch_body = |branch: Rc<Instruction>| Rc::<[Instruction]>::from(vec![(*branch).clone()]);
         let ifelse_result = match value {
-            Some(branch) => {
-                let when_instr = if branch { when_true } else { when_false };
-                let saved_findings = self.findings.clone();
-                let saved_fd = self.machine.function_data.clone();
-                let res =
-                    self.run_nested(Rc::<[Instruction]>::from(vec![(*when_instr).clone()]));
-                self.machine.function_data = saved_fd;
-                self.findings = saved_findings;
-                res?.0.ok_or(BlockHasEmptyStack)?
+            Some(taken) => {
+                let body = single_branch_body(if taken { when_true } else { when_false });
+                self.run_block_scoped(body)?.0.ok_or(BlockHasEmptyStack)?
             }
             None => {
-                let saved_findings = self.findings.clone();
-                let saved_fd = self.machine.function_data.clone();
-                let true_res =
-                    self.run_nested(Rc::<[Instruction]>::from(vec![(*when_true).clone()]));
-                self.machine.function_data = saved_fd.clone();
-                self.findings = saved_findings.clone();
-                let (val1_opt, true_size) = true_res?;
-                let val1 = val1_opt.ok_or(BlockHasEmptyStack)?;
+                let (v1, sz1) = self.run_block_scoped(single_branch_body(when_true))?;
+                let val1 = v1.ok_or(BlockHasEmptyStack)?;
 
-                let false_res =
-                    self.run_nested(Rc::<[Instruction]>::from(vec![(*when_false).clone()]));
-                self.machine.function_data = saved_fd;
-                self.findings = saved_findings;
-                let (val2_opt, false_size) = false_res?;
-                let val2 = val2_opt.ok_or(BlockHasEmptyStack)?;
+                let (v2, sz2) = self.run_block_scoped(single_branch_body(when_false))?;
+                let val2 = v2.ok_or(BlockHasEmptyStack)?;
 
-                if true_size != false_size {
+                if sz1 != sz2 {
                     return Err(CondUnequalStackSizes {
-                        true_branch_cells: true_size,
-                        false_branch_cells: false_size,
+                        true_branch_cells: sz1,
+                        false_branch_cells: sz2,
                     });
                 }
 

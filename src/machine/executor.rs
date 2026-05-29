@@ -1,3 +1,4 @@
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use super::*;
@@ -5,7 +6,7 @@ use crate::{
     instruction::{
         BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine},
+    machine::{CoreError, CoreMachine, StackFrames},
     types::{self, Cell, CellIndex, Immediate, ProgramData},
 };
 use Cell::*;
@@ -35,33 +36,32 @@ type Result<T> = std::result::Result<T, ExecutorError>;
 
 const RECURSION_LIMIT: usize = 50;
 
-/// Bookkeeping for a single nested execution context (block / function / ifelse branch).
-///
-/// `start` is the boundary between parent cells and cells pushed inside this context.
-/// `saved_below` holds parent cells that were displaced (popped from below `start`,
-/// or drained by `Rebase`) and must be restored on exit. They are stored in the order
-/// they were displaced; restoration iterates them in reverse.
-struct Frame {
-    start: usize,
-    saved_below: Vec<Cell>,
-}
-
 pub struct Executor {
     machine: CoreMachine,
-    cells: Vec<Cell>,
-    pub base: usize, // The index in `cells` where the current block/function's cells start.
+    pub stack: StackFrames<Cell>,
     function_depth: usize,
-    frames: Vec<Frame>,
+}
+
+// Convenience: lets `executor.cells`, `executor.base`, and the stack methods
+// (`push`, `pop`, `get`) resolve directly through the inner `StackFrames`.
+impl Deref for Executor {
+    type Target = StackFrames<Cell>;
+    fn deref(&self) -> &StackFrames<Cell> {
+        &self.stack
+    }
+}
+impl DerefMut for Executor {
+    fn deref_mut(&mut self) -> &mut StackFrames<Cell> {
+        &mut self.stack
+    }
 }
 
 impl Executor {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
-            cells: Vec::new(),
-            base: 0,
+            stack: StackFrames::new(),
             function_depth: 0,
-            frames: Vec::new(),
         }
     }
 
@@ -73,26 +73,8 @@ impl Executor {
         self.machine.output = new_output;
     }
 
-    pub fn push(&mut self, value: Cell) {
-        self.cells.push(value);
-    }
-
-    /// Pops the top cell. If popping reaches into the parent's cells (below the current
-    /// frame's `start`), the popped cell is saved for restoration on frame exit and the
-    /// frame's `start` boundary is decremented to keep accounting consistent.
-    pub fn pop(&mut self) -> Option<Cell> {
-        let popped = self.cells.pop()?;
-        if let Some(frame) = self.frames.last_mut() {
-            if self.cells.len() < frame.start {
-                frame.saved_below.push(popped);
-                frame.start -= 1;
-            }
-        }
-        Some(popped)
-    }
-
-    pub fn read(&self, reg: CellIndex) -> Result<&Cell> {
-        self.cells.get::<usize>(reg.into()).ok_or(InvalidCell)
+    pub fn read(&self, reg: CellIndex) -> Result<Cell> {
+        self.stack.get(reg.into()).copied().ok_or(InvalidCell)
     }
 
     fn run(&mut self) -> Result<()> {
@@ -107,18 +89,13 @@ impl Executor {
         Ok(self.cells.last())
     }
 
-    /// Runs `instrs` as a nested context (block / function body / ifelse branch) on the
-    /// shared `cells` vector. Returns the last cell pushed by the body, or `None` if the
-    /// body left the body-local stack empty. Parent cells are restored after execution.
+    /// Runs `instrs` as a nested context (block / function body / ifelse branch).
+    ///
+    /// Saves and restores `program_data` (so the inner program is scoped) and
+    /// `function_data` (so inner `FunctionDefine`s don't leak to the parent).
+    /// Cells are managed in-place via the [`StackFrames`] helper.
     fn run_nested(&mut self, instrs: Rc<[Instruction]>) -> Result<Option<Cell>> {
-        self.frames.push(Frame {
-            start: self.cells.len(),
-            saved_below: Vec::new(),
-        });
-        let saved_base = self.base;
-        self.base = self.cells.len();
-
-        // Swap in the new program; clone function_data so inner FunctionDefines don't leak.
+        let saved_base = self.stack.enter();
         let saved_pd = std::mem::replace(
             &mut self.machine.program_data,
             ProgramData::new(instrs),
@@ -129,21 +106,9 @@ impl Executor {
 
         self.machine.program_data = saved_pd;
         self.machine.function_data = saved_fd;
-        self.base = saved_base;
-
-        let frame = self.frames.pop().expect("frame must exist");
+        let (result, _) = self.stack.exit(saved_base);
 
         exec_result?;
-
-        // Match legacy semantics: the block's result is the top of the body-local stack
-        // at end of body. With shared cells, a body that did nothing inherits the parent's
-        // top cell (a "void" block). Returns None only if the body fully drained the stack.
-        let result = self.cells.last().copied();
-
-        // Discard any body-local cells, then restore displaced parent cells.
-        self.cells.truncate(frame.start);
-        self.cells.extend(frame.saved_below.iter().rev().copied());
-
         Ok(result)
     }
 }
@@ -156,19 +121,7 @@ impl Evaluate for Executor {
 
         match instr {
             Nop => (),
-            Rebase => {
-                if self.base > self.cells.len() {
-                    return Err(RebaseError);
-                }
-
-                // Drain cells[..base] (the parent's cells visible to this frame) and
-                // hand them to the current frame so they can be restored on exit.
-                let drained: Vec<Cell> = self.cells.drain(..self.base).collect();
-                if let Some(frame) = self.frames.last_mut() {
-                    frame.saved_below.extend(drained.into_iter().rev());
-                    frame.start = 0;
-                }
-            }
+            Rebase => self.stack.rebase().map_err(|()| RebaseError)?,
         }
 
         Ok(())
@@ -190,18 +143,18 @@ impl Evaluate for Executor {
         match instr {
             Not => {
                 let val = self.read(arg)?;
-                if let Integer(val) = val {
-                    self.push(Integer(!*val));
+                if let Integer(v) = val {
+                    self.push(Integer(!v));
                 } else {
                     return Err(TypeError {
                         expected: Integer(0),
-                        found: val.clone(),
+                        found: val,
                     });
                 }
             }
             Read => {
                 let val = self.read(arg)?;
-                self.push(val.clone());
+                self.push(val);
             }
             ReadReverse => {
                 // like python's negative indexing.
@@ -211,7 +164,7 @@ impl Evaluate for Executor {
                     .and_then(|len| len.checked_sub(arg))
                     .ok_or(InvalidCell)?;
                 let val = self.read(index)?;
-                self.push(val.clone());
+                self.push(val);
             }
             Pop => {
                 for _ in 0..arg {
@@ -244,14 +197,14 @@ impl Evaluate for Executor {
 
         if let (Integer(a), Integer(b)) = (a, b) {
             let calculated_value = match instr {
-                Add => a.checked_add(*b).ok_or(ArithmeticOverflow)?,
-                Mul => a.checked_mul(*b).ok_or(ArithmeticOverflow)?,
-                Div => a.checked_div(*b).ok_or(DivisionByZero)?,
+                Add => a.checked_add(b).ok_or(ArithmeticOverflow)?,
+                Mul => a.checked_mul(b).ok_or(ArithmeticOverflow)?,
+                Div => a.checked_div(b).ok_or(DivisionByZero)?,
                 And => a & b,
                 Or => a | b,
                 Xor => a ^ b,
                 ShiftLeftLogical => a << b,
-                ShiftRightLogical => ((*a as u64) >> b) as i64,
+                ShiftRightLogical => ((a as u64) >> b) as i64,
                 ShiftRightArithmetic => a >> b,
                 SetEqual => from_bool(a == b),
                 SetNotEqual => from_bool(a != b),
@@ -268,7 +221,7 @@ impl Evaluate for Executor {
                 found: self
                     .cells
                     .last()
-                    .cloned()
+                    .copied()
                     .expect("Stack should not be empty here"),
             });
         }
@@ -320,37 +273,30 @@ impl Evaluate for Executor {
                 let val = self.read(arg)?;
                 print!("{val}");
             }
-            Input => {
-                match &self.machine.input {
-                    Input::Stdin => {
-                        let mut input: String = String::new();
-                        std::io::stdin()
-                            .read_line(&mut input)
-                            .expect("Failed to read input");
+            Input => match &self.machine.input {
+                Input::Stdin => {
+                    let mut input: String = String::new();
+                    std::io::stdin()
+                        .read_line(&mut input)
+                        .expect("Failed to read input");
 
-                        // TODO: Make explicit instructions for Integer and String input.
-                        let result = input.trim().parse::<i64>();
-
-                        match result {
-                            Ok(val) => self.push(Integer(val)),
-                            Err(e) => {
-                                todo!("For now, invalid input is a fatal error: {e}");
-                            }
-                        }
-                    }
-                    Input::File(_) => todo!(),
-                    Input::Buffer(ref_cell) => {
-                        let new_val = ref_cell
-                            .borrow_mut()
-                            .pop()
-                            .expect("Not enough input in buffer")
-                            .clone();
-                        self.push(Cell::Integer(
-                            new_val.try_into().expect("Couldn't transform u8 into i64?"),
-                        ));
+                    // TODO: Make explicit instructions for Integer and String input.
+                    match input.trim().parse::<i64>() {
+                        Ok(val) => self.push(Integer(val)),
+                        Err(e) => todo!("For now, invalid input is a fatal error: {e}"),
                     }
                 }
-            }
+                Input::File(_) => todo!(),
+                Input::Buffer(ref_cell) => {
+                    let new_val = ref_cell
+                        .borrow_mut()
+                        .pop()
+                        .expect("Not enough input in buffer");
+                    self.push(Cell::Integer(
+                        new_val.try_into().expect("Couldn't transform u8 into i64?"),
+                    ));
+                }
+            },
             FileRead => todo!(),
             FileWrite => todo!(),
         }
@@ -363,17 +309,13 @@ impl Evaluate for Executor {
         when_true: Rc<Instruction>,
         when_false: Rc<Instruction>,
     ) -> Result<()> {
-        let branch = match self.cells.last() {
+        let branch = match self.cells.last().copied() {
             Some(Integer(0)) => when_false,
             Some(Integer(_)) => when_true,
-            Some(_) => {
+            Some(other) => {
                 return Err(TypeError {
                     expected: Integer(0),
-                    found: self
-                        .cells
-                        .last()
-                        .cloned()
-                        .expect("Stack should not be empty here"),
+                    found: other,
                 });
             }
             None => return Err(StackUnderflow),
@@ -391,7 +333,7 @@ impl Evaluate for Executor {
 impl From<Vec<Cell>> for Executor {
     fn from(value: Vec<Cell>) -> Self {
         let mut machine = Self::new(Vec::<Instruction>::new());
-        machine.cells = value;
+        machine.stack.cells = value;
         machine
     }
 }

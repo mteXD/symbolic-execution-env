@@ -72,15 +72,6 @@ impl CoreMachine {
         self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
     }
 
-    pub fn sub_machine(&self, program: impl Into<Rc<[Instruction]>>) -> Self {
-        Self {
-            function_data: self.function_data.clone(), // PERF: clone()
-            program_data: ProgramData::new(program),
-            output: self.output.clone(),
-            input: self.input.clone(),
-        }
-    }
-
     pub fn common_function_logic(&mut self, arg: &str) -> CoreResult<()> {
         let mut definitions: Vec<String> = Vec::new();
 
@@ -197,4 +188,100 @@ trait Evaluate {
         instr: &IntrinsicOp,
         arg: CellIndex,
     ) -> Result<(), Self::Error>;
+}
+
+// =============================================================================
+// Shared frame-stack mechanics used by both Executor and Verifier.
+//
+// A `Frame` records the cell-stack boundary at the start of a nested context
+// (block / function body / ifelse branch). When the body pops below `start`,
+// the displaced parent cell is saved into `saved_below`; when `Rebase` drains
+// the parent's cells, they too are saved. On exit, body-local cells are
+// dropped and `saved_below` is replayed to restore the parent's stack.
+// =============================================================================
+
+#[derive(Clone, Debug)]
+pub struct Frame<T> {
+    pub start: usize,
+    pub saved_below: Vec<T>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StackFrames<T: Copy> {
+    pub cells: Vec<T>,
+    pub base: usize,
+    pub frames: Vec<Frame<T>>,
+}
+
+impl<T: Copy> StackFrames<T> {
+    pub fn new() -> Self {
+        Self {
+            cells: Vec::new(),
+            base: 0,
+            frames: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, value: T) {
+        self.cells.push(value);
+    }
+
+    /// Pops the top cell. If popping reaches into the parent's cells (below the
+    /// current frame's `start`), the popped value is saved for restoration on
+    /// frame exit and the frame's `start` is decremented to keep accounting consistent.
+    pub fn pop(&mut self) -> Option<T> {
+        let popped = self.cells.pop()?;
+        if let Some(frame) = self.frames.last_mut() {
+            if self.cells.len() < frame.start {
+                frame.saved_below.push(popped);
+                frame.start -= 1;
+            }
+        }
+        Some(popped)
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&T> {
+        self.cells.get(idx)
+    }
+
+    /// Begin a nested context. Pushes a fresh frame, sets `base` to the current
+    /// stack length, and returns the previous `base` (which the caller must pass
+    /// to [`exit`] to restore).
+    pub fn enter(&mut self) -> usize {
+        let saved_base = self.base;
+        self.base = self.cells.len();
+        self.frames.push(Frame {
+            start: self.cells.len(),
+            saved_below: Vec::new(),
+        });
+        saved_base
+    }
+
+    /// End the nested context: restore `base`, drop body-local cells, and replay
+    /// any displaced parent cells. Returns `(last_cell_at_end_of_body, body_stack_size)`.
+    pub fn exit(&mut self, saved_base: usize) -> (Option<T>, usize) {
+        self.base = saved_base;
+        let frame = self.frames.pop().expect("exit called without matching enter");
+        let body_stack_size = self.cells.len().saturating_sub(frame.start);
+        // Match legacy semantics: result is the top of the inherited+body stack.
+        let result = self.cells.last().copied();
+        self.cells.truncate(frame.start);
+        self.cells.extend(frame.saved_below.iter().rev().copied());
+        (result, body_stack_size)
+    }
+
+    /// Drains `cells[..base]` (the parent's cells visible to the current frame)
+    /// into the frame's `saved_below`, so they can be restored on exit. Returns
+    /// `Err` if `base > cells.len()`.
+    pub fn rebase(&mut self) -> Result<(), ()> {
+        if self.base > self.cells.len() {
+            return Err(());
+        }
+        let drained: Vec<T> = self.cells.drain(..self.base).collect();
+        if let Some(frame) = self.frames.last_mut() {
+            frame.saved_below.extend(drained.into_iter().rev());
+            frame.start = 0;
+        }
+        Ok(())
+    }
 }
