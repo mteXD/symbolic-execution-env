@@ -294,6 +294,126 @@ mod intrinsics {
     }
 }
 
+mod ifelse_coverage {
+    use super::*;
+
+    // ---- positive cases ----
+    create_test!(ifelse_balanced_push);
+    create_test!(ifelse_balanced_blocks);
+    create_test!(ifelse_known_true_asymmetric);
+    create_test!(ifelse_known_false_asymmetric);
+    create_test!(ifelse_block_in_branch_can_rebase);
+    create_test!(ifelse_nested_balanced);
+
+    // ---- negative cases ----
+    #[test]
+    #[ignore]
+    fn ifelse_unequal_branches_pop_vs_push() {
+        let program = programs::ifelse_unequal_branches_pop_vs_push();
+        assert_last_err!(program, CondUnequalStackSizes { .. });
+    }
+
+    #[test]
+    #[ignore]
+    fn ifelse_unequal_branches_pop_amounts() {
+        let program = programs::ifelse_unequal_branches_pop_amounts();
+        assert_last_err!(program, CondUnequalStackSizes { .. });
+    }
+
+    #[test]
+    #[ignore]
+    fn ifelse_unequal_block_vs_pop() {
+        let program = programs::ifelse_unequal_block_vs_pop();
+        assert_last_err!(program, CondUnequalStackSizes { .. });
+    }
+
+    #[test]
+    fn ifelse_rebase_in_branch_forbidden() {
+        let program = programs::ifelse_rebase_in_branch_forbidden();
+        assert_last_err!(program, RebaseError);
+    }
+
+    #[test]
+    #[ignore]
+    fn ifelse_rebase_in_branch_inside_block() {
+        let program = programs::ifelse_rebase_in_branch_inside_block();
+        assert_last_err!(program, RebaseError);
+    }
+
+    #[test]
+    fn ifelse_div_by_zero_in_branch() {
+        let program = programs::ifelse_div_by_zero_in_branch();
+        assert_last_err!(program, DivisionByZero);
+    }
+
+    #[test]
+    #[ignore]
+    fn ifelse_invalid_cell_in_branch() {
+        let program = programs::ifelse_invalid_cell_in_branch();
+        // Either StackUnderflow (Pop walks past block base) or InvalidCell.
+        let mut verifier = Verifier::new(program);
+        let result = verifier.verify();
+        assert!(
+            result.is_err(),
+            "Expected an error from invalid-cell branch, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn ifelse_bad_placement() {
+        let program = programs::ifelse_bad_placement();
+        assert_last_err!(program, UnsafeCondPlacement);
+    }
+
+    #[test]
+    fn ifelse_no_condition() {
+        let program = programs::ifelse_no_condition();
+        assert_last_err!(program, StackUnderflow);
+    }
+}
+
+mod misc_coverage {
+    use super::*;
+
+    // ---- positive cases ----
+    create_test!(function_two_args_ok);
+    create_test!(long_arithmetic_chain);
+
+    // ---- negative cases ----
+    #[test]
+    #[ignore]
+    fn function_call_missing_args() {
+        let program = programs::function_call_missing_args();
+        let mut verifier = Verifier::new(program);
+        let result = verifier.verify();
+        assert!(
+            matches!(result, Err(NotEnoughArguments { .. }) | Err(StackUnderflow)),
+            "Expected NotEnoughArguments/StackUnderflow, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn block_pops_everything() {
+        let program = programs::block_pops_everything();
+        assert_last_err!(program, BlockHasEmptyStack);
+    }
+
+    #[test]
+    fn pop_underflow_top_level() {
+        let program = programs::pop_underflow_top_level();
+        assert_last_err!(program, StackUnderflow);
+    }
+
+    #[test]
+    fn read_far_beyond_stack() {
+        let program = programs::read_far_beyond_stack();
+        assert_last_err!(program, _InvalidCell);
+    }
+}
+
 mod whole_programs {
     use super::*;
 

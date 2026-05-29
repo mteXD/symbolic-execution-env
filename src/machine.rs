@@ -193,17 +193,23 @@ trait Evaluate {
 // =============================================================================
 // Shared frame-stack mechanics used by both Executor and Verifier.
 //
-// A `Frame` records the cell-stack boundary at the start of a nested context
-// (block / function body / ifelse branch). When the body pops below `start`,
-// the displaced parent cell is saved into `saved_below`; when `Rebase` drains
-// the parent's cells, they too are saved. On exit, body-local cells are
-// dropped and `saved_below` is replayed to restore the parent's stack.
+// Two variants:
+//   * `Block`         — an isolating nested context (block / function body).
+//                       Pops below `start` save displaced parent cells, and
+//                       `Rebase` is permitted (it drains parent cells into the
+//                       frame's `saved_below`). On exit, body-local cells are
+//                       dropped and `saved_below` is replayed.
+//   * `IfElseBranch`  — a NON-isolating marker. Pops are not trapped, `Rebase`
+//                       is forbidden, and cell changes persist after exit.
+//                       Pops that drop below an *enclosing* `Block`'s `start`
+//                       are still saved against that outer block (so the
+//                       enclosing block's restore-on-exit remains correct).
 // =============================================================================
 
 #[derive(Clone, Debug)]
-pub struct Frame<T> {
-    pub start: usize,
-    pub saved_below: Vec<T>,
+pub enum Frame<T> {
+    Block { start: usize, saved_below: Vec<T> },
+    IfElseBranch,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -222,66 +228,109 @@ impl<T: Copy> StackFrames<T> {
         }
     }
 
+    #[inline]
     pub fn push(&mut self, value: T) {
         self.cells.push(value);
     }
 
-    /// Pops the top cell. If popping reaches into the parent's cells (below the
-    /// current frame's `start`), the popped value is saved for restoration on
-    /// frame exit and the frame's `start` is decremented to keep accounting consistent.
+    /// Pops the top cell. If the resulting `cells.len()` drops below the start
+    /// of the innermost enclosing `Block` frame, the popped value is saved
+    /// against that block (and its `start` is decremented). `IfElseBranch`
+    /// frames are transparent to this accounting.
     pub fn pop(&mut self) -> Option<T> {
         let popped = self.cells.pop()?;
-        if let Some(frame) = self.frames.last_mut() {
-            if self.cells.len() < frame.start {
-                frame.saved_below.push(popped);
-                frame.start -= 1;
+        let len = self.cells.len();
+        for frame in self.frames.iter_mut().rev() {
+            match frame {
+                Frame::Block { start, saved_below } => {
+                    if len < *start {
+                        saved_below.push(popped);
+                        *start -= 1;
+                    }
+                    break;
+                }
+                Frame::IfElseBranch => continue,
             }
         }
         Some(popped)
     }
 
+    #[inline]
     pub fn get(&self, idx: usize) -> Option<&T> {
         self.cells.get(idx)
     }
 
-    /// Begin a nested context. Pushes a fresh frame, sets `base` to the current
-    /// stack length, and returns the previous `base` (which the caller must pass
-    /// to [`exit`] to restore).
-    pub fn enter(&mut self) -> usize {
+    /// Begin a block-style isolating context. Pushes a `Block` frame, sets
+    /// `base` to the current stack length, and returns the previous `base`
+    /// (which the caller must pass to [`exit_block`] to restore).
+    pub fn enter_block(&mut self) -> usize {
         let saved_base = self.base;
         self.base = self.cells.len();
-        self.frames.push(Frame {
+        self.frames.push(Frame::Block {
             start: self.cells.len(),
             saved_below: Vec::new(),
         });
         saved_base
     }
 
-    /// End the nested context: restore `base`, drop body-local cells, and replay
-    /// any displaced parent cells. Returns `(last_cell_at_end_of_body, body_stack_size)`.
-    pub fn exit(&mut self, saved_base: usize) -> (Option<T>, usize) {
+    /// End a block-style context: restore `base`, drop body-local cells, and
+    /// replay any displaced parent cells. Returns `(last_cell_at_end_of_body,
+    /// body_stack_size)`.
+    pub fn exit_block(&mut self, saved_base: usize) -> (Option<T>, usize) {
         self.base = saved_base;
-        let frame = self.frames.pop().expect("exit called without matching enter");
-        let body_stack_size = self.cells.len().saturating_sub(frame.start);
-        // Match legacy semantics: result is the top of the inherited+body stack.
-        let result = self.cells.last().copied();
-        self.cells.truncate(frame.start);
-        self.cells.extend(frame.saved_below.iter().rev().copied());
-        (result, body_stack_size)
+
+        match self.frames.pop().expect("exit_block: no frame") {
+            Frame::Block { start, saved_below } => {
+                let body_stack_size = self.cells.len().saturating_sub(start);
+                let result = self.cells.last().copied();
+                self.cells.truncate(start);
+                self.cells.extend(saved_below.iter().rev().copied());
+                (result, body_stack_size)
+            }
+            Frame::IfElseBranch => {
+                panic!("exit_block called but topmost frame is IfElseBranch")
+            }
+        }
     }
 
-    /// Drains `cells[..base]` (the parent's cells visible to the current frame)
-    /// into the frame's `saved_below`, so they can be restored on exit. Returns
-    /// `Err` if `base > cells.len()`.
+    /// Begin an ifelse branch. Cells are NOT isolated; the marker exists solely
+    /// to forbid `Rebase` and to make pops transparent to enclosing blocks.
+    #[inline]
+    pub fn enter_ifelse_branch(&mut self) {
+        self.frames.push(Frame::IfElseBranch);
+    }
+
+    pub fn exit_ifelse_branch(&mut self) {
+        match self.frames.pop().expect("exit_ifelse_branch: no frame") {
+            Frame::IfElseBranch => {}
+            Frame::Block { .. } => {
+                panic!("exit_ifelse_branch called but topmost frame is Block")
+            }
+        }
+    }
+
+    /// Drains `cells[..base]` into the innermost enclosing `Block` frame's
+    /// `saved_below`. Returns `Err` if `base > cells.len()` or if the
+    /// immediately-topmost frame is an `IfElseBranch` (rebase is forbidden
+    /// inside ifelse branches).
     pub fn rebase(&mut self) -> Result<(), ()> {
         if self.base > self.cells.len() {
             return Err(());
         }
-        let drained: Vec<T> = self.cells.drain(..self.base).collect();
-        if let Some(frame) = self.frames.last_mut() {
-            frame.saved_below.extend(drained.into_iter().rev());
-            frame.start = 0;
+
+        match self.frames.last_mut() {
+            Some(Frame::IfElseBranch) => Err(()), // Not rebase-able
+            Some(Frame::Block { start, saved_below }) => {
+                // Temporarily save the cells below `base`
+                saved_below.extend(self.cells.drain(..self.base).rev());
+                *start = 0;
+                Ok(())
+            }
+            None => {
+                // No frame: legacy behavior was to drain (and drop) the cells.
+                self.cells.drain(..self.base);
+                Ok(())
+            }
         }
-        Ok(())
     }
 }

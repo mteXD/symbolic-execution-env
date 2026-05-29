@@ -366,19 +366,38 @@ impl Verifier {
         &mut self,
         instrs: Rc<[Instruction]>,
     ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
-        let saved_base = self.stack.enter();
-        let saved_pd = std::mem::replace(
-            &mut self.machine.program_data,
-            ProgramData::new(instrs),
-        );
+        let saved_base = self.stack.enter_block();
+        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let exit = self.stack.exit(saved_base);
+        let exit = self.stack.exit_block(saved_base);
 
         exec_result?;
         Ok(exit)
+    }
+
+    /// Verifies the body of an ifelse branch on the parent stack:
+    /// cells are mutated in place. `program_data`, `function_data`, and
+    /// `findings` are scoped (saved on entry, restored on exit) so branches
+    /// don't leak metadata into the parent. `Rebase` is forbidden inside
+    /// the branch via the `IfElseBranch` marker frame.
+    fn run_ifelse_branch(&mut self, instrs: Rc<[Instruction]>) -> Result<(), VerifierError> {
+        let saved_findings = self.findings.clone();
+        let saved_fd = self.machine.function_data.clone();
+
+        self.stack.enter_ifelse_branch();
+        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+
+        let exec_result = self.run_loop();
+
+        self.machine.program_data = saved_pd;
+        self.stack.exit_ifelse_branch();
+        self.machine.function_data = saved_fd;
+        self.findings = saved_findings;
+
+        exec_result
     }
 
     /// Runs `instrs` as a fully-scoped block: `cells`, `program_data`,
@@ -447,7 +466,9 @@ impl Verifier {
             }
         }
 
-        self.findings.func_data.insert(fun.to_owned(), func_defining);
+        self.findings
+            .func_data
+            .insert(fun.to_owned(), func_defining);
         Ok(())
     }
 
@@ -793,32 +814,46 @@ impl Evaluate for Verifier {
         let condition = self.cells.last().ok_or(StackUnderflow)?;
         self.check_good_if_placement()?;
         let value = Self::check_unnecessary_if(condition);
-        let single_branch_body = |branch: Rc<Instruction>| Rc::<[Instruction]>::from(vec![(*branch).clone()]);
-        let ifelse_result = match value {
+        let body_of = |b: Rc<Instruction>| Rc::<[Instruction]>::from(vec![(*b).clone()]); // PERF: clone
+
+        match value {
+            // Condition is statically known: only the taken branch runs, and it
+            // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
-                let body = single_branch_body(if taken { when_true } else { when_false });
-                self.run_block_scoped(body)?.0.ok_or(BlockHasEmptyStack)?
+                let chosen = if taken { when_true } else { when_false };
+                self.run_ifelse_branch(body_of(chosen))?;
             }
+            // Condition is unknown: both branches are explored. They each
+            // mutate the parent stack, but we snapshot/restore around them so
+            // we can compare their final `cells.len()` and merge cell-by-cell.
             None => {
-                let (v1, sz1) = self.run_block_scoped(single_branch_body(when_true))?;
-                let val1 = v1.ok_or(BlockHasEmptyStack)?;
+                let snapshot = self.stack.cells.clone(); // PERF: clone
 
-                let (v2, sz2) = self.run_block_scoped(single_branch_body(when_false))?;
-                let val2 = v2.ok_or(BlockHasEmptyStack)?;
+                self.run_ifelse_branch(body_of(when_true))?;
+                let true_cells = std::mem::replace(&mut self.stack.cells, snapshot.clone()); // PERF: clone
 
-                if sz1 != sz2 {
+                self.run_ifelse_branch(body_of(when_false))?;
+                let false_cells = std::mem::replace(&mut self.stack.cells, Vec::new());
+
+                if true_cells.len() != false_cells.len() {
+                    // Restore something sensible before returning the error.
+                    self.stack.cells = snapshot;
                     return Err(CondUnequalStackSizes {
-                        true_branch_cells: sz1,
-                        false_branch_cells: sz2,
+                        true_branch_cells: true_cells.len(),
+                        false_branch_cells: false_cells.len(),
                     });
                 }
 
-                val1.combine(val2)
+                // Cell-by-cell merge of the two final stacks.
+                self.stack.cells = true_cells
+                    .into_iter()
+                    .zip(false_cells.into_iter())
+                    .map(|(a, b)| a.combine(b))
+                    .collect();
             }
-        };
+        }
 
-        self.push(ifelse_result);
-        debug!("Finished verifying ifelse, pushing result: {:?}", ifelse_result);
+        debug!("Finished verifying ifelse; cells = {:?}", self.cells);
 
         self.findings.is_conditional = true;
 

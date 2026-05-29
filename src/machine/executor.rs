@@ -95,21 +95,39 @@ impl Executor {
     /// `function_data` (so inner `FunctionDefine`s don't leak to the parent).
     /// Cells are managed in-place via the [`StackFrames`] helper.
     fn run_nested(&mut self, instrs: Rc<[Instruction]>) -> Result<Option<Cell>> {
-        let saved_base = self.stack.enter();
-        let saved_pd = std::mem::replace(
-            &mut self.machine.program_data,
-            ProgramData::new(instrs),
-        );
-        let saved_fd = self.machine.function_data.clone();
+        let saved_base = self.stack.enter_block();
+        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+        let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
 
         let exec_result = self.run();
 
         self.machine.program_data = saved_pd;
         self.machine.function_data = saved_fd;
-        let (result, _) = self.stack.exit(saved_base);
+        let (result, _) = self.stack.exit_block(saved_base);
 
         exec_result?;
         Ok(result)
+    }
+
+    /// Runs the body of an ifelse branch *inline* on the parent stack: cells
+    /// are not isolated, so pops and pushes persist after the branch ends.
+    /// `program_data` and `function_data` are still scoped. The marker frame
+    /// pushed via [`StackFrames::enter_ifelse_branch`] makes `Rebase` an error
+    /// inside the branch.
+    fn run_ifelse_branch(&mut self, instrs: Rc<[Instruction]>) -> Result<()> {
+        // Save program_data and function_data; add a ifelse frame
+        self.stack.enter_ifelse_branch();
+        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+        let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
+
+        let exec_result = self.run();
+
+        // Restore program_data and function_data; pop the ifelse frame
+        self.machine.program_data = saved_pd;
+        self.machine.function_data = saved_fd;
+        self.stack.exit_ifelse_branch();
+
+        exec_result
     }
 }
 
@@ -190,10 +208,7 @@ impl Evaluate for Executor {
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
-        debug!(
-            "Evaluating binary: {:?} {:?} {:?}",
-            a, instr, b
-        );
+        debug!("Evaluating binary: {:?} {:?} {:?}", a, instr, b);
 
         if let (Integer(a), Integer(b)) = (a, b) {
             let calculated_value = match instr {
@@ -321,12 +336,10 @@ impl Evaluate for Executor {
             None => return Err(StackUnderflow),
         };
 
-        match self.run_nested(Rc::<[Instruction]>::from(vec![(*branch).clone()]))? {
-            Some(val) => self.push(val),
-            None => return Err(BlockHasEmptyStack),
-        }
-
-        Ok(())
+        // The chosen branch runs inline on the parent's cells: its pops and
+        // pushes are permanent, and `Rebase` is forbidden inside it.
+        // PERF: clone
+        self.run_ifelse_branch(Rc::<[Instruction]>::from(vec![(*branch).clone()]))
     }
 }
 
