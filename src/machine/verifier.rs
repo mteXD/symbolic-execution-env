@@ -372,7 +372,7 @@ impl Verifier {
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let exit = self.stack.exit_block(saved_base);
+        let exit = self.exit_block(saved_base);
 
         exec_result?;
         Ok(exit)

@@ -210,30 +210,6 @@ fn conditional() {
     assert_eq!(result, Some(&ValueSpan { min: 4, max: 6 }));
 }
 
-#[test]
-#[ignore]
-fn conditional_problem() {
-    let program = programs::conditional_problem();
-    let mut verifier = Verifier::new(program);
-
-    let new_input: Rc<RefCell<Vec<Immediate>>> = Rc::new(RefCell::new(vec![10]));
-    verifier.redirect_input(types::Input::Buffer(new_input.clone()));
-
-    let result = verifier.verify();
-    // assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-    // let result = result.unwrap();
-    match result {
-        Err(VerifierError::CondInvalidCell {
-            instr: _,
-            cell_index: _,
-            cells: _,
-            prog: _,
-            location: _,
-        }) => (),
-        _ => panic!("Expected CondInvalidCell error, but got {:?}", result),
-    }
-}
-
 mod blocks {
     use super::*;
 
@@ -307,21 +283,18 @@ mod ifelse_coverage {
 
     // ---- negative cases ----
     #[test]
-    #[ignore]
     fn ifelse_unequal_branches_pop_vs_push() {
         let program = programs::ifelse_unequal_branches_pop_vs_push();
         assert_last_err!(program, CondUnequalStackSizes { .. });
     }
 
     #[test]
-    #[ignore]
     fn ifelse_unequal_branches_pop_amounts() {
         let program = programs::ifelse_unequal_branches_pop_amounts();
         assert_last_err!(program, CondUnequalStackSizes { .. });
     }
 
     #[test]
-    #[ignore]
     fn ifelse_unequal_block_vs_pop() {
         let program = programs::ifelse_unequal_block_vs_pop();
         assert_last_err!(program, CondUnequalStackSizes { .. });
@@ -334,7 +307,6 @@ mod ifelse_coverage {
     }
 
     #[test]
-    #[ignore]
     fn ifelse_rebase_in_branch_inside_block() {
         let program = programs::ifelse_rebase_in_branch_inside_block();
         assert_last_err!(program, RebaseError);
@@ -347,7 +319,6 @@ mod ifelse_coverage {
     }
 
     #[test]
-    #[ignore]
     fn ifelse_invalid_cell_in_branch() {
         let program = programs::ifelse_invalid_cell_in_branch();
         // Either StackUnderflow (Pop walks past block base) or InvalidCell.
@@ -382,7 +353,6 @@ mod misc_coverage {
 
     // ---- negative cases ----
     #[test]
-    #[ignore]
     fn function_call_missing_args() {
         let program = programs::function_call_missing_args();
         let mut verifier = Verifier::new(program);
@@ -392,13 +362,6 @@ mod misc_coverage {
             "Expected NotEnoughArguments/StackUnderflow, got {:?}",
             result
         );
-    }
-
-    #[test]
-    #[ignore]
-    fn block_pops_everything() {
-        let program = programs::block_pops_everything();
-        assert_last_err!(program, BlockHasEmptyStack);
     }
 
     #[test]

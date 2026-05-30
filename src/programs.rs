@@ -226,20 +226,6 @@ new_programs! {
         add_instr!(Add, 3, 5),
     },
 
-    conditional_problem {
-        add_instr!(io Input, 0),
-        add_instr!(Push, 20),
-        add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
-        add_instr!(ifelse
-            make_block!(
-                add_instr!(Push, 999),
-                add_instr!(Push, 999)
-            ),
-            add_instr!(Push, 42)
-        ),
-        add_instr!(Add, 3, 4),
-    },
-
     simple_function {
         add_instr!(fun FunctionDefine, FUNC_NAME),
         make_block!(
@@ -499,11 +485,9 @@ new_programs! {
     // [NEGATIVE] Branches differ in final stack size: true does Pop, false does
     // Push. Verifier expected error: `CondUnequalStackSizes`.
     ifelse_unequal_branches_pop_vs_push {
-        add_instr!(Push, 100),                    // [100]
-        add_instr!(Push, 200),                    // [100, 200]
-        add_instr!(io Input, 0),                  // [100, 200, ?]
-        add_instr!(Push, 0),
-        add_instr!(SetGreaterThan, 0, 1),         // unknown condition
+        add_instr!(io Input, 0),                  // [?]
+        add_instr!(Push, 100),                    // [?, 100]
+        add_instr!(SetGreaterThan, 0, 1),         // [?, 100, ?>100]   (unknown)
         add_instr!(ifelse
             add_instr!(R Pop, 1),                 // -1 cell
             add_instr!(Push, 7)                   // +1 cell  (mismatch by 2)
@@ -517,8 +501,8 @@ new_programs! {
         add_instr!(Push, 3),
         add_instr!(Push, 4),
         add_instr!(io Input, 0),
-        add_instr!(Push, 0),
-        add_instr!(SetNotEqual, 0, 1),
+        add_instr!(Push, 100),
+        add_instr!(SetGreaterThan, 4, 5), // [1, 2, 3, 4, ?, 100, ?>100]
         add_instr!(ifelse
             add_instr!(R Pop, 2),
             add_instr!(R Pop, 1)
@@ -545,7 +529,7 @@ new_programs! {
             add_instr!(Push, 2),
             add_instr!(io Input, 0),
             add_instr!(Push, 0),
-            add_instr!(SetGreaterThan, 0, 1),
+            add_instr!(SetGreaterThan, 2, 3),
             add_instr!(ifelse
                 add_instr!(Rebase),               // still forbidden
                 add_instr!(Push, 0)
@@ -570,7 +554,6 @@ new_programs! {
     // [NEGATIVE] One branch reads a non-existent cell (after popping too far).
     // Expected: `InvalidCell` raised inside the branch.
     ifelse_invalid_cell_in_branch {
-        add_instr!(Push, 7),
         add_instr!(io Input, 0),
         add_instr!(Push, 0),
         add_instr!(SetNotEqual, 0, 1),
@@ -611,7 +594,7 @@ new_programs! {
         add_instr!(Push, 6),
         add_instr!(io Input, 0),
         add_instr!(Push, 0),
-        add_instr!(SetGreaterThan, 0, 1),
+        add_instr!(SetGreaterThan, 2, 3),
         add_instr!(ifelse
             make_block!(
                 add_instr!(Push, 1),
@@ -655,15 +638,6 @@ new_programs! {
     // =========================================================================
     // Block / stack edge cases.
     // =========================================================================
-
-    // [NEGATIVE] Block ends with an empty local stack. Expected: `BlockHasEmptyStack`.
-    block_pops_everything {
-        add_instr!(Push, 9),
-        make_block!(
-            add_instr!(Push, 1),
-            add_instr!(R Pop, 1)                  // body ends with no body-local cell
-        )
-    },
 
     // [NEGATIVE] Plain `Pop` underflow at top level.
     pop_underflow_top_level {

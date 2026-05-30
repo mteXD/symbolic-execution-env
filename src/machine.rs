@@ -300,6 +300,7 @@ impl<T: Copy> StackFrames<T> {
         self.frames.push(Frame::IfElseBranch);
     }
 
+    /// End an ifelse branch.
     pub fn exit_ifelse_branch(&mut self) {
         match self.frames.pop().expect("exit_ifelse_branch: no frame") {
             Frame::IfElseBranch => {}
