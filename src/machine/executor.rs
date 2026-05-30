@@ -73,8 +73,9 @@ impl Executor {
         self.machine.output = new_output;
     }
 
+    #[inline]
     pub fn read(&self, reg: CellIndex) -> Result<Cell> {
-        self.stack.get(reg.into()).copied().ok_or(InvalidCell)
+        self.get(reg.into()).copied().ok_or(InvalidCell)
     }
 
     fn run(&mut self) -> Result<()> {
@@ -95,7 +96,7 @@ impl Executor {
     /// `function_data` (so inner `FunctionDefine`s don't leak to the parent).
     /// Cells are managed in-place via the [`StackFrames`] helper.
     fn run_nested(&mut self, instrs: Rc<[Instruction]>) -> Result<Option<Cell>> {
-        let saved_base = self.stack.enter_block();
+        let saved_base = self.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
         let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
 
@@ -103,7 +104,7 @@ impl Executor {
 
         self.machine.program_data = saved_pd;
         self.machine.function_data = saved_fd;
-        let (result, _) = self.stack.exit_block(saved_base);
+        let (result, _) = self.exit_block(saved_base);
 
         exec_result?;
         Ok(result)
@@ -116,7 +117,7 @@ impl Executor {
     /// inside the branch.
     fn run_ifelse_branch(&mut self, instrs: Rc<[Instruction]>) -> Result<()> {
         // Save program_data and function_data; add a ifelse frame
-        self.stack.enter_ifelse_branch();
+        self.enter_ifelse_branch();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
         let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
 
@@ -125,7 +126,7 @@ impl Executor {
         // Restore program_data and function_data; pop the ifelse frame
         self.machine.program_data = saved_pd;
         self.machine.function_data = saved_fd;
-        self.stack.exit_ifelse_branch();
+        self.exit_ifelse_branch();
 
         exec_result
     }
@@ -139,7 +140,7 @@ impl Evaluate for Executor {
 
         match instr {
             Nop => (),
-            Rebase => self.stack.rebase().map_err(|()| RebaseError)?,
+            Rebase => self.rebase().map_err(|()| RebaseError)?,
         }
 
         Ok(())

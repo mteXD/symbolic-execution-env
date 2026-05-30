@@ -48,9 +48,6 @@ pub enum VerifierError {
     StackUnderflow,
     UnsafeCondPlacement,
     DebugError(&'static str),
-    InfiniteRecursion {
-        function_name: &'static str,
-    },
     CondInvalidCell {
         instr: Instruction,
         cell_index: CellIndex,
@@ -98,6 +95,11 @@ impl ValueSpan {
             );
         }
         Self { min, max }
+    }
+
+    #[inline]
+    fn is_unbounded(&self) -> bool {
+        self.min == Immediate::MIN || self.max == Immediate::MAX
     }
 
     fn inf() -> Self {
@@ -199,75 +201,6 @@ impl Add<Immediate> for ValueSpan {
             min: self.min.checked_add(rhs).unwrap_or(Immediate::MIN),
             max: self.max.checked_add(rhs).unwrap_or(Immediate::MAX),
         }
-    }
-}
-
-impl Add<ValueSpan> for ValueSpan {
-    type Output = Self;
-
-    fn add(self, rhs: ValueSpan) -> Self::Output {
-        Self {
-            min: self.min.checked_add(rhs.min).unwrap_or(Immediate::MIN),
-            max: self.max.checked_add(rhs.max).unwrap_or(Immediate::MAX),
-        }
-    }
-}
-
-impl Mul<ValueSpan> for ValueSpan {
-    type Output = Self;
-
-    fn mul(self, rhs: ValueSpan) -> Self::Output {
-        let candidates = [
-            self.min.checked_mul(rhs.min),
-            self.min.checked_mul(rhs.max),
-            self.max.checked_mul(rhs.min),
-            self.max.checked_mul(rhs.max),
-        ];
-
-        // PERF: Perhaps inefficient
-        let min = candidates
-            .iter()
-            .filter_map(|&x| x)
-            .min()
-            .unwrap_or(Immediate::MIN);
-        let max = candidates
-            .iter()
-            .filter_map(|&x| x)
-            .max()
-            .unwrap_or(Immediate::MAX);
-
-        Self { min, max }
-    }
-}
-
-impl Div<ValueSpan> for ValueSpan {
-    type Output = Self;
-
-    fn div(self, rhs: ValueSpan) -> Self::Output {
-        if rhs.min <= 0 && rhs.max >= 0 {
-            // Division by zero is possible, so we return the widest possible range.
-            return Self::inf();
-        }
-
-        let candidates = [
-            self.min.checked_div(rhs.min),
-            self.min.checked_div(rhs.max),
-            self.max.checked_div(rhs.min),
-            self.max.checked_div(rhs.max),
-        ];
-
-        let min = candidates
-            .iter()
-            .filter_map(|&x| x)
-            .min()
-            .unwrap_or(Immediate::MIN);
-        let max = candidates
-            .iter()
-            .filter_map(|&x| x)
-            .max()
-            .unwrap_or(Immediate::MAX);
-
-        Self { min, max }
     }
 }
 
@@ -713,22 +646,81 @@ impl Evaluate for Verifier {
     ) -> Result<(), Self::Error> {
         use BinaryOp::*;
 
-        fn from_bool<T: From<bool>>(value: bool) -> T {
-            value.into()
-        }
+        let get_min_max = |array: [Option<Immediate>; 4]| {
+            let min = array
+                .iter()
+                .map(|&x| x.unwrap_or(Immediate::MIN))
+                .min()
+                .expect("Array cannot be empty");
+            let max = array
+                .iter()
+                .map(|&x| x.unwrap_or(Immediate::MAX))
+                .max()
+                .expect("Array cannot be empty");
+            ValueSpan::new(min, max)
+        };
+
+        let valuespan_check = |va: ValueSpan, vb: ValueSpan, vn: ValueSpan| {
+            if va.is_single_value() && vb.is_single_value() && vn.is_unbounded() {
+                Err(ArithmeticOverflow)
+            } else {
+                Ok(vn)
+            }
+        };
 
         let a = self.read(arg1)?;
         let b = self.read(arg2)?;
 
+        // TODO: Write tests for arithmetic overflow checks
         if let (Some(a), Some(b)) = (a, b) {
             let calculated_value = match instr {
-                Add => a + b,
-                Mul => a * b,
+                Add => {
+                    let min = a.min.saturating_add(b.min);
+                    let max = a.max.saturating_add(b.max);
+
+                    let vs_new = ValueSpan::new(min, max);
+
+                    valuespan_check(a, b, vs_new)?
+                }
+                Mul => {
+                    let candidates = [
+                        a.min.checked_mul(b.min),
+                        a.min.checked_mul(b.max),
+                        a.max.checked_mul(b.min),
+                        a.max.checked_mul(b.max),
+                    ];
+
+                    let vs_new = get_min_max(candidates);
+
+                    valuespan_check(a, b, vs_new)?
+                }
                 Div => {
                     if b == ValueSpan::new(0, 0) {
                         return Err(DivisionByZero);
                     }
-                    a / b
+                    if a.is_single_value() && b.is_single_value() {
+                        if let Some(result) = a.min.checked_div(b.min) {
+                            ValueSpan::new(result, result)
+                        } else {
+                            return Err(ArithmeticOverflow);
+                        }
+                    } else {
+                        if b.min <= 0 && b.max >= 0 {
+                            // Division by zero is possible, so we return the widest possible range.
+                            ValueSpan::inf()
+                        } else {
+                            let candidates = [
+                                a.min.checked_div(b.min),
+                                a.min.checked_div(b.max),
+                                a.max.checked_div(b.min),
+                                a.max.checked_div(b.max),
+                            ];
+
+                            let vs_new = get_min_max(candidates);
+
+                            valuespan_check(a, b, vs_new)?
+                        }
+                    }
                 }
                 And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
                     ValueSpan::inf()
