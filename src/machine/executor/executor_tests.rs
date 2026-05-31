@@ -364,15 +364,15 @@ pub fn init() {
     });
 }
 
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    n * factorial(n - 1)
+}
+
 #[test]
 fn test_factorial() {
-    fn factorial(n: i64) -> i64 {
-        if n <= 1 {
-            return 1;
-        }
-        n * factorial(n - 1)
-    }
-
     init();
     let number = 10;
 
@@ -396,4 +396,13 @@ fn test_fibonacci() {
     let program = programs::prog_fibonacci(number);
 
     assert_eq_last_Int!(program, fib(number));
+}
+
+#[test]
+fn test_factorial_weird() {
+    init();
+    
+    let program = programs::special_argument_providing();
+
+    assert_eq_last_Int!(program, factorial(5));
 }

@@ -13,7 +13,7 @@ use crate::{
         CoreMachine, Evaluate, StackFrames,
     },
     types::{
-        self, Address, CellIndex, FdEntry, FunctionDataError, Immediate, ProgramData,
+        self, Address, CellIndex, FunctionDataError, Immediate, ProgramData,
         ProgramDataError,
     },
 };
@@ -28,7 +28,7 @@ pub enum VerifierError {
         instr: Instruction,
         cell_index: CellIndex,
         cells: Vec<ValueSpan>,
-        prog: Vec<Instruction>,
+        prog: Rc<[Instruction]>,
         location: &'static str,
     },
     ArithmeticOverflow,
@@ -52,7 +52,7 @@ pub enum VerifierError {
         instr: Instruction,
         cell_index: CellIndex,
         cells: Vec<ValueSpan>,
-        prog: Vec<Instruction>,
+        prog: Rc<[Instruction]>,
         location: &'static str,
     },
     CondUnequalStackSizes {
@@ -204,22 +204,31 @@ impl Add<Immediate> for ValueSpan {
     }
 }
 
-#[derive(Debug, Clone)]
+/// An index a function reads from its caller's frame while collecting
+/// arguments. `Normal` indexes count from the bottom of the stack (as used by
+/// `Read`, `Not`, `Add`, ...); `Reverse` indexes count from the top (as used
+/// by `ReadReverse`). Both record an index that must resolve to an existing
+/// cell in the caller's stack when the function is invoked.
+#[derive(Debug, Clone, Copy)]
 enum MemorizedIndex {
     Normal(CellIndex),
     Reverse(CellIndex),
 }
 
+impl MemorizedIndex {
+    /// Minimum number of cells the caller must provide for this index to
+    /// resolve to an existing cell.
+    fn required_depth(self) -> usize {
+        match self {
+            MemorizedIndex::Normal(i) | MemorizedIndex::Reverse(i) => usize::from(i) + 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct FunctionDefiningInfo {
     function_name: String,
-    arg_positions: Vec<MemorizedIndex>,
-}
-
-impl FunctionDefiningInfo {
-    fn required_arguments(&self) -> usize {
-        self.arg_positions.len()
-    }
+    arg_indices: Vec<MemorizedIndex>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,10 +246,12 @@ impl Findings {
         self.func_defining.is_some() && self.values_after_rebase.is_none()
     }
 
-    fn func_required_arguments(&self, func_name: &str) -> Option<usize> {
-        self.func_data
-            .get(func_name)
-            .map(|info| info.required_arguments())
+    /// Records an out-of-scope read performed while collecting a function's
+    /// arguments. No-op when not currently collecting.
+    fn record_arg(&mut self, index: MemorizedIndex) {
+        if let Some(info) = self.func_defining.as_mut() {
+            info.arg_indices.push(index);
+        }
     }
 }
 
@@ -350,58 +361,48 @@ impl Verifier {
         result
     }
 
-    /// Verifies the body of a `FunctionDefine`: runs the body in an inner scope,
-    /// collects the discovered argument positions and any nested function aliases,
-    /// then publishes them into the parent's `findings.func_data`.
+    /// Verifies the body of a `FunctionDefine`. The function (and any
+    /// consecutive aliases) is registered globally by `common_function_logic`,
+    /// then its body is verified in a scoped stack while we count how many
+    /// arguments it reads from the caller's frame (see `ReadReverse` and
+    /// `Rebase`). The discovered argument count is published into
+    /// `findings.func_data` at the `Rebase` instruction, so it is visible both
+    /// to recursive calls inside the body and to callers after the definition.
+    ///
+    /// Nested function definitions are intentionally unsupported: they clash
+    /// with recursion (the function would be redefined on the second recursion
+    /// step) and would force cloning `function_data` per definition.
     fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError> {
         self.machine.common_function_logic(fun)?;
         // Shadowing is not permitted; compilers can generate unique function names.
-        let body = self.machine.program_data.get_current()?.clone();
-
-        // Scope: snapshot findings + function_data so body mutations don't leak.
-        let saved_findings = self.findings.clone();
-        let saved_fd = self.machine.function_data.clone();
-
-        // Seed the body's findings: it is collecting args for `fun`, and `fun`
-        // itself must be visible inside the body (e.g. for recursion checks).
-        let seed = || FunctionDefiningInfo {
-            function_name: fun.to_owned(),
-            arg_positions: Vec::new(),
+        // Borrow the current instruction and clone only the block's `Rc` (a
+        // cheap pointer bump) rather than deep-cloning the instruction tree.
+        let Instruction::Block(inner) = self.machine.program_data.get_current()? else {
+            warn!(
+                "Function '{}' is not defined by a block; skipping argument analysis.",
+                fun
+            );
+            return Ok(());
         };
-        self.findings.func_defining = Some(seed());
-        self.findings.func_data.insert(fun.to_owned(), seed());
+        let inner = Rc::clone(inner);
 
-        let run_result = self.run_nested(Rc::<[Instruction]>::from(vec![body]));
+        // Scope only the argument-collection state. `func_data` (the discovered
+        // argument counts) must persist so callers and recursive calls see it.
+        let saved_defining = self.findings.func_defining.take();
+        let saved_after_rebase = self.findings.values_after_rebase.take();
 
-        // Capture body-mutated state before restoring the parent's snapshots.
-        let body_func_defining = self.findings.func_defining.take();
-        let body_function_table = self.machine.function_data.function_table.clone();
+        self.findings.func_defining = Some(FunctionDefiningInfo {
+            function_name: fun.to_owned(),
+            arg_indices: Vec::new(),
+        });
+        self.findings.values_after_rebase = None;
 
-        self.machine.function_data = saved_fd;
-        self.findings = saved_findings;
+        let run_result = self.run_nested(inner);
+
+        self.findings.func_defining = saved_defining;
+        self.findings.values_after_rebase = saved_after_rebase;
 
         run_result?;
-        let func_defining = body_func_defining
-            .expect("FunctionDefiningInfo should be set during function verification.");
-
-        // Inner names that aliased `fun` (consecutive `FunctionDefine`s) get the
-        // same arg signature in the parent's func_data.
-        // PERF: linear scan; consider an inverse index if this gets hot.
-        for (alias, entry) in &body_function_table {
-            if matches!(entry, FdEntry::Str(s) if s == fun) {
-                self.findings.func_data.insert(
-                    alias.to_owned(),
-                    FunctionDefiningInfo {
-                        function_name: alias.to_owned(),
-                        arg_positions: func_defining.arg_positions.clone(),
-                    },
-                );
-            }
-        }
-
-        self.findings
-            .func_data
-            .insert(fun.to_owned(), func_defining);
         Ok(())
     }
 
@@ -422,22 +423,32 @@ impl Verifier {
         Ok(())
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<Option<ValueSpan>, VerifierError> {
-        if self.findings.is_collecting_func_args() {
-            return Result::Ok(None);
-        }
+    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError> {
+        self.stack.get(reg.into()).copied().ok_or(InvalidCell {
+            instr: self.machine.program_data.get_current()?.clone(),
+            cell_index: reg,
+            cells: self.cells.clone(),
+            prog: self.machine.program_data.get_program(),
+            location: "Verifier::read, get()",
+        })
+    }
 
-        self.stack
-            .get(reg.into())
-            .copied()
-            .ok_or(InvalidCell {
-                instr: self.machine.program_data.get_current()?.clone(),
-                cell_index: reg,
-                cells: self.cells.clone(),
-                prog: self.machine.program_data.get_program().to_vec(),
-                location: "Verifier::read, get()",
-            })
-            .map(Some)
+    /// True if a `Normal`-indexed read of `idx` falls outside the function's
+    /// own loaded cells (`[base, len)`) and therefore reads a caller-supplied
+    /// argument rather than function-local data.
+    fn reads_argument_normal(&self, idx: CellIndex) -> bool {
+        !(self.stack.base..self.cells.len()).contains(&usize::from(idx))
+    }
+
+    /// Like [`read`](Self::read), but while collecting a function's arguments
+    /// an out-of-scope read is recorded as a `Normal` argument index and
+    /// yields an unbounded span instead of erroring.
+    fn read_normal(&mut self, idx: CellIndex) -> Result<ValueSpan, VerifierError> {
+        if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
+            self.findings.record_arg(MemorizedIndex::Normal(idx));
+            return Ok(ValueSpan::inf());
+        }
+        self.read(idx)
     }
 
     fn get_prev_instr(&self) -> Result<&Instruction, VerifierError> {
@@ -518,6 +529,18 @@ impl Evaluate for Verifier {
             Nop => (),
             Rebase => {
                 self.stack.rebase().map_err(|()| RebaseError)?;
+                // Crossing `Rebase` ends argument collection: freeze the count
+                // discovered so far and publish it for callers / recursion.
+                if self.findings.is_collecting_func_args() {
+                    let info = self
+                        .findings
+                        .func_defining
+                        .clone()
+                        .expect("func_defining must be Some while collecting arguments");
+                    self.findings
+                        .func_data
+                        .insert(info.function_name.clone(), info);
+                }
                 self.findings.values_after_rebase = Some(self.cells.len());
             }
         }
@@ -547,85 +570,50 @@ impl Evaluate for Verifier {
         use UnaryOpCell::*;
 
         match instr {
-            Not => {
-                let val = self.read(arg)?;
-
-                match val {
-                    Some(ValueSpan { min, max }) if min == max => {
-                        self.push(ValueSpan::new(!min, !max));
-                    }
-                    Some(_) => {
-                        self.push(ValueSpan::inf());
-                    }
-                    None => {
-                        // When collecting function arguments
-                        match self.findings.func_defining.as_mut() {
-                            Some(func_info) => {
-                                func_info.arg_positions.push(MemorizedIndex::Normal(arg));
-                            }
-                            None => panic!(
-                                "This case cannot happen, as `func_defining` must be Some if `val` is None"
-                            ),
-                        }
-                    }
+            Not => match self.read_normal(arg)? {
+                ValueSpan { min, max } if min == max => {
+                    self.push(ValueSpan::new(!min, !max));
                 }
-            }
+                _ => {
+                    self.push(ValueSpan::inf());
+                }
+            },
             Read => {
-                let val = self.read(arg)?;
-
-                match val {
-                    Some(v) => self.push(v.clone()),
-                    None => {
-                        // When collecting function arguments
-                        match self.findings.func_defining.as_mut() {
-                            Some(func_info) => {
-                                func_info.arg_positions.push(MemorizedIndex::Normal(arg));
-                            }
-                            None => panic!(
-                                "This case cannot happen, as `func_defining` must be Some if `val` is None"
-                            ),
-                        }
-                    }
-                }
+                let val = self.read_normal(arg)?;
+                self.push(val);
             }
             ReadReverse => {
                 debug!("ReadReverse with arg: {}", arg);
-                match self.findings.func_defining.as_mut() {
-                    Some(func_info) => {
-                        trace!(
-                            "Collecting argument for function '{}'",
-                            func_info.function_name
-                        );
-                        func_info.arg_positions.push(MemorizedIndex::Reverse(arg));
-                        self.push(ValueSpan::inf());
+                if self.findings.is_collecting_func_args() {
+                    // While collecting a function's arguments, a `ReadReverse`
+                    // reads a fresh caller argument only if it reaches *past*
+                    // the values already loaded in this phase. Reaching into
+                    // the already-loaded region just re-reads function-local
+                    // data and is not an argument.
+                    let loaded = self.cells.len().saturating_sub(self.stack.base);
+                    if usize::from(arg) >= loaded {
+                        self.findings.record_arg(MemorizedIndex::Reverse(arg));
                     }
-                    None => {
-                        trace!(
-                            "Not collecting function arguments, performing normal read with reverse indexing."
-                        );
-                        // like python's negative indexing.
-                        let index = u16::try_from(self.cells.len())
-                            .ok()
-                            .and_then(|len| len.checked_sub(1))
-                            .and_then(|len| len.checked_sub(arg))
-                            .ok_or(InvalidCell {
-                                instr: self.machine.program_data.get_current()?.clone(),
-                                cell_index: arg,
-                                cells: self.cells.clone(),
-                                prog: self.machine.program_data.get_program().to_vec(),
-                                location: "Verifier::verify_alu_unary_cell, calculating reverse index",
-                            })?;
+                    self.push(ValueSpan::inf());
+                } else {
+                    trace!(
+                        "Not collecting function arguments, performing normal read with reverse indexing."
+                    );
+                    // like python's negative indexing.
+                    let index = u16::try_from(self.cells.len())
+                        .ok()
+                        .and_then(|len| len.checked_sub(1))
+                        .and_then(|len| len.checked_sub(arg))
+                        .ok_or(InvalidCell {
+                            instr: self.machine.program_data.get_current()?.clone(),
+                            cell_index: arg,
+                            cells: self.cells.clone(),
+                            prog: self.machine.program_data.get_program(),
+                            location: "Verifier::verify_alu_unary_cell, calculating reverse index",
+                        })?;
 
-                        let val = self.read(index)?;
-                        match val {
-                            Some(v) => self.push(v.clone()),
-                            None => {
-                                panic!(
-                                    "We got None, which can only happen when collecting function arguments."
-                                )
-                            }
-                        }
-                    }
+                    let val = self.read(index)?;
+                    self.push(val);
                 }
             }
             Pop => {
@@ -668,12 +656,11 @@ impl Evaluate for Verifier {
             }
         };
 
-        let a = self.read(arg1)?;
-        let b = self.read(arg2)?;
+        let a = self.read_normal(arg1)?;
+        let b = self.read_normal(arg2)?;
 
         // TODO: Write tests for arithmetic overflow checks
-        if let (Some(a), Some(b)) = (a, b) {
-            let calculated_value = match instr {
+        let calculated_value = match instr {
                 Add => {
                     let min = a.min.saturating_add(b.min);
                     let max = a.max.saturating_add(b.max);
@@ -734,7 +721,6 @@ impl Evaluate for Verifier {
             };
 
             self.push(calculated_value);
-        }
 
         Ok(())
     }
@@ -754,24 +740,27 @@ impl Evaluate for Verifier {
         match instr {
             FunctionDefine => self.verify_function_definition(fun)?,
             FunctionCall => {
-                self.machine.function_get(&fun)?;
+                self.machine.function_get(fun)?;
 
-                // Recursion check
-                // check if
+                let available = self.cells.len();
 
-                // Argument check
-                let required_args = self
+                // Every index the function reads as an argument must resolve to
+                // an existing cell in the caller's current stack.
+                let deepest_missing = self
                     .findings
-                    .func_required_arguments(fun)
-                    .ok_or(FunctionUndefined(fun.to_owned()))?;
-                let available_args = self.cells.len();
+                    .func_data
+                    .get(fun)
+                    .ok_or_else(|| VerifierError::from(FunctionUndefined(fun.to_owned())))?
+                    .arg_indices
+                    .iter()
+                    .map(|index| index.required_depth())
+                    .filter(|depth| *depth > available)
+                    .max();
 
-                if available_args < required_args {
+                if let Some(required) = deepest_missing {
                     return Err(NotEnoughArguments {
-                        required: required_args
-                            .try_into()
-                            .expect("Required arguments should fit into CellIndex"),
-                        available: available_args,
+                        required: required.try_into().unwrap_or(CellIndex::MAX),
+                        available,
                     });
                 }
 

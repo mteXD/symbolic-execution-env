@@ -1,11 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
-
 use crate::{
     add_instr,
-    instruction::{BinaryOp, FunctionOp, Instruction, Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
-    machine::verifier::{ValueSpan, Verifier, VerifierError},
-    make_block, programs,
-    types::{self, Immediate},
+    instruction::{BinaryOp, Instruction::{self, *}, UnaryOpCell, UnaryOpImm},
+    machine::verifier::{ValueSpan, Verifier, VerifierError}, programs,
 };
 
 use VerifierError::*;
@@ -135,7 +131,7 @@ fn pop_multiple_bad() {
 #[test]
 fn read_bad_index() {
     let program = programs::read_bad_index();
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 }
 
 create_test!(read_reverse);
@@ -144,22 +140,22 @@ create_test!(read_reverse);
 fn test_read_reverse_bad_empty() {
     // PART 1
     let program = programs::read_reverse_bad_empty_1();
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 
     // PART 2
     let program = programs::read_reverse_bad_empty_2();
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 }
 
 #[test]
 fn test_read_reverse_bad_index() {
     // PART 1
     let program = programs::read_reverse_bad_index_1();
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 
     // PART 2
     let program = programs::read_reverse_bad_index_2();
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 }
 
 test_binop!(test_add, Add);
@@ -195,7 +191,7 @@ create_test!(bitwise_not);
 #[test]
 fn test_not_bad() {
     let program = vec![add_instr!(R Not, 0)];
-    assert_last_err!(program, _InvalidCell);
+    assert_last_err!(program, InvalidCell { .. });
 }
 
 create_test!(math_with_read);
@@ -240,6 +236,24 @@ mod blocks {
         match result {
             Err(BlockHasEmptyStack) => (),
             _ => panic!("Expected BlockHasEmptyStack error, but got {:?}", result),
+        }
+    }
+}
+
+mod functions {
+    use super::*;
+
+    create_test!(simple_function);
+
+    #[test]
+    fn simple_function_no_args() {
+        let program = programs::simple_function_no_args();
+
+        let mut verifier = Verifier::new(program);
+        let result = verifier.verify();
+        match result {
+            Err(NotEnoughArguments { .. }) => (),
+            _ => panic!("Expected NotEnoughArguments error, but got {:?}", result),
         }
     }
 }
@@ -349,6 +363,7 @@ mod misc_coverage {
 
     // ---- positive cases ----
     create_test!(function_two_args_ok);
+    create_test!(special_argument_providing);
     create_test!(long_arithmetic_chain);
 
     // ---- negative cases ----
@@ -373,7 +388,7 @@ mod misc_coverage {
     #[test]
     fn read_far_beyond_stack() {
         let program = programs::read_far_beyond_stack();
-        assert_last_err!(program, _InvalidCell);
+        assert_last_err!(program, InvalidCell { .. });
     }
 }
 

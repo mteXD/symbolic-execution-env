@@ -237,6 +237,17 @@ new_programs! {
         add_instr!(fun FunctionCall, FUNC_NAME),
     },
 
+    simple_function_no_args {
+        add_instr!(fun FunctionDefine, FUNC_NAME),
+        make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Mul, 0, 0) // Multiply input by 2
+        ),
+        // Here, we forget to push an argument.
+        add_instr!(fun FunctionCall, FUNC_NAME),
+    },
+
     sequential_fn_defs {
         add_instr!(fun FunctionDefine, "push2_1"),
         add_instr!(fun FunctionDefine, "push2_2"),
@@ -285,25 +296,6 @@ new_programs! {
                 ),
                 add_instr!(Push, 0)
             )
-        ),
-        add_instr!(Push, 5),
-        add_instr!(fun FunctionCall, COUNTDOWN),
-    },
-
-    small_recursion_bad {
-        add_instr!(fun FunctionDefine, COUNTDOWN),
-        make_block!(
-            add_instr!(R ReadReverse, 0),     // Read the argument n
-            add_instr!(Rebase),               // Rebase to make n the only argument
-            add_instr!(Push, 0),              // This is the bound
-            add_instr!(SetGreaterThan, 0, 1), // 0 -> critical value, 1 -> bound.
-            add_instr!(ifelse
-                make_block!(
-                    // Here, we forget to decrease the critical value.
-                    add_instr!(fun FunctionCall, COUNTDOWN) // else, calculate countdown(n - 1)
-                ),
-                add_instr!(Push, 0)
-            )                 // if n <= 0, skip to return
         ),
         add_instr!(Push, 5),
         add_instr!(fun FunctionCall, COUNTDOWN),
@@ -660,6 +652,30 @@ new_programs! {
         add_instr!(Mul, 2, 3),                    // 20
         add_instr!(Push, 2),
         add_instr!(Div, 4, 5)                     // 10
+    },
+
+    special_argument_providing {
+        add_instr!(fun FunctionDefine, "factorial"),
+        make_block!(
+            add_instr!(R Read, 1),
+            add_instr!(Rebase),
+            make_block!( // argument of next function call
+                add_instr!(Push, -1),  // Push -1
+                add_instr!(Add, 0, 1) // n - 1
+            ),
+            add_instr!(Push, 1),
+            add_instr!(SetGreaterThan, 0, 2),
+            add_instr!(ifelse // if n <= 1, skip to return
+                make_block!(
+                    add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
+                    add_instr!(Mul, 0, 4)                                    // n * factorial(n - 1
+                ),
+                add_instr!(Push, 1)
+            )
+        ),
+        add_instr!(Push, -1),
+        add_instr!(Push, 5),
+        add_instr!(fun FunctionCall, "factorial"),
     }
 }
 
@@ -673,7 +689,7 @@ pub fn prog_factorial(number: i64) -> Rc<[Instruction]> {
             add_instr!(SetGreaterThan, 0, 1), // n > 1
             add_instr!(ifelse // if n <= 1, skip to return
                 make_block!(
-                    add_instr!(Push, -1),  // Push 1 as the base case result
+                    add_instr!(Push, -1),
                     add_instr!(Add, 0, 3), // n - 1
                     add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
                     add_instr!(Mul, 0, 5)                                    // n * factorial(n - 1
