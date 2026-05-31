@@ -322,22 +322,23 @@ impl Verifier {
         Ok(exit)
     }
 
-    /// Verifies the body of an ifelse branch on the parent stack:
-    /// cells are mutated in place. `program_data`, `function_data`, and
-    /// `findings` are scoped (saved on entry, restored on exit) so branches
-    /// don't leak metadata into the parent. `Rebase` is forbidden inside
-    /// the branch via the `IfElseBranch` marker frame.
-    fn run_ifelse_branch(&mut self, instrs: Rc<[Instruction]>) -> Result<(), VerifierError> {
+    /// Verifies a single ifelse-branch instruction on the parent stack:
+    /// cells are mutated in place. `function_data` and `findings` are scoped
+    /// (saved on entry, restored on exit) so branches don't leak metadata into
+    /// the parent. `Rebase` is forbidden inside the branch via the
+    /// `IfElseBranch` marker frame.
+    fn run_ifelse_branch(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
         let saved_findings = self.findings.clone();
         let saved_fd = self.machine.function_data.clone();
 
+        // Evaluate the branch instruction directly: a `Block` branch scopes its
+        // own `program_data` via `evaluate_block`, and other instructions don't
+        // touch it, so there's no need to wrap the branch in a one-element
+        // program (which would force cloning the instruction).
         self.stack.enter_ifelse_branch();
-        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
-
-        let exec_result = self.run_loop();
-
-        self.machine.program_data = saved_pd;
+        let exec_result = self.evaluate_instruction(instr);
         self.stack.exit_ifelse_branch();
+
         self.machine.function_data = saved_fd;
         self.findings = saved_findings;
 
@@ -795,33 +796,33 @@ impl Evaluate for Verifier {
         let condition = self.cells.last().ok_or(StackUnderflow)?;
         self.check_good_if_placement()?;
         let value = Self::check_unnecessary_if(condition);
-        let body_of = |b: Rc<Instruction>| Rc::<[Instruction]>::from(vec![(*b).clone()]); // PERF: clone
 
         match value {
             // Condition is statically known: only the taken branch runs, and it
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
                 let chosen = if taken { when_true } else { when_false };
-                self.run_ifelse_branch(body_of(chosen))?;
+                self.run_ifelse_branch(&chosen)?;
             }
-            // Condition is unknown: both branches are explored. They each
-            // mutate the parent stack, but we snapshot/restore around them so
-            // we can compare their final `cells.len()` and merge cell-by-cell.
+            // Condition is unknown: both branches are explored. They each mutate
+            // the parent stack in place, so we keep a single copy of the initial
+            // cells to re-run the false branch from the same starting point.
             None => {
-                let snapshot = self.stack.cells.clone(); // PERF: clone
+                let initial = self.stack.cells.clone(); // unavoidable: both branches start here
 
-                self.run_ifelse_branch(body_of(when_true))?;
-                let true_cells = std::mem::replace(&mut self.stack.cells, snapshot.clone()); // PERF: clone
+                self.run_ifelse_branch(&when_true)?;
+                let true_cells = std::mem::replace(&mut self.stack.cells, initial);
 
-                self.run_ifelse_branch(body_of(when_false))?;
+                self.run_ifelse_branch(&when_false)?;
                 let false_cells = std::mem::replace(&mut self.stack.cells, Vec::new());
 
-                if true_cells.len() != false_cells.len() {
-                    // Restore something sensible before returning the error.
-                    self.stack.cells = snapshot;
+                let (true_len, false_len) = (true_cells.len(), false_cells.len());
+                if true_len != false_len {
+                    // Restore a valid stack before returning the error.
+                    self.stack.cells = true_cells;
                     return Err(CondUnequalStackSizes {
-                        true_branch_cells: true_cells.len(),
-                        false_branch_cells: false_cells.len(),
+                        true_branch_cells: true_len,
+                        false_branch_cells: false_len,
                     });
                 }
 
