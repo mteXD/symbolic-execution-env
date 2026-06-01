@@ -154,6 +154,10 @@ trait Evaluate {
                 debug!("Evaling: {:?}, arg: {:?}", instr, arg);
                 self.evaluate_intrinsic(instr, *arg)
             }
+            AluIntrinsicStr(instr, arg) => {
+                debug!("Evaling: {:?}, arg: {:?}", instr, arg);
+                self.evaluate_intrinsic_str(instr, arg)
+            }
         }?;
 
         Ok(())
@@ -187,6 +191,11 @@ trait Evaluate {
         &mut self,
         instr: &IntrinsicOp,
         arg: CellIndex,
+    ) -> Result<(), Self::Error>;
+    fn evaluate_intrinsic_str(
+        &mut self,
+        instr: &IntrinsicOp,
+        arg: &String,
     ) -> Result<(), Self::Error>;
 }
 

@@ -282,12 +282,18 @@ impl Evaluate for Executor {
 
     fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
         use IntrinsicOp::*;
-        use types::Input;
+        use types::{Input, Output};
 
         match instr {
             Print => {
                 let val = self.read(arg)?;
-                print!("{val}");
+                match &mut self.machine.output {
+                    Output::Stdout => print!("{val}"),
+                    Output::File(_) | Output::Buffer(_) => {
+                        let imm = val.into_immediate().map_err(|_| InvalidCell)?;
+                        self.machine.output.write(&[imm]);
+                    }
+                }
             }
             Input => match &self.machine.input {
                 Input::Stdin => {
@@ -296,25 +302,55 @@ impl Evaluate for Executor {
                         .read_line(&mut input)
                         .expect("Failed to read input");
 
-                    // TODO: Make explicit instructions for Integer and String input.
                     match input.trim().parse::<i64>() {
                         Ok(val) => self.push(Integer(val)),
                         Err(e) => todo!("For now, invalid input is a fatal error: {e}"),
                     }
                 }
-                Input::File(_) => todo!(),
+                Input::File(_) => {
+                    let mut data = self.machine.input.read_all();
+                    if let Some(val) = data.pop() {
+                        self.push(Integer(val));
+                        self.machine.input = Input::Buffer(std::rc::Rc::new(std::cell::RefCell::new(data)));
+                    } else {
+                        return Err(Core(CoreError::IoReadError));
+                    }
+                }
                 Input::Buffer(ref_cell) => {
                     let new_val = ref_cell
                         .borrow_mut()
                         .pop()
-                        .expect("Not enough input in buffer");
-                    self.push(Cell::Integer(
-                        new_val.try_into().expect("Couldn't transform u8 into i64?"),
-                    ));
+                        .ok_or(Core(CoreError::IoReadError))?;
+                    self.push(Cell::Integer(new_val));
                 }
             },
-            FileRead => todo!(),
-            FileWrite => todo!(),
+            FileRead => return Err(InvalidCell),
+            FileWrite => return Err(InvalidCell),
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_intrinsic_str(&mut self, instr: &IntrinsicOp, arg: &String) -> Result<()> {
+        use IntrinsicOp::*;
+        use types::{Input, Output};
+
+        match instr {
+            FileRead => {
+                if arg.is_empty() {
+                    self.machine.input = Input::Stdin;
+                } else {
+                    self.machine.input = Input::File(arg.clone());
+                }
+            }
+            FileWrite => {
+                if arg.is_empty() {
+                    self.machine.output = Output::Stdout;
+                } else {
+                    self.machine.output = Output::File(arg.clone());
+                }
+            }
+            Print | Input => return Err(InvalidCell),
         }
 
         Ok(())

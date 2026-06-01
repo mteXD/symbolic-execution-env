@@ -69,4 +69,5 @@ pub enum Instruction {
     IfElse(Rc<Instruction>, Rc<Instruction>),
     AluFunction(FunctionOp, String),
     AluIntrinsic(IntrinsicOp, CellIndex),
+    AluIntrinsicStr(IntrinsicOp, String),
 }

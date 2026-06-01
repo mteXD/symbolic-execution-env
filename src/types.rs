@@ -31,6 +31,15 @@ impl PartialEq<Immediate> for Cell {
     }
 }
 
+impl Cell {
+    pub fn into_immediate(self) -> Result<Immediate, &'static str> {
+        match self {
+            Cell::Integer(i) => Ok(i),
+            Cell::Text(c) => Ok(c as Immediate),
+        }
+    }
+}
+
 impl Display for Cell {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use Cell::*;

@@ -27,6 +27,9 @@ macro_rules! add_instr {
     (io $op:ident, $a:expr) => {
         AluIntrinsic(IntrinsicOp::$op, $a)
     };
+    (io_str $op:ident, $a:expr) => {
+        AluIntrinsicStr(IntrinsicOp::$op, String::from($a))
+    };
     (ifelse $when_true:expr, $when_false:expr) => {
         IfElse(Rc::new($when_true), Rc::new($when_false))
     };
@@ -724,5 +727,16 @@ pub fn prog_fibonacci(number: i64) -> Rc<[Instruction]> {
         ),
         add_instr!(Push, number),
         add_instr!(fun FunctionCall, String::from("fibonacci")),
+    ])
+}
+
+pub fn file_io_example() -> Rc<[Instruction]> {
+    Rc::<[Instruction]>::from(vec![
+        add_instr!(io_str FileRead, "input.txt"),
+        add_instr!(io Input, 0),
+        add_instr!(io_str FileWrite, "output.txt"),
+        add_instr!(io Print, 0),
+        add_instr!(io_str FileRead, ""),
+        add_instr!(io_str FileWrite, ""),
     ])
 }

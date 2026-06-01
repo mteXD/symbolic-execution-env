@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::{Add, Deref, DerefMut, Div, Mul},
+    ops::{Add, Deref, DerefMut},
     rc::Rc,
 };
 
@@ -778,8 +778,33 @@ impl Evaluate for Verifier {
         match instr {
             Print => (),
             Input => self.push(ValueSpan::inf()),
-            FileRead => self.push(ValueSpan::inf()),
-            FileWrite => todo!(),
+            FileRead => return Err(DebugError("FileRead should use string variant")),
+            FileWrite => return Err(DebugError("FileWrite should use string variant")),
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_intrinsic_str(&mut self, instr: &IntrinsicOp, arg: &String) -> Result<(), Self::Error> {
+        use IntrinsicOp::*;
+        use types::{Input, Output};
+
+        match instr {
+            FileRead => {
+                if arg.is_empty() {
+                    self.machine.input = Input::Stdin;
+                } else {
+                    self.machine.input = Input::File(arg.clone());
+                }
+            }
+            FileWrite => {
+                if arg.is_empty() {
+                    self.machine.output = Output::Stdout;
+                } else {
+                    self.machine.output = Output::File(arg.clone());
+                }
+            }
+            Print | Input => return Err(DebugError("Print and Input should use cell index variant")),
         }
 
         Ok(())
