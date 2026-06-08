@@ -97,12 +97,10 @@ impl Executor {
     fn run_nested(&mut self, instrs: Rc<[Instruction]>) -> Result<Option<Cell>> {
         let saved_base = self.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
-        let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
 
         let exec_result = self.run();
 
         self.machine.program_data = saved_pd;
-        self.machine.function_data = saved_fd;
         let (result, _) = self.exit_block(saved_base);
 
         exec_result?;
@@ -118,13 +116,11 @@ impl Executor {
         // Save program_data and function_data; add a ifelse frame
         self.enter_ifelse_branch();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
-        let saved_fd = self.machine.function_data.clone(); // PERF: cloning function data
 
         let exec_result = self.run();
 
         // Restore program_data and function_data; pop the ifelse frame
         self.machine.program_data = saved_pd;
-        self.machine.function_data = saved_fd;
         self.exit_ifelse_branch();
 
         exec_result

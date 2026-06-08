@@ -258,7 +258,7 @@ mod functions {
     }
 
     #[test]
-    fn nested_function_definition_rejected() {
+    fn test_nested_functions() {
         let program = programs::nested_functions();
 
         let mut verifier = Verifier::new(program);

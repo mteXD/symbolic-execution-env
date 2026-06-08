@@ -9,9 +9,8 @@ use crate::{
         },
         NullaryOp, UnaryOpCell, UnaryOpImm,
     },
-    machine::{CoreError, executor::Executor},
+    machine::executor::Executor,
     make_block, programs,
-    types::FunctionDataError,
 };
 
 macro_rules! assert_eq_last {
@@ -309,6 +308,7 @@ fn test_sequential_definitions() {
     assert!(matches!(machine.cells.get(3), None));
 }
 
+// TODO: Solve what to do here
 #[test]
 fn test_nested_functions() {
     let mut program = vec![
@@ -324,16 +324,9 @@ fn test_nested_functions() {
     // Outer function call should work
     assert_eq_last_Int!(program, 42);
 
-    // Inner function call should fail
+    // Inner function call should still work; this is only prohibited by the verifier.
     program.push(add_instr!(fun FunctionCall, String::from("inner")));
-    let mut machine = Executor::new(program);
-    let last = machine.exec();
-    assert!(matches!(
-        last,
-        Err(Core(CoreError::FunctionDataError(
-            FunctionDataError::FunctionUndefined(_)
-        )))
-    ));
+    assert_eq_last_Int!(program, 42);
 }
 
 #[test]
@@ -401,7 +394,7 @@ fn test_fibonacci() {
 #[test]
 fn test_factorial_weird() {
     init();
-    
+
     let program = programs::special_argument_providing();
 
     assert_eq_last_Int!(program, factorial(5));

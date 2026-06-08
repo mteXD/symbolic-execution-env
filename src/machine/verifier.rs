@@ -332,8 +332,6 @@ impl Verifier {
     /// `IfElseBranch` marker frame.
     fn run_ifelse_branch(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
         let saved_findings = self.findings.clone();
-        let saved_fd = self.machine.function_data.clone();
-
         // Evaluate the branch instruction directly: a `Block` branch scopes its
         // own `program_data` via `evaluate_block`, and other instructions don't
         // touch it, so there's no need to wrap the branch in a one-element
@@ -342,7 +340,6 @@ impl Verifier {
         let exec_result = self.evaluate_instruction(instr);
         self.stack.exit_ifelse_branch();
 
-        self.machine.function_data = saved_fd;
         self.findings = saved_findings;
 
         exec_result
@@ -356,11 +353,7 @@ impl Verifier {
         instrs: Rc<[Instruction]>,
     ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
         let saved_findings = self.findings.clone();
-        let saved_fd = self.machine.function_data.clone();
-
         let result = self.run_nested(instrs);
-
-        self.machine.function_data = saved_fd;
         self.findings = saved_findings;
         result
     }
