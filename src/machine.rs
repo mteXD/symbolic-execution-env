@@ -142,9 +142,9 @@ trait Evaluate {
                 debug!("Entering block...");
                 self.evaluate_block(instrs.clone())
             }
-            IfElse(when_true, when_false) => {
+            IfElse(cond_idx, when_true, when_false) => {
                 debug!("Entering if-else block...");
-                self.evaluate_ifelse(when_true.clone(), when_false.clone()) // Cheap clone
+                self.evaluate_ifelse(*cond_idx, when_true.clone(), when_false.clone()) // Cheap clone
             }
             AluFunction(instr, fun) => {
                 debug!("Evaling: {:?}, fun: '{}'", instr, fun);
@@ -183,6 +183,7 @@ trait Evaluate {
     fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<(), Self::Error>;
     fn evaluate_ifelse(
         &mut self,
+        cond_idx: CellIndex,
         when_true: Rc<Instruction>,
         when_false: Rc<Instruction>,
     ) -> Result<(), Self::Error>;

@@ -60,6 +60,10 @@ pub enum VerifierError {
         false_branch_cells: usize,
     },
     BlockHasEmptyStack,
+    NestedFunctionDefinition {
+        outer_function: String,
+        inner_function: String,
+    },
 }
 
 impl From<CoreError> for VerifierError {
@@ -374,6 +378,12 @@ impl Verifier {
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
     fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError> {
+        if let Some(ref outer) = self.findings.func_defining {
+            return Err(NestedFunctionDefinition {
+                outer_function: outer.function_name.clone(),
+                inner_function: fun.to_owned(),
+            });
+        }
         self.machine.common_function_logic(fun)?;
         // Shadowing is not permitted; compilers can generate unique function names.
         // Borrow the current instruction and clone only the block's `Rc` (a
@@ -812,15 +822,16 @@ impl Evaluate for Verifier {
 
     fn evaluate_ifelse(
         &mut self,
+        cond_idx: CellIndex,
         when_true: Rc<Instruction>,
         when_false: Rc<Instruction>,
     ) -> Result<(), Self::Error> {
         /* First, check if the previous instr was a comparison instr.
         If not, warn that this is not really safe. */
 
-        let condition = self.cells.last().ok_or(StackUnderflow)?;
+        let condition = self.read(cond_idx)?;
         self.check_good_if_placement()?;
-        let value = Self::check_unnecessary_if(condition);
+        let value = Self::check_unnecessary_if(&condition);
 
         match value {
             // Condition is statically known: only the taken branch runs, and it

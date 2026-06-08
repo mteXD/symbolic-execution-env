@@ -256,6 +256,21 @@ mod functions {
             _ => panic!("Expected NotEnoughArguments error, but got {:?}", result),
         }
     }
+
+    #[test]
+    fn nested_function_definition_rejected() {
+        let program = programs::nested_functions();
+
+        let mut verifier = Verifier::new(program);
+        let result = verifier.verify();
+        match result {
+            Err(NestedFunctionDefinition { outer_function, inner_function }) => {
+                assert_eq!(outer_function, "outer");
+                assert_eq!(inner_function, "inner");
+            },
+            _ => panic!("Expected NestedFunctionDefinition error, but got {:?}", result),
+        }
+    }
 }
 
 mod intrinsics {
@@ -354,7 +369,7 @@ mod ifelse_coverage {
     #[test]
     fn ifelse_no_condition() {
         let program = programs::ifelse_no_condition();
-        assert_last_err!(program, StackUnderflow);
+        assert_last_err!(program, InvalidCell { .. });
     }
 }
 

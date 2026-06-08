@@ -358,19 +358,21 @@ impl Evaluate for Executor {
 
     fn evaluate_ifelse(
         &mut self,
+        cond_idx: CellIndex,
         when_true: Rc<Instruction>,
         when_false: Rc<Instruction>,
     ) -> Result<()> {
-        let branch = match self.cells.last().copied() {
-            Some(Integer(0)) => when_false,
-            Some(Integer(_)) => when_true,
-            Some(other) => {
+        let condition = self.stack.get(cond_idx.into()).copied().ok_or(InvalidCell)?;
+
+        let branch = match condition {
+            Integer(0) => when_false,
+            Integer(_) => when_true,
+            other => {
                 return Err(TypeError {
                     expected: Integer(0),
                     found: other,
                 });
             }
-            None => return Err(StackUnderflow),
         };
 
         // The chosen branch runs inline on the parent's cells: its pops and

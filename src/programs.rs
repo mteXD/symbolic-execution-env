@@ -30,8 +30,8 @@ macro_rules! add_instr {
     (io_str $op:ident, $a:expr) => {
         AluIntrinsicStr(IntrinsicOp::$op, String::from($a))
     };
-    (ifelse $when_true:expr, $when_false:expr) => {
-        IfElse(Rc::new($when_true), Rc::new($when_false))
+    (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
+        IfElse($cond, Rc::new($when_true), Rc::new($when_false))
     };
 }
 
@@ -217,12 +217,12 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 20),
         add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(Push, 1),
             add_instr!(Push, 2)
         ),
         add_instr!(SetGreaterThan, 0, 1), // ? > 20 = 0
-        add_instr!(ifelse
+        add_instr!(ifelse 4,
             add_instr!(Push, 3),
             add_instr!(Push, 4)
         ),
@@ -277,7 +277,7 @@ new_programs! {
             add_instr!(Push, 0),
             add_instr!(Add, 0, 1),
             add_instr!(SetGreaterThan, 3, 2), // Add > 0
-            add_instr!(ifelse
+            add_instr!(ifelse 4,
                 add_instr!(fun FunctionCall, COUNTDOWN),
                 add_instr!(Push, 1)
             )
@@ -291,7 +291,7 @@ new_programs! {
             add_instr!(Rebase),               // Rebase to make n the only argument
             add_instr!(Push, 0),              // This is the bound
             add_instr!(SetGreaterThan, 0, 1), // 0 -> arg, 1 -> bound.
-            add_instr!(ifelse
+            add_instr!(ifelse 2,
                 make_block!(
                     add_instr!(Push, -1),  // Push 1 as the base case result
                     add_instr!(Add, 0, 2), // n - 1
@@ -385,7 +385,7 @@ new_programs! {
         add_instr!(io Input, 0),                  // [?]
         add_instr!(Push, 10),                     // [?, 10]
         add_instr!(SetGreaterThan, 0, 1),         // [?, 10, ?>10]   (unknown)
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(Push, 100),                // true:  +1 cell
             add_instr!(Push, 200)                 // false: +1 cell
         )
@@ -397,7 +397,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 5),
         add_instr!(SetLessThan, 0, 1),            // unknown condition
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             make_block!(
                 add_instr!(Push, 1),
                 add_instr!(Push, 2),
@@ -418,7 +418,7 @@ new_programs! {
         add_instr!(Push, 10),
         add_instr!(Push, 3),
         add_instr!(SetGreaterThan, 0, 1),         // 10 > 3 -> known true
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(Push, 42),                 // taken: +1 cell
             add_instr!(R Pop, 2)                  // dead:  would be -2 cells
         )
@@ -429,7 +429,7 @@ new_programs! {
         add_instr!(Push, 3),
         add_instr!(Push, 10),
         add_instr!(SetGreaterThan, 0, 1),         // 3 > 10 -> known false
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(R Pop, 2),                 // dead
             add_instr!(Push, 42)                  // taken: +1 cell
         )
@@ -443,7 +443,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 0),
         add_instr!(SetNotEqual, 0, 1),
-        add_instr!(ifelse
+        add_instr!(ifelse 3,
             make_block!(
                 add_instr!(R ReadReverse, 0),     // read top of parent stack
                 add_instr!(Rebase),               // OK: rebases the inner block
@@ -459,12 +459,12 @@ new_programs! {
         add_instr!(io Input, 0),                  // outer condition source
         add_instr!(Push, 0),
         add_instr!(SetGreaterThan, 0, 1),
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             make_block!(                           // outer-true: ends with 1 cell
                 add_instr!(io Input, 0),
                 add_instr!(Push, 5),
                 add_instr!(SetLessThan, 0, 1),
-                add_instr!(ifelse
+                add_instr!(ifelse 2,
                     add_instr!(Push, 1),
                     add_instr!(Push, 2)
                 )
@@ -483,7 +483,7 @@ new_programs! {
         add_instr!(io Input, 0),                  // [?]
         add_instr!(Push, 100),                    // [?, 100]
         add_instr!(SetGreaterThan, 0, 1),         // [?, 100, ?>100]   (unknown)
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(R Pop, 1),                 // -1 cell
             add_instr!(Push, 7)                   // +1 cell  (mismatch by 2)
         )
@@ -498,7 +498,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 100),
         add_instr!(SetGreaterThan, 4, 5), // [1, 2, 3, 4, ?, 100, ?>100]
-        add_instr!(ifelse
+        add_instr!(ifelse 6,
             add_instr!(R Pop, 2),
             add_instr!(R Pop, 1)
         )
@@ -510,7 +510,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 5),
         add_instr!(SetGreaterThan, 0, 1),
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             add_instr!(Rebase),                   // forbidden directly in branch
             add_instr!(Push, 0)
         )
@@ -525,7 +525,7 @@ new_programs! {
             add_instr!(io Input, 0),
             add_instr!(Push, 0),
             add_instr!(SetGreaterThan, 2, 3),
-            add_instr!(ifelse
+            add_instr!(ifelse 4,
                 add_instr!(Rebase),               // still forbidden
                 add_instr!(Push, 0)
             )
@@ -540,7 +540,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 5),
         add_instr!(SetGreaterThan, 0, 1),
-        add_instr!(ifelse
+        add_instr!(ifelse 4,
             add_instr!(Div, 0, 1),                // -> DivisionByZero
             add_instr!(Push, 1)
         )
@@ -552,7 +552,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 0),
         add_instr!(SetNotEqual, 0, 1),
-        add_instr!(ifelse
+        add_instr!(ifelse 2,
             make_block!(
                 add_instr!(R Pop, 4),             // pops more than exists
                 add_instr!(Push, 0)
@@ -566,7 +566,7 @@ new_programs! {
     ifelse_bad_placement {
         add_instr!(Push, 1),                      // condition cell, but
         add_instr!(Push, 1),                      // last instr is Push, not cmp
-        add_instr!(ifelse
+        add_instr!(ifelse 1,
             add_instr!(Push, 10),
             add_instr!(Push, 20)
         )
@@ -575,7 +575,7 @@ new_programs! {
     // [NEGATIVE] No condition on the stack at all when ifelse runs.
     // Expected: `StackUnderflow`.
     ifelse_no_condition {
-        add_instr!(ifelse
+        add_instr!(ifelse 0,
             add_instr!(Push, 1),
             add_instr!(Push, 2)
         )
@@ -590,7 +590,7 @@ new_programs! {
         add_instr!(io Input, 0),
         add_instr!(Push, 0),
         add_instr!(SetGreaterThan, 2, 3),
-        add_instr!(ifelse
+        add_instr!(ifelse 4,
             make_block!(
                 add_instr!(Push, 1),
                 add_instr!(Push, 2)
@@ -668,10 +668,10 @@ new_programs! {
             ),
             add_instr!(Push, 1),
             add_instr!(SetGreaterThan, 0, 2),
-            add_instr!(ifelse // if n <= 1, skip to return
+            add_instr!(ifelse 3, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(fun FunctionCall, String::from("factorial")), // else, calculate factorial(n - 1)
-                    add_instr!(Mul, 0, 4)                                    // n * factorial(n - 1
+                    add_instr!(Mul, 0, 4)                                    // n * factorial(n - 1)
                 ),
                 add_instr!(Push, 1)
             )
@@ -690,7 +690,7 @@ pub fn prog_factorial(number: i64) -> Rc<[Instruction]> {
             add_instr!(Rebase),
             add_instr!(Push, 1),              // 1
             add_instr!(SetGreaterThan, 0, 1), // n > 1
-            add_instr!(ifelse // if n <= 1, skip to return
+            add_instr!(ifelse 2, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(Push, -1),
                     add_instr!(Add, 0, 3), // n - 1
@@ -713,7 +713,7 @@ pub fn prog_fibonacci(number: i64) -> Rc<[Instruction]> {
             add_instr!(Rebase),
             add_instr!(Push, 1),              // 2
             add_instr!(SetGreaterThan, 0, 1), // n > 2
-            add_instr!(ifelse // if n <= 1, skip to return
+            add_instr!(ifelse 2, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(Push, -1),
                     add_instr!(Add, 0, 3), // n - 1

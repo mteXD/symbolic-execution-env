@@ -66,7 +66,7 @@ pub enum Instruction {
     AluUnaryCell(UnaryOpCell, CellIndex),
     AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Rc<[Instruction]>),
-    IfElse(Rc<Instruction>, Rc<Instruction>),
+    IfElse(CellIndex, Rc<Instruction>, Rc<Instruction>),
     AluFunction(FunctionOp, String),
     AluIntrinsic(IntrinsicOp, CellIndex),
     AluIntrinsicStr(IntrinsicOp, String),
