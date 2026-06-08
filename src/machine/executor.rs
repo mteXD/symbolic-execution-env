@@ -375,4 +375,4 @@ impl From<Vec<Cell>> for Executor {
 }
 
 #[cfg(test)]
-pub mod executor_tests;
+pub mod tests;

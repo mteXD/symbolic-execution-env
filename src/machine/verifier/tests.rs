@@ -65,7 +65,7 @@ macro_rules! create_test {
 }
 
 #[test]
-fn test_push_pop() {
+fn push_pop() {
     let mut program: Vec<Instruction> = programs::push5().to_vec();
     let mut verifier = Verifier::new(program.clone());
     let result = verifier.verify();
@@ -137,7 +137,7 @@ fn read_bad_index() {
 create_test!(read_reverse);
 
 #[test]
-fn test_read_reverse_bad_empty() {
+fn read_reverse_bad_empty() {
     // PART 1
     let program = programs::read_reverse_bad_empty_1();
     assert_last_err!(program, InvalidCell { .. });
@@ -148,7 +148,7 @@ fn test_read_reverse_bad_empty() {
 }
 
 #[test]
-fn test_read_reverse_bad_index() {
+fn read_reverse_bad_index() {
     // PART 1
     let program = programs::read_reverse_bad_index_1();
     assert_last_err!(program, InvalidCell { .. });
@@ -158,25 +158,25 @@ fn test_read_reverse_bad_index() {
     assert_last_err!(program, InvalidCell { .. });
 }
 
-test_binop!(test_add, Add);
-test_binop!(test_add_neg, Add);
-test_binop!(test_mul, Mul);
-test_binop!(test_div, Div);
-test_binop!(test_and, And);
-test_binop!(test_or, Or);
-test_binop!(test_xor, Xor);
-test_binop!(test_slt, SetLessThan);
-test_binop!(test_sgt, SetGreaterThan);
-test_binop!(test_seq, SetEqual);
-test_binop!(test_sne, SetNotEqual);
-test_binop!(test_sle, SetLessThanOrEqual);
-test_binop!(test_sge, SetGreaterThanOrEqual);
-test_binop!(test_sll, ShiftLeftLogical);
-test_binop!(test_srl, ShiftRightLogical);
-test_binop!(test_sra, ShiftRightArithmetic);
+test_binop!(add, Add);
+test_binop!(add_neg, Add);
+test_binop!(mul, Mul);
+test_binop!(div, Div);
+test_binop!(and, And);
+test_binop!(or, Or);
+test_binop!(xor, Xor);
+test_binop!(slt, SetLessThan);
+test_binop!(sgt, SetGreaterThan);
+test_binop!(seq, SetEqual);
+test_binop!(sne, SetNotEqual);
+test_binop!(sle, SetLessThanOrEqual);
+test_binop!(sge, SetGreaterThanOrEqual);
+test_binop!(sll, ShiftLeftLogical);
+test_binop!(srl, ShiftRightLogical);
+test_binop!(sra, ShiftRightArithmetic);
 
 #[test]
-fn test_div_bad() {
+fn div_bad() {
     let program = vec![
         add_instr!(Push, 10),
         add_instr!(Push, 0),
@@ -189,7 +189,7 @@ create_test!(nop);
 create_test!(bitwise_not);
 
 #[test]
-fn test_not_bad() {
+fn not_bad() {
     let program = vec![add_instr!(R Not, 0)];
     assert_last_err!(program, InvalidCell { .. });
 }
@@ -258,7 +258,7 @@ mod functions {
     }
 
     #[test]
-    fn test_nested_functions() {
+    fn nested_functions() {
         let program = programs::nested_functions();
 
         let mut verifier = Verifier::new(program);
@@ -299,7 +299,7 @@ mod intrinsics {
     }
 }
 
-mod ifelse_coverage {
+mod ifelse {
     use super::*;
 
     // ---- positive cases ----
@@ -373,7 +373,7 @@ mod ifelse_coverage {
     }
 }
 
-mod misc_coverage {
+mod misc {
     use super::*;
 
     // ---- positive cases ----
@@ -411,13 +411,13 @@ mod whole_programs {
     use super::*;
 
     #[test]
-    fn test_factorial() {
+    fn factorial() {
         let program = programs::prog_factorial(10);
         assert_last!(program);
     }
 
     #[test]
-    fn test_fibonacci() {
+    fn fibonacci() {
         let program = programs::prog_fibonacci(10);
         // panic!("Termination.");
         assert_last!(program);

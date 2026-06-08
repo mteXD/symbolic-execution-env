@@ -862,4 +862,4 @@ impl Evaluate for Verifier {
 }
 
 #[cfg(test)]
-pub mod verifier_tests;
+pub mod tests;

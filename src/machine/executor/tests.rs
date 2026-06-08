@@ -44,7 +44,7 @@ macro_rules! test_binop {
 }
 
 #[test]
-fn test_push_pop() {
+fn push_pop() {
     fn cell_checker(executor: &Executor, expected_len: usize) {
         use crate::types::Cell;
         let len = executor.cells.len();
@@ -99,10 +99,10 @@ fn read_reverse() {
     assert_eq_last_Int!(program, 20);
 }
 
-test_binop!(test_add, 10, 20, Add => 30);
-test_binop!(test_add_neg, 10, -30, Add => -20);
-test_binop!(test_mul, 10, 20, Mul => 200);
-test_binop!(test_div, 20, 5, Div => 4);
+test_binop!(add, 10, 20, Add => 30);
+test_binop!(add_neg, 10, -30, Add => -20);
+test_binop!(mul, 10, 20, Mul => 200);
+test_binop!(div, 20, 5, Div => 4);
 
 #[test]
 fn div_by_0() {
@@ -115,26 +115,26 @@ fn div_by_0() {
     }
 }
 
-test_binop!(test_and, 0b1100, 0b1010, And => 0b1000);
-test_binop!(test_or, 0b1100, 0b1010, Or => 0b1110);
-test_binop!(test_xor, 0b1100, 0b1010, Xor => 0b0110);
+test_binop!(and, 0b1100, 0b1010, And => 0b1000);
+test_binop!(or, 0b1100, 0b1010, Or => 0b1110);
+test_binop!(xor, 0b1100, 0b1010, Xor => 0b0110);
 
 #[test]
-fn test_not() {
+fn not() {
     let program = vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)];
     assert_eq_last_Int!(program, !0b1100);
 }
 
-test_binop!(test_slt, 10, 20, SetLessThan => 1);
-test_binop!(test_sgt, 20, 10, SetGreaterThan => 1);
-test_binop!(test_seq, 10, 10, SetEqual => 1);
-test_binop!(test_sne, 10, 20, SetNotEqual => 1);
-test_binop!(test_sle, 10, 10, SetLessThanOrEqual => 1);
-test_binop!(test_sge, 20, 10, SetGreaterThanOrEqual => 1);
+test_binop!(slt, 10, 20, SetLessThan => 1);
+test_binop!(sgt, 20, 10, SetGreaterThan => 1);
+test_binop!(seq, 10, 10, SetEqual => 1);
+test_binop!(sne, 10, 20, SetNotEqual => 1);
+test_binop!(sle, 10, 10, SetLessThanOrEqual => 1);
+test_binop!(sge, 20, 10, SetGreaterThanOrEqual => 1);
 
-test_binop!(test_sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
-test_binop!(test_srl, 0b0100, 2, ShiftRightLogical => 0b0001);
-test_binop!(test_sra, -8, 2, ShiftRightArithmetic => -2);
+test_binop!(sll, 0b0001, 2, ShiftLeftLogical => 0b0100);
+test_binop!(srl, 0b0100, 2, ShiftRightLogical => 0b0001);
+test_binop!(sra, -8, 2, ShiftRightArithmetic => -2);
 
 #[test]
 fn nop() {
@@ -178,7 +178,7 @@ fn nested_block() {
 }
 
 #[test]
-fn test_square_fn() {
+fn square_fn() {
     let square_block = make_block!(
         add_instr!(R ReadReverse, 0),
         add_instr!(R ReadReverse, 0),
@@ -204,7 +204,7 @@ fn block_with_pop() {
 }
 
 #[test]
-fn test_nested_rebase_1() {
+fn nested_rebase_1() {
     let program = vec![
         add_instr!(Push, 2),
         make_block!(
@@ -225,7 +225,7 @@ fn test_nested_rebase_1() {
 }
 
 #[test]
-fn test_nested_rebase_2() {
+fn nested_rebase_2() {
     let program = vec![
         add_instr!(Push, 2),
         make_block!(
@@ -248,7 +248,7 @@ fn test_nested_rebase_2() {
 }
 
 #[test]
-fn test_square_add_42() {
+fn square_add_42() {
     let program = vec![
         add_instr!(Push, 5), // Argument
         make_block!(
@@ -270,7 +270,7 @@ fn test_square_add_42() {
 }
 
 #[test]
-fn test_simple_function() {
+fn simple_function() {
     let program = vec![
         add_instr!(fun FunctionDefine, String::from("square")),
         make_block!(
@@ -288,7 +288,7 @@ fn test_simple_function() {
 }
 
 #[test]
-fn test_sequential_definitions() {
+fn sequential_definitions() {
     let program = vec![
         add_instr!(fun FunctionDefine, String::from("push2_1")),
         add_instr!(fun FunctionDefine, String::from("push2_2")),
@@ -310,7 +310,7 @@ fn test_sequential_definitions() {
 
 // TODO: Solve what to do here
 #[test]
-fn test_nested_functions() {
+fn nested_functions() {
     let mut program = vec![
         add_instr!(fun FunctionDefine, String::from("outer")),
         make_block!(
@@ -330,7 +330,7 @@ fn test_nested_functions() {
 }
 
 #[test]
-fn test_print() {
+fn print() {
     let program = vec![
         add_instr!(Push, 123),
         add_instr!(io Print, 0), // Should print 123
@@ -357,32 +357,32 @@ pub fn init() {
     });
 }
 
-fn factorial(n: i64) -> i64 {
+fn fact(n: i64) -> i64 {
     if n <= 1 {
         return 1;
     }
-    n * factorial(n - 1)
+    n * fact(n - 1)
+}
+
+fn fib(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    fib(n - 1) + fib(n - 2)
 }
 
 #[test]
-fn test_factorial() {
+fn factorial() {
     init();
     let number = 10;
 
     let program = programs::prog_factorial(number);
 
-    assert_eq_last_Int!(program, factorial(number));
+    assert_eq_last_Int!(program, fact(number));
 }
 
 #[test]
-fn test_fibonacci() {
-    fn fib(n: i64) -> i64 {
-        if n <= 1 {
-            return 1;
-        }
-        fib(n - 1) + fib(n - 2)
-    }
-
+fn fibonacci() {
     init();
     let number = 10;
 
@@ -392,10 +392,10 @@ fn test_fibonacci() {
 }
 
 #[test]
-fn test_factorial_weird() {
+fn factorial_weird() {
     init();
 
     let program = programs::special_argument_providing();
 
-    assert_eq_last_Int!(program, factorial(5));
+    assert_eq_last_Int!(program, fact(5));
 }
