@@ -1,10 +1,27 @@
 use crate::{
     add_instr,
-    instruction::{BinaryOp, Instruction::{self, *}, UnaryOpCell, UnaryOpImm},
-    machine::verifier::{ValueSpan, Verifier, VerifierError}, programs,
+    instruction::{
+        BinaryOp,
+        Instruction::{self, *},
+        UnaryOpCell, UnaryOpImm,
+    },
+    machine::verifier::{ValueSpan, Verifier, VerifierError},
+    programs,
 };
 
 use VerifierError::*;
+
+#[derive(Debug, Clone, Copy)]
+enum TestTag {
+    Public,
+}
+
+#[test]
+fn tagged_push_is_verified_without_a_flow_policy() {
+    let program = vec![add_instr!(tag Push, 42, TestTag::Public)];
+    let mut verifier = Verifier::with_tags(program);
+    assert_eq!(verifier.verify().unwrap(), Some(&ValueSpan::new(42, 42)));
+}
 
 macro_rules! assert_last {
     ($prog:expr) => {
@@ -264,11 +281,17 @@ mod functions {
         let mut verifier = Verifier::new(program);
         let result = verifier.verify();
         match result {
-            Err(NestedFunctionDefinition { outer_function, inner_function }) => {
+            Err(NestedFunctionDefinition {
+                outer_function,
+                inner_function,
+            }) => {
                 assert_eq!(outer_function, "outer");
                 assert_eq!(inner_function, "inner");
-            },
-            _ => panic!("Expected NestedFunctionDefinition error, but got {:?}", result),
+            }
+            _ => panic!(
+                "Expected NestedFunctionDefinition error, but got {:?}",
+                result
+            ),
         }
     }
 }

@@ -15,6 +15,7 @@
  */
 
 // mod verificator;
+pub mod information_flow;
 pub mod instruction;
 pub mod logging;
 pub mod machine;

@@ -1,33 +1,34 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     ops::{Add, Deref, DerefMut},
     rc::Rc,
 };
 
 use crate::{
     instruction::{
-        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
+        UnaryOpImm,
     },
     machine::{
         CoreError::{self},
         CoreMachine, Evaluate, StackFrames,
     },
     types::{
-        self, Address, CellIndex, FunctionDataError, Immediate, ProgramData,
-        ProgramDataError,
+        self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
     },
 };
 use VerifierError::*;
 use log::{debug, error, trace, warn};
 
 #[derive(Debug, Clone)]
-pub enum VerifierError {
+pub enum VerifierError<Tag: Clone + Debug = ()> {
     Core(CoreError),
     InvalidCell {
-        instr: Instruction,
+        instr: Instruction<Tag>,
         cell_index: CellIndex,
         cells: Vec<ValueSpan>,
-        prog: Rc<[Instruction]>,
+        prog: Rc<[Instruction<Tag>]>,
         location: &'static str,
     },
     ArithmeticOverflow,
@@ -48,10 +49,10 @@ pub enum VerifierError {
     UnsafeCondPlacement,
     DebugError(&'static str),
     CondInvalidCell {
-        instr: Instruction,
+        instr: Instruction<Tag>,
         cell_index: CellIndex,
         cells: Vec<ValueSpan>,
-        prog: Rc<[Instruction]>,
+        prog: Rc<[Instruction<Tag>]>,
         location: &'static str,
     },
     CondUnequalStackSizes {
@@ -65,19 +66,19 @@ pub enum VerifierError {
     },
 }
 
-impl From<CoreError> for VerifierError {
+impl<Tag: Clone + Debug> From<CoreError> for VerifierError<Tag> {
     fn from(e: CoreError) -> Self {
         VerifierError::Core(e)
     }
 }
 
-impl From<ProgramDataError> for VerifierError {
+impl<Tag: Clone + Debug> From<ProgramDataError> for VerifierError<Tag> {
     fn from(e: ProgramDataError) -> Self {
         VerifierError::Core(e.into())
     }
 }
 
-impl From<FunctionDataError> for VerifierError {
+impl<Tag: Clone + Debug> From<FunctionDataError> for VerifierError<Tag> {
     fn from(e: FunctionDataError) -> Self {
         VerifierError::Core(e.into())
     }
@@ -259,28 +260,34 @@ impl Findings {
 }
 
 #[derive(Clone)]
-pub struct Verifier {
-    machine: CoreMachine,
+pub struct Verifier<Tag: Clone + Debug = ()> {
+    machine: CoreMachine<Tag>,
     pub stack: StackFrames<ValueSpan>,
     findings: Findings,
 }
 
 // Convenience: lets `verifier.cells`, `verifier.base`, and the stack methods
 // resolve directly through the inner `StackFrames`.
-impl Deref for Verifier {
+impl<Tag: Clone + Debug> Deref for Verifier<Tag> {
     type Target = StackFrames<ValueSpan>;
     fn deref(&self) -> &StackFrames<ValueSpan> {
         &self.stack
     }
 }
-impl DerefMut for Verifier {
+impl<Tag: Clone + Debug> DerefMut for Verifier<Tag> {
     fn deref_mut(&mut self) -> &mut StackFrames<ValueSpan> {
         &mut self.stack
     }
 }
 
-impl Verifier {
+impl Verifier<()> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
+        Self::with_tags(program)
+    }
+}
+
+impl<Tag: Clone + Debug> Verifier<Tag> {
+    pub fn with_tags(program: impl Into<Rc<[Instruction<Tag>]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
             stack: StackFrames::new(),
@@ -296,7 +303,7 @@ impl Verifier {
         self.machine.output = new_output;
     }
 
-    fn run_loop(&mut self) -> Result<(), VerifierError> {
+    fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;
             self.findings.processed_instructions += 1;
@@ -311,8 +318,8 @@ impl Verifier {
     /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
-        instrs: Rc<[Instruction]>,
-    ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, usize), VerifierError<Tag>> {
         let saved_base = self.stack.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
@@ -330,7 +337,7 @@ impl Verifier {
     /// (saved on entry, restored on exit) so branches don't leak metadata into
     /// the parent. `Rebase` is forbidden inside the branch via the
     /// `IfElseBranch` marker frame.
-    fn run_ifelse_branch(&mut self, instr: &Instruction) -> Result<(), VerifierError> {
+    fn run_ifelse_branch(&mut self, instr: &Instruction<Tag>) -> Result<(), VerifierError<Tag>> {
         let saved_findings = self.findings.clone();
         // Evaluate the branch instruction directly: a `Block` branch scopes its
         // own `program_data` via `evaluate_block`, and other instructions don't
@@ -350,8 +357,8 @@ impl Verifier {
     /// exit. Used by `evaluate_block` and `evaluate_ifelse`.
     fn run_block_scoped(
         &mut self,
-        instrs: Rc<[Instruction]>,
-    ) -> Result<(Option<ValueSpan>, usize), VerifierError> {
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, usize), VerifierError<Tag>> {
         let saved_findings = self.findings.clone();
         let result = self.run_nested(instrs);
         self.findings = saved_findings;
@@ -369,7 +376,7 @@ impl Verifier {
     /// Nested function definitions are intentionally unsupported: they clash
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
-    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError> {
+    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
         if let Some(ref outer) = self.findings.func_defining {
             return Err(NestedFunctionDefinition {
                 outer_function: outer.function_name.clone(),
@@ -409,7 +416,7 @@ impl Verifier {
         Ok(())
     }
 
-    pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError> {
+    pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<Tag>> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
         if self.cells.len()
@@ -426,7 +433,7 @@ impl Verifier {
         Ok(())
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError> {
+    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
         self.stack.get(reg.into()).copied().ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: reg,
@@ -446,7 +453,7 @@ impl Verifier {
     /// Like [`read`](Self::read), but while collecting a function's arguments
     /// an out-of-scope read is recorded as a `Normal` argument index and
     /// yields an unbounded span instead of erroring.
-    fn read_normal(&mut self, idx: CellIndex) -> Result<ValueSpan, VerifierError> {
+    fn read_normal(&mut self, idx: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
         if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
             self.findings.record_arg(MemorizedIndex::Normal(idx));
             return Ok(ValueSpan::inf());
@@ -454,7 +461,7 @@ impl Verifier {
         self.read(idx)
     }
 
-    fn get_prev_instr(&self) -> Result<&Instruction, VerifierError> {
+    fn get_prev_instr(&self) -> Result<&Instruction<Tag>, VerifierError<Tag>> {
         let pc = match self.machine.program_data.get_pc() {
             Address::Null => {
                 panic!("PC cannot be null here, program already started executing.")
@@ -473,12 +480,12 @@ impl Verifier {
             .map_err(Into::into)
     }
 
-    pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError> {
+    pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError<Tag>> {
         self.run_loop()?;
         Ok(self.cells.last())
     }
 
-    fn check_good_if_placement(&self) -> Result<(), VerifierError> {
+    fn check_good_if_placement(&self) -> Result<(), VerifierError<Tag>> {
         use BinaryOp::*;
         use Instruction::AluBinary;
 
@@ -522,8 +529,8 @@ impl Verifier {
     }
 }
 
-impl Evaluate for Verifier {
-    type Error = VerifierError;
+impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
+    type Error = VerifierError<Tag>;
 
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
         use NullaryOp::*;
@@ -562,6 +569,11 @@ impl Evaluate for Verifier {
             Push => self.push(ValueSpan::new(arg, arg)),
         }
 
+        Ok(())
+    }
+
+    fn evaluate_tagged_push(&mut self, value: Immediate, _tag: &Tag) -> Result<(), Self::Error> {
+        self.push(ValueSpan::new(value, value));
         Ok(())
     }
 
@@ -664,71 +676,71 @@ impl Evaluate for Verifier {
 
         // TODO: Write tests for arithmetic overflow checks
         let calculated_value = match instr {
-                Add => {
-                    let min = a.min.saturating_add(b.min);
-                    let max = a.max.saturating_add(b.max);
+            Add => {
+                let min = a.min.saturating_add(b.min);
+                let max = a.max.saturating_add(b.max);
 
-                    let vs_new = ValueSpan::new(min, max);
+                let vs_new = ValueSpan::new(min, max);
 
-                    valuespan_check(a, b, vs_new)?
+                valuespan_check(a, b, vs_new)?
+            }
+            Mul => {
+                let candidates = [
+                    a.min.checked_mul(b.min),
+                    a.min.checked_mul(b.max),
+                    a.max.checked_mul(b.min),
+                    a.max.checked_mul(b.max),
+                ];
+
+                let vs_new = get_min_max(candidates);
+
+                valuespan_check(a, b, vs_new)?
+            }
+            Div => {
+                if b == ValueSpan::new(0, 0) {
+                    return Err(DivisionByZero);
                 }
-                Mul => {
-                    let candidates = [
-                        a.min.checked_mul(b.min),
-                        a.min.checked_mul(b.max),
-                        a.max.checked_mul(b.min),
-                        a.max.checked_mul(b.max),
-                    ];
-
-                    let vs_new = get_min_max(candidates);
-
-                    valuespan_check(a, b, vs_new)?
-                }
-                Div => {
-                    if b == ValueSpan::new(0, 0) {
-                        return Err(DivisionByZero);
-                    }
-                    if a.is_single_value() && b.is_single_value() {
-                        if let Some(result) = a.min.checked_div(b.min) {
-                            ValueSpan::new(result, result)
-                        } else {
-                            return Err(ArithmeticOverflow);
-                        }
+                if a.is_single_value() && b.is_single_value() {
+                    if let Some(result) = a.min.checked_div(b.min) {
+                        ValueSpan::new(result, result)
                     } else {
-                        if b.min <= 0 && b.max >= 0 {
-                            // Division by zero is possible, so we return the widest possible range.
-                            ValueSpan::inf()
-                        } else {
-                            let candidates = [
-                                a.min.checked_div(b.min),
-                                a.min.checked_div(b.max),
-                                a.max.checked_div(b.min),
-                                a.max.checked_div(b.max),
-                            ];
+                        return Err(ArithmeticOverflow);
+                    }
+                } else {
+                    if b.min <= 0 && b.max >= 0 {
+                        // Division by zero is possible, so we return the widest possible range.
+                        ValueSpan::inf()
+                    } else {
+                        let candidates = [
+                            a.min.checked_div(b.min),
+                            a.min.checked_div(b.max),
+                            a.max.checked_div(b.min),
+                            a.max.checked_div(b.max),
+                        ];
 
-                            let vs_new = get_min_max(candidates);
+                        let vs_new = get_min_max(candidates);
 
-                            valuespan_check(a, b, vs_new)?
-                        }
+                        valuespan_check(a, b, vs_new)?
                     }
                 }
-                And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
-                    ValueSpan::inf()
-                }
-                SetEqual => a.chck_eq(&b),
-                SetNotEqual => a.chck_neq(&b),
-                SetLessThan => a.chck_lt(&b),
-                SetLessThanOrEqual => a.chck_lte(&b),
-                SetGreaterThan => a.chck_gt(&b),
-                SetGreaterThanOrEqual => a.chck_gte(&b),
-            };
+            }
+            And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
+                ValueSpan::inf()
+            }
+            SetEqual => a.chck_eq(&b),
+            SetNotEqual => a.chck_neq(&b),
+            SetLessThan => a.chck_lt(&b),
+            SetLessThanOrEqual => a.chck_lte(&b),
+            SetGreaterThan => a.chck_gt(&b),
+            SetGreaterThanOrEqual => a.chck_gte(&b),
+        };
 
-            self.push(calculated_value);
+        self.push(calculated_value);
 
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction]>) -> Result<(), Self::Error> {
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> Result<(), Self::Error> {
         match self.run_block_scoped(instrs)?.0 {
             Some(val) => self.push(val),
             None => return Err(BlockHasEmptyStack),
@@ -774,9 +786,13 @@ impl Evaluate for Verifier {
         Ok(())
     }
 
-    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: &IntrinsicArg) -> Result<(), Self::Error> {
-        use IntrinsicOp::*;
+    fn evaluate_intrinsic(
+        &mut self,
+        instr: &IntrinsicOp,
+        arg: &IntrinsicArg,
+    ) -> Result<(), Self::Error> {
         use IntrinsicArg::*;
+        use IntrinsicOp::*;
         use types::{Input, Output};
 
         match (instr, arg) {
@@ -805,8 +821,8 @@ impl Evaluate for Verifier {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction>,
-        when_false: Rc<Instruction>,
+        when_true: Rc<Instruction<Tag>>,
+        when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error> {
         /* First, check if the previous instr was a comparison instr.
         If not, warn that this is not really safe. */

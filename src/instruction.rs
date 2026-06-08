@@ -66,13 +66,14 @@ pub enum IntrinsicArg {
 }
 
 #[derive(Debug, Clone)]
-pub enum Instruction {
+pub enum Instruction<Tag = ()> {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
+    TaggedPush { value: Immediate, tag: Tag },
     AluUnaryCell(UnaryOpCell, CellIndex),
     AluBinary(BinaryOp, CellIndex, CellIndex),
-    Block(Rc<[Instruction]>),
-    IfElse(CellIndex, Rc<Instruction>, Rc<Instruction>),
+    Block(Rc<[Instruction<Tag>]>),
+    IfElse(CellIndex, Rc<Instruction<Tag>>, Rc<Instruction<Tag>>),
     AluFunction(FunctionOp, String),
     AluIntrinsic(IntrinsicOp, IntrinsicArg),
 }

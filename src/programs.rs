@@ -14,6 +14,12 @@ macro_rules! add_instr {
         // for immediate
         AluUnaryImm(UnaryOpImm::$op, $a)
     };
+    (tag Push, $value:expr, $tag:expr) => {
+        $crate::instruction::Instruction::TaggedPush {
+            value: $value,
+            tag: $tag,
+        }
+    };
     (R $op:ident, $a:expr) => {
         // for register
         AluUnaryCell(UnaryOpCell::$op, $a)
@@ -25,20 +31,30 @@ macro_rules! add_instr {
         AluFunction(FunctionOp::$op, String::from($name))
     };
     (io $op:ident, $a:expr) => {
-        AluIntrinsic(IntrinsicOp::$op, $crate::instruction::IntrinsicArg::Cell($a))
+        AluIntrinsic(
+            IntrinsicOp::$op,
+            $crate::instruction::IntrinsicArg::Cell($a),
+        )
     };
     (io_str $op:ident, $a:expr) => {
-        AluIntrinsic(IntrinsicOp::$op, $crate::instruction::IntrinsicArg::Str(String::from($a)))
+        AluIntrinsic(
+            IntrinsicOp::$op,
+            $crate::instruction::IntrinsicArg::Str(String::from($a)),
+        )
     };
     (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
-        IfElse($cond, Rc::new($when_true), Rc::new($when_false))
+        $crate::instruction::Instruction::IfElse(
+            $cond,
+            std::rc::Rc::new($when_true),
+            std::rc::Rc::new($when_false),
+        )
     };
 }
 
 #[macro_export]
 macro_rules! make_block {
     ($($instr:expr),+) => { // Variadic arguments, at least one
-        Block(std::rc::Rc::<[Instruction]>::from(vec![ $( $instr ),* ]))
+        $crate::instruction::Instruction::Block(std::rc::Rc::from(vec![ $( $instr ),* ]))
     };
 }
 

@@ -2,16 +2,18 @@ use super::*;
 
 use crate::{
     add_instr,
+    information_flow::{FlowError, FlowGraph, GraphFlowPolicy},
     instruction::{
         BinaryOp, FunctionOp, Instruction,
         Instruction::{
-            AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm, Block,
+            AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm,
         },
         NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::executor::Executor,
     make_block, programs,
 };
+use std::{cell::RefCell, rc::Rc};
 
 macro_rules! assert_eq_last {
     ($prog:expr, $value:expr) => {
@@ -355,6 +357,201 @@ pub fn init() {
             .format_module_path(false)
             .init();
     });
+}
+
+mod diftam {
+    use super::*;
+
+    // Policy definitions
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum Confidentiality {
+        Public,
+        Confidential,
+        Secret,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum Integrity {
+        Low,
+        Medium,
+        High,
+    }
+
+    fn confidentiality_policy() -> GraphFlowPolicy<Confidentiality> {
+        use Confidentiality::*;
+
+        let graph = FlowGraph::new(
+            [Public, Confidential, Secret],
+            [(Public, Confidential), (Confidential, Secret)],
+        )
+        .unwrap();
+        GraphFlowPolicy::new(graph, Public, Secret, Public).unwrap()
+    }
+
+    fn integrity_policy() -> GraphFlowPolicy<Integrity> {
+        use Integrity::*;
+
+        let graph = FlowGraph::new([Low, Medium, High], [(Low, Medium), (Medium, High)]).unwrap();
+        GraphFlowPolicy::new(graph, Low, Low, High).unwrap()
+    }
+
+    // Tests
+
+    #[test]
+    fn confidentiality_ift() {
+        use Confidentiality::*;
+
+        let program = vec![
+            add_instr!(Push, 10),
+            add_instr!(tag Push, 20, Secret),
+            add_instr!(Add, 0, 1),
+        ];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        let last = machine.exec().unwrap();
+
+        assert_eq!(last, Some(&Cell::Integer(30)));
+        assert_eq!(machine.read_tag(0).unwrap(), Public);
+        assert_eq!(machine.read_tag(1).unwrap(), Secret);
+        assert_eq!(machine.last_tag(), Some(Secret));
+    }
+
+    #[test]
+    fn integrity_ift() {
+        use Integrity::*;
+
+        let program = vec![
+            add_instr!(tag Push, 10, Low),
+            add_instr!(tag Push, 20, High),
+            add_instr!(Add, 0, 1),
+        ];
+        let mut machine = Executor::with_policy(program, integrity_policy()).unwrap();
+        machine.exec().unwrap();
+
+        assert_eq!(machine.last_tag(), Some(High));
+    }
+
+    #[test]
+    fn pg_input() {
+        use Confidentiality::*;
+
+        let input = Rc::new(RefCell::new(vec![42]));
+        let program = vec![add_instr!(io Input, 0)];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.redirect_input(types::Input::Buffer(input));
+        let last = machine.exec().unwrap();
+
+        assert_eq!(last, Some(&Cell::Integer(42)));
+        assert_eq!(machine.last_tag(), Some(Secret));
+    }
+
+    #[test]
+    fn ifelse_condition_taints_values() {
+        use Confidentiality::*;
+
+        let program = vec![
+            add_instr!(tag Push, 1, Secret),
+            add_instr!(ifelse 0,
+                add_instr!(tag Push, 7, Public),
+                add_instr!(tag Push, 9, Public)
+            ),
+            add_instr!(tag Push, 11, Public),
+        ];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.exec().unwrap();
+
+        assert_eq!(
+            machine.cells,
+            vec![Cell::Integer(1), Cell::Integer(7), Cell::Integer(11)]
+        );
+        assert_eq!(machine.read_tag(1).unwrap(), Secret);
+        assert_eq!(machine.read_tag(2).unwrap(), Public);
+    }
+
+    #[test]
+    fn tags_remain_aligned_through_function_rebase_and_pop() {
+        use Confidentiality::*;
+
+        let program = vec![
+            add_instr!(fun FunctionDefine, "add_public"),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(Rebase),
+                add_instr!(tag Push, 1, Public),
+                add_instr!(Add, 0, 1)
+            ),
+            add_instr!(tag Push, 41, Secret),
+            add_instr!(fun FunctionCall, "add_public"),
+            add_instr!(Push, 99),
+            add_instr!(R Pop, 1),
+        ];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.exec().unwrap();
+
+        assert_eq!(machine.cells, vec![Cell::Integer(41), Cell::Integer(42)]);
+        assert_eq!(machine.tags(), &[Secret, Secret]);
+    }
+
+    #[test]
+    /// This test ensures that the output perimeter guard correctly rejects attempt to print a
+    /// secret value.
+    fn output_pg_rejects_secret_tag() {
+        use Confidentiality::*;
+        use types::Output;
+
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let program = vec![add_instr!(tag Push, 42, Secret), add_instr!(io Print, 0)];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.redirect_output(Output::Buffer(output.clone()));
+        let result = machine.exec();
+
+        assert!(matches!(
+            result,
+            Err(ExecutorError::Flow(FlowError::InformationFlowViolation {
+                found: Secret,
+                guard: Public,
+            }))
+        ));
+        assert!(output.borrow().is_empty());
+    }
+
+    #[test]
+    /// This test fails not because the values printed are themselves secret, but because the
+    /// condition of the `IfElse` statement is secret.
+    fn output_pg_rejects_public_value_under_private_control() {
+        use Confidentiality::*;
+
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let program = vec![
+            add_instr!(tag Push, 1, Secret),
+            add_instr!(tag Push, 42, Public),
+            add_instr!(ifelse 0, add_instr!(io Print, 1), add_instr!(Nop)),
+        ];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.redirect_output(types::Output::Buffer(output.clone()));
+        let result = machine.exec();
+
+        assert!(matches!(
+            result,
+            Err(ExecutorError::Flow(FlowError::InformationFlowViolation {
+                found: Secret,
+                guard: Public,
+            }))
+        ));
+        assert!(output.borrow().is_empty());
+    }
+
+    #[test]
+    /// This test executes correctly
+    fn output_perimeter_accepts_public_output() {
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let program = vec![add_instr!(Push, 42), add_instr!(io Print, 0)];
+        let mut machine = Executor::with_policy(program, confidentiality_policy()).unwrap();
+        machine.redirect_output(types::Output::Buffer(output.clone()));
+        machine.exec().unwrap();
+
+        assert_eq!(*output.borrow(), vec![42]);
+    }
 }
 
 fn fact(n: i64) -> i64 {

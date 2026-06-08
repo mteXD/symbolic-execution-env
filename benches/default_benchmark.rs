@@ -25,7 +25,7 @@ fn bench1(c: &mut Criterion) {
         .cloned()
         .collect(),
     );
-    let mut executor = Executor::new(&program);
+    let mut executor = Executor::new(program);
 
     c.bench_function("simple addition", |b| {
         b.iter(|| {

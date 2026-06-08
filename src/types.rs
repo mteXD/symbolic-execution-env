@@ -95,9 +95,9 @@ impl TryInto<usize> for Address {
 }
 
 #[derive(Debug, Clone)]
-pub enum FdEntry {
+pub enum FdEntry<Tag = ()> {
     Str(String),
-    Inst(Instruction),
+    Inst(Instruction<Tag>),
 }
 
 #[derive(Debug, Clone)]
@@ -107,17 +107,25 @@ pub enum FunctionDataError {
 }
 use FunctionDataError::*;
 
-#[derive(Debug, Clone, Default)]
-pub struct FunctionData {
-    pub function_table: HashMap<String, FdEntry>,
+#[derive(Debug, Clone)]
+pub struct FunctionData<Tag = ()> {
+    pub function_table: HashMap<String, FdEntry<Tag>>,
 }
 
-impl FunctionData {
+impl<Tag> Default for FunctionData<Tag> {
+    fn default() -> Self {
+        Self {
+            function_table: HashMap::new(),
+        }
+    }
+}
+
+impl<Tag> FunctionData<Tag> {
     pub fn new() -> Self {
         FunctionData::default()
     }
 
-    pub fn insert(&mut self, name: String, entry: FdEntry) -> Result<(), FunctionDataError> {
+    pub fn insert(&mut self, name: String, entry: FdEntry<Tag>) -> Result<(), FunctionDataError> {
         if self.function_table.contains_key(&name) {
             return Err(FunctionRedefinition(name));
         }
@@ -127,18 +135,18 @@ impl FunctionData {
         Ok(())
     }
 
-    fn internal_get(&self, name: &str) -> Result<&FdEntry, FunctionDataError> {
+    fn internal_get(&self, name: &str) -> Result<&FdEntry<Tag>, FunctionDataError> {
         self.function_table
             .get(name)
             .ok_or(FunctionUndefined(name.to_owned()))
     }
 
-    pub fn get(&self, name: &str) -> Result<&Instruction, FunctionDataError> {
+    pub fn get(&self, name: &str) -> Result<&Instruction<Tag>, FunctionDataError> {
         let mut maybe_instr = self.internal_get(name)?;
         let max_defs = self.function_table.len();
         let mut counter = 0;
 
-        let instr: &Instruction = {
+        let instr: &Instruction<Tag> = {
             loop {
                 match maybe_instr {
                     FdEntry::Str(s) => maybe_instr = self.internal_get(s)?,
@@ -169,13 +177,13 @@ pub enum ProgramDataError {
 use ProgramDataError::*;
 
 #[derive(Debug, Clone)]
-pub struct ProgramData {
-    program: Rc<[Instruction]>,
+pub struct ProgramData<Tag = ()> {
+    program: Rc<[Instruction<Tag>]>,
     pc: Address,
 }
 
-impl ProgramData {
-    pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
+impl<Tag> ProgramData<Tag> {
+    pub fn new(program: impl Into<Rc<[Instruction<Tag>]>>) -> Self {
         Self {
             program: program.into(),
             pc: Address::Null,
@@ -190,23 +198,23 @@ impl ProgramData {
         self.pc
     }
 
-    pub fn get_at(&self, pc: Address) -> Result<&Instruction, ProgramDataError> {
+    pub fn get_at(&self, pc: Address) -> Result<&Instruction<Tag>, ProgramDataError> {
         self.program
             .get::<usize>(pc.try_into()?)
             .ok_or(InvalidPC { pc })
     }
 
-    pub fn get_current(&self) -> Result<&Instruction, ProgramDataError> {
+    pub fn get_current(&self) -> Result<&Instruction<Tag>, ProgramDataError> {
         self.get_at(self.pc)
     }
 
-    pub fn get_program(&self) -> Rc<[Instruction]> {
+    pub fn get_program(&self) -> Rc<[Instruction<Tag>]> {
         self.program.clone()
     }
 }
 
-impl Iterator for ProgramData {
-    type Item = Instruction;
+impl<Tag: Clone> Iterator for ProgramData<Tag> {
+    type Item = Instruction<Tag>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pc.inc();
