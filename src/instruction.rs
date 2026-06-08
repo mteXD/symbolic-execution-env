@@ -60,6 +60,12 @@ pub enum IntrinsicOp {
 }
 
 #[derive(Debug, Clone)]
+pub enum IntrinsicArg {
+    Cell(CellIndex),
+    Str(String),
+}
+
+#[derive(Debug, Clone)]
 pub enum Instruction {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm, Immediate),
@@ -68,6 +74,5 @@ pub enum Instruction {
     Block(Rc<[Instruction]>),
     IfElse(CellIndex, Rc<Instruction>, Rc<Instruction>),
     AluFunction(FunctionOp, String),
-    AluIntrinsic(IntrinsicOp, CellIndex),
-    AluIntrinsicStr(IntrinsicOp, String),
+    AluIntrinsic(IntrinsicOp, IntrinsicArg),
 }

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use super::*;
 use crate::{
     instruction::{
-        BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::{CoreError, CoreMachine, StackFrames},
     types::{self, Cell, CellIndex, Immediate, ProgramData},
@@ -18,7 +18,6 @@ pub enum ExecutorError {
     ArithmeticOverflow,
     StackUnderflow,
     NoSavedCells,
-    RebaseError,
     NoRebasedCells,
     InvalidCell,
     TypeError { expected: Cell, found: Cell },
@@ -140,7 +139,7 @@ impl Evaluate for Executor {
 
         match instr {
             Nop => (),
-            Rebase => self.rebase().map_err(|()| RebaseError)?,
+            Rebase => self.rebase()?,
         }
 
         Ok(())
@@ -280,13 +279,14 @@ impl Evaluate for Executor {
         Ok(())
     }
 
-    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: CellIndex) -> Result<()> {
+    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: &IntrinsicArg) -> Result<()> {
         use IntrinsicOp::*;
+        use IntrinsicArg::*;
         use types::{Input, Output};
 
-        match instr {
-            Print => {
-                let val = self.read(arg)?;
+        match (instr, arg) {
+            (Print, Cell(cell_idx)) => {
+                let val = self.read(*cell_idx)?;
                 match &mut self.machine.output {
                     Output::Stdout => print!("{val}"),
                     Output::File(_) | Output::Buffer(_) => {
@@ -295,7 +295,7 @@ impl Evaluate for Executor {
                     }
                 }
             }
-            Input => match &self.machine.input {
+            (Input, Cell(_)) => match &self.machine.input {
                 Input::Stdin => {
                     let mut input: String = String::new();
                     std::io::stdin()
@@ -321,36 +321,24 @@ impl Evaluate for Executor {
                         .borrow_mut()
                         .pop()
                         .ok_or(Core(CoreError::IoReadError))?;
-                    self.push(Cell::Integer(new_val));
+                    self.push(Integer(new_val));
                 }
             },
-            FileRead => return Err(InvalidCell),
-            FileWrite => return Err(InvalidCell),
-        }
-
-        Ok(())
-    }
-
-    fn evaluate_intrinsic_str(&mut self, instr: &IntrinsicOp, arg: &String) -> Result<()> {
-        use IntrinsicOp::*;
-        use types::{Input, Output};
-
-        match instr {
-            FileRead => {
-                if arg.is_empty() {
+            (FileRead, Str(path)) => {
+                if path.is_empty() {
                     self.machine.input = Input::Stdin;
                 } else {
-                    self.machine.input = Input::File(arg.clone());
+                    self.machine.input = Input::File(path.clone());
                 }
             }
-            FileWrite => {
-                if arg.is_empty() {
+            (FileWrite, Str(path)) => {
+                if path.is_empty() {
                     self.machine.output = Output::Stdout;
                 } else {
-                    self.machine.output = Output::File(arg.clone());
+                    self.machine.output = Output::File(path.clone());
                 }
             }
-            Print | Input => return Err(InvalidCell),
+            _ => return Err(InvalidCell),
         }
 
         Ok(())

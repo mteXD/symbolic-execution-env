@@ -25,10 +25,10 @@ macro_rules! add_instr {
         AluFunction(FunctionOp::$op, String::from($name))
     };
     (io $op:ident, $a:expr) => {
-        AluIntrinsic(IntrinsicOp::$op, $a)
+        AluIntrinsic(IntrinsicOp::$op, $crate::instruction::IntrinsicArg::Cell($a))
     };
     (io_str $op:ident, $a:expr) => {
-        AluIntrinsicStr(IntrinsicOp::$op, String::from($a))
+        AluIntrinsic(IntrinsicOp::$op, $crate::instruction::IntrinsicArg::Str(String::from($a)))
     };
     (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
         IfElse($cond, Rc::new($when_true), Rc::new($when_false))

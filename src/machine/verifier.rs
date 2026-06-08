@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     instruction::{
-        BinaryOp, FunctionOp, Instruction, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     machine::{
         CoreError::{self},
@@ -23,7 +23,6 @@ use log::{debug, error, trace, warn};
 #[derive(Debug, Clone)]
 pub enum VerifierError {
     Core(CoreError),
-    RebaseError,
     InvalidCell {
         instr: Instruction,
         cell_index: CellIndex,
@@ -539,7 +538,7 @@ impl Evaluate for Verifier {
         match instr {
             Nop => (),
             Rebase => {
-                self.stack.rebase().map_err(|()| RebaseError)?;
+                self.stack.rebase()?;
                 // Crossing `Rebase` ends argument collection: freeze the count
                 // discovered so far and publish it for callers / recursion.
                 if self.findings.is_collecting_func_args() {
@@ -782,39 +781,29 @@ impl Evaluate for Verifier {
         Ok(())
     }
 
-    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, _: CellIndex) -> Result<(), Self::Error> {
+    fn evaluate_intrinsic(&mut self, instr: &IntrinsicOp, arg: &IntrinsicArg) -> Result<(), Self::Error> {
         use IntrinsicOp::*;
-
-        match instr {
-            Print => (),
-            Input => self.push(ValueSpan::inf()),
-            FileRead => return Err(DebugError("FileRead should use string variant")),
-            FileWrite => return Err(DebugError("FileWrite should use string variant")),
-        }
-
-        Ok(())
-    }
-
-    fn evaluate_intrinsic_str(&mut self, instr: &IntrinsicOp, arg: &String) -> Result<(), Self::Error> {
-        use IntrinsicOp::*;
+        use IntrinsicArg::*;
         use types::{Input, Output};
 
-        match instr {
-            FileRead => {
-                if arg.is_empty() {
+        match (instr, arg) {
+            (Print, Cell(_)) => (),
+            (Input, Cell(_)) => self.push(ValueSpan::inf()),
+            (FileRead, Str(path)) => {
+                if path.is_empty() {
                     self.machine.input = Input::Stdin;
                 } else {
-                    self.machine.input = Input::File(arg.clone());
+                    self.machine.input = Input::File(path.clone());
                 }
             }
-            FileWrite => {
-                if arg.is_empty() {
+            (FileWrite, Str(path)) => {
+                if path.is_empty() {
                     self.machine.output = Output::Stdout;
                 } else {
-                    self.machine.output = Output::File(arg.clone());
+                    self.machine.output = Output::File(path.clone());
                 }
             }
-            Print | Input => return Err(DebugError("Print and Input should use cell index variant")),
+            _ => return Err(DebugError("Invalid intrinsic argument type")),
         }
 
         Ok(())

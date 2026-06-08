@@ -5,12 +5,11 @@ use crate::{
     instruction::{
         BinaryOp, FunctionOp,
         Instruction::{self},
-        IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
-    },
-    types::{
+        IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+    }, machine::CoreError::RebaseError, types::{
         CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output, ProgramData,
         ProgramDataError,
-    },
+    }
 };
 
 pub mod executor;
@@ -20,6 +19,7 @@ pub mod verifier;
 pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
+    RebaseError,
     IoReadError,
     IoWriteError,
 }
@@ -152,11 +152,7 @@ trait Evaluate {
             }
             AluIntrinsic(instr, arg) => {
                 debug!("Evaling: {:?}, arg: {:?}", instr, arg);
-                self.evaluate_intrinsic(instr, *arg)
-            }
-            AluIntrinsicStr(instr, arg) => {
-                debug!("Evaling: {:?}, arg: {:?}", instr, arg);
-                self.evaluate_intrinsic_str(instr, arg)
+                self.evaluate_intrinsic(instr, arg)
             }
         }?;
 
@@ -191,12 +187,7 @@ trait Evaluate {
     fn evaluate_intrinsic(
         &mut self,
         instr: &IntrinsicOp,
-        arg: CellIndex,
-    ) -> Result<(), Self::Error>;
-    fn evaluate_intrinsic_str(
-        &mut self,
-        instr: &IntrinsicOp,
-        arg: &String,
+        arg: &IntrinsicArg,
     ) -> Result<(), Self::Error>;
 }
 
@@ -324,13 +315,13 @@ impl<T: Copy> StackFrames<T> {
     /// `saved_below`. Returns `Err` if `base > cells.len()` or if the
     /// immediately-topmost frame is an `IfElseBranch` (rebase is forbidden
     /// inside ifelse branches).
-    pub fn rebase(&mut self) -> Result<(), ()> {
+    pub fn rebase(&mut self) -> Result<(), CoreError> {
         if self.base > self.cells.len() {
-            return Err(());
+            return Err(RebaseError);
         }
 
         match self.frames.last_mut() {
-            Some(Frame::IfElseBranch) => Err(()), // Not rebase-able
+            Some(Frame::IfElseBranch) => Err(RebaseError), // Not rebase-able
             Some(Frame::Block { start, saved_below }) => {
                 // Temporarily save the cells below `base`
                 saved_below.extend(self.cells.drain(..self.base).rev());
