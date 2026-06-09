@@ -10,38 +10,19 @@
 //! Perimeter guards define how data enters and exits the system, e.g. no data
 //! tagged `Secret` may flow to `Public` outputs.
 //!
-//! # Example
+//! # Usage
 //!
-//! ```
-//! use virtual_machine::information_flow::{FlowError, FlowGraph, GraphFlowPolicy};
+//! First, define a
 //!
-//! #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-//! enum Confidentiality {
-//!     Public,
-//!     Constrained,
-//!     Secret,
-//! }
+//! # Eamples
 //!
-//! use Confidentiality::*;
-//!
-//! # fn main() -> Result<(), FlowError<Confidentiality>> {
-//! let graph = FlowGraph::new(
-//!     [Public, Constrained, Secret],
-//!     [(Public, Constrained), (Constrained, Secret)],
-//! )?;
-//!
-//! // Transitive flows and CCDs are precomputed when the graph is built.
-//! assert!(graph.can_flow(Public, Secret)?);
-//! assert_eq!(graph.closest_common_descendant(Public, Secret)?, Secret);
-//!
-//! // Ordinary constants are Public, inputs are Secret, and outputs only
-//! // accept values that are allowed to flow to Public.
-//! let _policy = GraphFlowPolicy::new(graph, Public, Secret, Public)?;
-//! # Ok(())
-//! # }
-//! ```
+//! For examples, see the tests module.
 
-use std::{collections::HashMap, fmt::Debug, hash::Hash};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    hash::Hash,
+};
 
 type TagIndex = usize;
 type ReachabilityMatrix = Vec<Vec<bool>>;
@@ -65,6 +46,147 @@ pub enum FlowError<Tag: FlowTag> {
     InformationFlowViolation { found: Tag, guard: Tag },
 }
 
+/// A tag belonging to one side of a disjoint union of topologies.
+///
+/// The variants keep equal tag values from different topologies distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisjointTag<Left: FlowTag, Right: FlowTag> {
+    Left(Left),
+    Right(Right),
+}
+
+/// An unvalidated description of an information-flow graph.
+///
+/// ***This is just a convenient intermediate representation.***
+/// Then, [`Topology::into_graph`] converts it into a graph which is actually useful, as well as
+/// validated.
+///
+/// Topologies make graph definitions more concise:
+///
+/// - [`Topology::basic`] infers tags from explicitly listed edges.
+/// - [`Topology::linear`] connects every tag to the next tag in a sequence.
+/// - [`Topology::disjoint_union`] represents a choice between two
+///   independent topologies.
+/// - [`Topology::cartesian_product`] combines two independent
+///   dimensions into pairs of tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Topology<Tag: FlowTag> {
+    tags: Vec<Tag>,
+    edges: Vec<(Tag, Tag)>,
+}
+
+impl<Tag: FlowTag> Topology<Tag> {
+    /// Creates a basic topology and infers its tags from the supplied edges.
+    ///
+    /// Tags retain the order of their first appearance.
+    pub fn basic(edges: impl IntoIterator<Item = (Tag, Tag)>) -> Self {
+        let edges: Vec<(Tag, Tag)> = edges.into_iter().collect();
+        let mut tags = Vec::new();
+        let mut seen = HashSet::new();
+
+        // Add each pair of connected tags into the tag list
+        for (from, to) in edges.iter().copied() {
+            for tag in [from, to] {
+                if seen.insert(tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+
+        Self { tags, edges }
+    }
+
+    /// Creates a linear topology by connecting every tag to its successor.
+    pub fn linear(tags: impl IntoIterator<Item = Tag>) -> Self {
+        let tags: Vec<Tag> = tags.into_iter().collect();
+        let edges = tags.windows(2).map(|pair| (pair[0], pair[1])).collect();
+        Self { tags, edges }
+    }
+
+    /// Creates the disjoint union of two topologies.
+    ///
+    /// Resulting tags are wrapped in [`DisjointTag`] to preserve which
+    /// topology they came from.
+    pub fn disjoint_union<T1: FlowTag, T2: FlowTag>(
+        tpl1: Topology<T1>,
+        tpl2: Topology<T2>,
+    ) -> Topology<DisjointTag<T1, T2>> {
+        use DisjointTag::{Left, Right};
+
+        // Tags from both topologies are collected and wrapped in `Left` or `Right` to keep them
+        // distinct.
+        let tags = {
+            let tags_left = tpl1.tags.into_iter().map(Left);
+            let tags_right = tpl2.tags.into_iter().map(Right);
+            tags_left.chain(tags_right).collect()
+        };
+
+        let edges = {
+            let edges_left = tpl1
+                .edges
+                .into_iter()
+                .map(|(from, to)| (Left(from), Left(to)));
+            let edges_right = tpl2
+                .edges
+                .into_iter()
+                .map(|(from, to)| (Right(from), Right(to)));
+            edges_left.chain(edges_right).collect()
+        };
+
+        Topology { tags, edges }
+    }
+
+    /// Creates the Cartesian product of two topologies.
+    ///
+    /// Each resulting tag is a pair. An edge changes one component while the
+    /// other component remains fixed.
+    pub fn cartesian_product<T1: FlowTag, T2: FlowTag>(
+        tpl1: Topology<T1>,
+        tpl2: Topology<T2>,
+    ) -> Topology<(T1, T2)> {
+        let mut tags = Vec::with_capacity(tpl1.tags.len().saturating_mul(tpl2.tags.len()));
+        for left in tpl1.tags.iter().copied() {
+            for right in tpl2.tags.iter().copied() {
+                tags.push((left, right));
+            }
+        }
+
+        let mut edges = Vec::with_capacity(
+            tpl1.edges
+                .len()
+                .saturating_mul(tpl2.tags.len())
+                .saturating_add(tpl2.edges.len().saturating_mul(tpl1.tags.len())),
+        );
+        for (from, to) in tpl1.edges.iter().copied() {
+            for right in tpl2.tags.iter().copied() {
+                edges.push(((from, right), (to, right)));
+            }
+        }
+        for left in tpl1.tags.iter().copied() {
+            for (from, to) in tpl2.edges.iter().copied() {
+                edges.push(((left, from), (left, to)));
+            }
+        }
+
+        Topology { tags, edges }
+    }
+
+    /// Returns all topology tags in stable construction order.
+    pub fn tags(&self) -> &[Tag] {
+        &self.tags
+    }
+
+    /// Returns the explicitly described topology edges.
+    pub fn edges(&self) -> &[(Tag, Tag)] {
+        &self.edges
+    }
+
+    /// Validates and preprocesses this topology as a [`FlowGraph`].
+    pub fn into_graph(self) -> Result<PolicyGraph<Tag>, FlowError<Tag>> {
+        PolicyGraph::new(self.tags, self.edges)
+    }
+}
+
 /// A validated directed graph of allowed information flows.
 ///
 /// `FlowGraph` stores the edges for a tag collection and precomputes the reflexive transitive
@@ -75,7 +197,7 @@ pub enum FlowError<Tag: FlowTag> {
 /// Pairs with no common descendant are allowed, but attempting to combine such
 /// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
-pub struct FlowGraph<Tag: FlowTag> {
+pub struct PolicyGraph<Tag: FlowTag> {
     /// Tags in their stable insertion order.
     tags: Vec<Tag>,
     /// Maps tag values to indices used by the graph matrices.
@@ -86,7 +208,7 @@ pub struct FlowGraph<Tag: FlowTag> {
     ccd: Vec<Vec<Option<Tag>>>,
 }
 
-impl<Tag: FlowTag> FlowGraph<Tag> {
+impl<Tag: FlowTag> PolicyGraph<Tag> {
     pub fn new(
         tags: impl IntoIterator<Item = Tag>,
         edges: impl IntoIterator<Item = (Tag, Tag)>,
@@ -138,7 +260,7 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
                     .filter(|candidate| reachable[left][*candidate] && reachable[right][*candidate])
                     .collect();
                 // Find closest among common descendants. If any of the candidates is reachable
-                // from another, it's not closest.
+                // from another, it's not closest (they get filtered out).
                 let closest: Vec<usize> = common
                     .iter()
                     .copied()
@@ -189,14 +311,14 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
     }
 
     /// Returns the closest common descendant of `left` and `right`, if it exists.
-    pub fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
+    pub fn ccd(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
         let left_index = self.index_of(left)?;
         let right_index = self.index_of(right)?;
         self.ccd[left_index][right_index].ok_or(FlowError::NoCommonDescendant { left, right })
     }
 
     /// Returns ccd for multiple tags, i.e. `ccd(a, b, c) = ccd(a, ccd(b, c))`.
-    pub fn closest_common_descendant_all(
+    pub fn ccd_multiple(
         &self,
         tags: impl IntoIterator<Item = Tag>,
     ) -> Result<Option<Tag>, FlowError<Tag>> {
@@ -205,7 +327,7 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
             return Ok(None);
         };
         while let Some(left) = tags.pop() {
-            result = self.closest_common_descendant(left, result)?;
+            result = self.ccd(left, result)?;
         }
         Ok(Some(result))
     }
@@ -246,17 +368,17 @@ pub trait InformationFlowPolicy {
 /// - `input_tag`: tag automatically applied to input values.
 /// - `output_tag`: guard that output values must be allowed to flow to.
 #[derive(Debug, Clone)]
-pub struct GraphFlowPolicy<Tag: FlowTag> {
-    graph: FlowGraph<Tag>,
+pub struct SecurityPolicy<Tag: FlowTag> {
+    graph: PolicyGraph<Tag>,
     default_tag: Tag,
     input_tag: Tag,
     output_tag: Tag,
 }
 
-impl<Tag: FlowTag> GraphFlowPolicy<Tag> {
+impl<Tag: FlowTag> SecurityPolicy<Tag> {
     /// Creates a graph-backed policy and validates all configured policy tags.
     pub fn new(
-        graph: FlowGraph<Tag>,
+        graph: PolicyGraph<Tag>,
         default_tag: Tag,
         input_tag: Tag,
         output_tag: Tag,
@@ -275,12 +397,12 @@ impl<Tag: FlowTag> GraphFlowPolicy<Tag> {
     }
 
     /// Returns the underlying validated flow graph.
-    pub fn graph(&self) -> &FlowGraph<Tag> {
+    pub fn graph(&self) -> &PolicyGraph<Tag> {
         &self.graph
     }
 }
 
-impl<Tag: FlowTag> InformationFlowPolicy for GraphFlowPolicy<Tag> {
+impl<Tag: FlowTag> InformationFlowPolicy for SecurityPolicy<Tag> {
     type Tag = Tag;
 
     fn default_tag(&self) -> Tag {
@@ -300,7 +422,7 @@ impl<Tag: FlowTag> InformationFlowPolicy for GraphFlowPolicy<Tag> {
     }
 
     fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
-        self.graph.closest_common_descendant(left, right)
+        self.graph.ccd(left, right)
     }
 
     fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
@@ -345,46 +467,89 @@ mod tests {
         Separate,
     }
 
+    use Tag::*;
+
     #[test]
     fn chain_reachability_and_ccd() {
-        let graph = FlowGraph::new(
-            [Tag::Public, Tag::Constrained, Tag::Private],
-            [
-                (Tag::Public, Tag::Constrained),
-                (Tag::Constrained, Tag::Private),
-            ],
-        )
-        .unwrap();
-        assert!(graph.can_flow(Tag::Public, Tag::Private).unwrap());
+        let graph = Topology::linear([Public, Constrained, Private])
+            .into_graph()
+            .unwrap();
+
+        assert!(graph.can_flow(Public, Private).unwrap());
+        assert_eq!(graph.ccd(Public, Private).unwrap(), Private);
         assert_eq!(
-            graph
-                .closest_common_descendant(Tag::Public, Tag::Private)
-                .unwrap(),
-            Tag::Private
-        );
-        assert_eq!(
-            graph
-                .closest_common_descendant_all([Tag::Public, Tag::Constrained, Tag::Private])
-                .unwrap(),
-            Some(Tag::Private)
+            graph.ccd_multiple([Public, Constrained, Private]).unwrap(),
+            Some(Private)
         );
     }
 
     #[test]
-    fn missing_and_ambiguous_descendants() {
-        let separate = FlowGraph::new([Tag::Public, Tag::Separate], []).unwrap();
+    fn basic_topology_infers_stable_tags() {
+        let graph = Topology::basic([(Public, Private), (Public, Separate), (Private, Separate)])
+            .into_graph()
+            .unwrap();
+
+        assert_eq!(graph.tags(), &[Public, Private, Separate]);
+        assert!(graph.can_flow(Public, Separate).unwrap());
+        assert!(!graph.can_flow(Separate, Public).unwrap());
+    }
+
+    #[test]
+    fn algebraic_topologies_support_product_and_disjoint_union() {
+        use DisjointTag::{Left, Right};
+
+        // let combined = Topology::linear([Public, Private])
+        //     * Topology::linear([Constrained, Separate])
+        //     + Topology::basic([(Public, Private)]);
+        let combined = {
+            let part1 = Topology::linear([Public, Private]);
+            let part2 = Topology::linear([Constrained, Separate]);
+            let part3 = Topology::basic([(Public, Private)]);
+            let tmp = Topology::<Tag>::cartesian_product(part1, part2);
+            Topology::<Tag>::disjoint_union(tmp, part3)
+        };
+
+        let graph = combined.into_graph().unwrap();
+
+        assert_eq!(graph.tags().len(), 6);
+        assert!(
+            graph
+                .can_flow(Left((Public, Constrained)), Left((Private, Separate)))
+                .unwrap()
+        );
+        assert_eq!(
+            graph
+                .ccd(Left((Private, Constrained)), Left((Public, Separate)))
+                .unwrap(),
+            Left((Private, Separate))
+        );
+        assert!(graph.can_flow(Right(Public), Right(Private)).unwrap());
+        assert!(
+            !graph
+                .can_flow(Left((Public, Constrained)), Right(Private))
+                .unwrap()
+        );
         assert!(matches!(
-            separate.closest_common_descendant(Tag::Public, Tag::Separate),
+            graph.ccd(Left((Public, Constrained)), Right(Public)),
+            Err(FlowError::NoCommonDescendant { .. })
+        ));
+    }
+
+    #[test]
+    fn missing_and_ambiguous_descendants() {
+        let separate = PolicyGraph::new([Public, Separate], []).unwrap();
+        assert!(matches!(
+            separate.ccd(Public, Separate),
             Err(FlowError::NoCommonDescendant { .. })
         ));
 
-        let ambiguous = FlowGraph::new(
-            [Tag::Public, Tag::Separate, Tag::Constrained, Tag::Private],
+        let ambiguous = PolicyGraph::new(
+            [Public, Separate, Constrained, Private],
             [
-                (Tag::Public, Tag::Constrained),
-                (Tag::Separate, Tag::Constrained),
-                (Tag::Public, Tag::Private),
-                (Tag::Separate, Tag::Private),
+                (Public, Constrained),
+                (Separate, Constrained),
+                (Public, Private),
+                (Separate, Private),
             ],
         );
         assert!(matches!(
@@ -396,22 +561,22 @@ mod tests {
     #[test]
     fn rejects_bad_graphs_and_policy_tags() {
         assert!(matches!(
-            FlowGraph::new([Tag::Public, Tag::Public], []),
-            Err(FlowError::DuplicateTag(Tag::Public))
+            PolicyGraph::new([Public, Public], []),
+            Err(FlowError::DuplicateTag(Public))
         ));
         assert!(matches!(
-            FlowGraph::new(
-                [Tag::Public, Tag::Private],
-                [(Tag::Public, Tag::Private), (Tag::Private, Tag::Public)]
-            ),
+            Topology::linear([Public, Public]).into_graph(),
+            Err(FlowError::DuplicateTag(Public))
+        ));
+        assert!(matches!(
+            PolicyGraph::new([Public, Private], [(Public, Private), (Private, Public)]),
             Err(FlowError::Cycle)
         ));
 
-        let graph =
-            FlowGraph::new([Tag::Public, Tag::Private], [(Tag::Public, Tag::Private)]).unwrap();
+        let graph = PolicyGraph::new([Public, Private], [(Public, Private)]).unwrap();
         assert!(matches!(
-            GraphFlowPolicy::new(graph, Tag::Public, Tag::Private, Tag::Separate),
-            Err(FlowError::UnknownTag(Tag::Separate))
+            SecurityPolicy::new(graph, Public, Private, Separate),
+            Err(FlowError::UnknownTag(Separate))
         ));
     }
 }

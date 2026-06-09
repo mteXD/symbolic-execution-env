@@ -2,7 +2,7 @@ use super::*;
 
 use crate::{
     add_instr,
-    information_flow::{FlowError, FlowGraph, GraphFlowPolicy},
+    information_flow::{FlowError, PolicyGraph, SecurityPolicy},
     instruction::{
         BinaryOp, FunctionOp, Instruction,
         Instruction::{
@@ -361,6 +361,7 @@ pub fn init() {
 
 mod diftam {
     use super::*;
+    use crate::information_flow::Topology;
 
     // Policy definitions
 
@@ -378,22 +379,21 @@ mod diftam {
         High,
     }
 
-    fn confidentiality_policy() -> GraphFlowPolicy<Confidentiality> {
+    fn confidentiality_policy() -> SecurityPolicy<Confidentiality> {
         use Confidentiality::*;
 
-        let graph = FlowGraph::new(
-            [Public, Confidential, Secret],
-            [(Public, Confidential), (Confidential, Secret)],
-        )
-        .unwrap();
-        GraphFlowPolicy::new(graph, Public, Secret, Public).unwrap()
+        let graph = Topology::linear([Public, Confidential, Secret])
+            .into_graph()
+            .unwrap();
+        SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
     }
 
-    fn integrity_policy() -> GraphFlowPolicy<Integrity> {
+    fn integrity_policy() -> SecurityPolicy<Integrity> {
         use Integrity::*;
 
-        let graph = FlowGraph::new([Low, Medium, High], [(Low, Medium), (Medium, High)]).unwrap();
-        GraphFlowPolicy::new(graph, Low, Low, High).unwrap()
+        let graph = Topology::linear([Low, Medium, High]).into_graph()
+            .unwrap();
+        SecurityPolicy::new(graph, Low, Low, High).unwrap()
     }
 
     // Tests
