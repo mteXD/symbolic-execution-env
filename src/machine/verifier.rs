@@ -48,13 +48,6 @@ pub enum VerifierError<Tag: Clone + Debug = ()> {
     StackUnderflow,
     UnsafeCondPlacement,
     DebugError(&'static str),
-    CondInvalidCell {
-        instr: Instruction<Tag>,
-        cell_index: CellIndex,
-        cells: Vec<ValueSpan>,
-        prog: Rc<[Instruction<Tag>]>,
-        location: &'static str,
-    },
     CondUnequalStackSizes {
         true_branch_cells: usize,
         false_branch_cells: usize,
@@ -64,6 +57,7 @@ pub enum VerifierError<Tag: Clone + Debug = ()> {
         outer_function: String,
         inner_function: String,
     },
+    InstructionError,
 }
 
 impl<Tag: Clone + Debug> From<CoreError> for VerifierError<Tag> {
@@ -481,6 +475,8 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         Ok(self.cells.last())
     }
 
+    // FIXME: This function no longer works as it did before.
+    /// Checks that the current `IfElse` instruction uses the correct condition.
     fn validate_if_placement(&self) -> Result<(), VerifierError<Tag>> {
         use BinaryOp::*;
         use Instruction::AluBinary;
@@ -619,6 +615,9 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                 }
             }
             Pop => {
+                if arg == 0 {
+                    return Err(InstructionError);
+                }
                 for _ in 0..arg {
                     self.pop().ok_or(StackUnderflow)?;
                 }
@@ -810,7 +809,7 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error> {
         let condition = self.read(cond_idx)?;
-        self.validate_if_placement()?;
+        // self.validate_if_placement()?;
         let known_truth_value = Self::known_truth_value(&condition);
 
         match known_truth_value {

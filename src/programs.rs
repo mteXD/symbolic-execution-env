@@ -580,9 +580,8 @@ new_programs! {
     // [NEGATIVE] Condition is not the result of a comparison instruction.
     // Expected: `UnsafeCondPlacement`.
     ifelse_bad_placement {
-        add_instr!(Push, 1),                      // condition cell, but
-        add_instr!(Push, 1),                      // last instr is Push, not cmp
-        add_instr!(ifelse 1,
+        add_instr!(Push, 1),                      // Not a comparison
+        add_instr!(ifelse 0,
             add_instr!(Push, 10),
             add_instr!(Push, 20)
         )

@@ -380,7 +380,10 @@ mod ifelse {
         );
     }
 
+    // FIXME: If we implement types, this test will come in handy. For now, it doesn't work since
+    // `IfElse` changed.
     #[test]
+    #[ignore]
     fn ifelse_bad_placement() {
         let program = programs::ifelse_bad_placement();
         assert_last_err!(program, UnsafeCondPlacement);

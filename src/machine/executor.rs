@@ -64,6 +64,7 @@ impl<P: InformationFlowPolicy> Deref for Executor<P> {
     }
 }
 
+/// An executor with no IFT
 impl Executor<NoFlow> {
     /// Creates an ordinary executor with information-flow monitoring disabled.
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
@@ -155,6 +156,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         self.stack.get(index.into()).ok_or(InvalidCell)
     }
 
+    /// Calculates ccd(left, right)
     fn combine_tags(&self, left: P::Tag, right: P::Tag) -> ExecutorResult<P::Tag, P> {
         self.policy
             .closest_common_descendant(left, right)
@@ -162,8 +164,8 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.
-    fn push_new_value(&mut self, value: Cell, source_tag: P::Tag) -> ExecutorResult<(), P> {
-        let effective_tag = self.combine_tags(source_tag, self.pc_tag)?;
+    fn push_new_value(&mut self, value: Cell, tag: P::Tag) -> ExecutorResult<(), P> {
+        let effective_tag = self.combine_tags(tag, self.pc_tag)?;
         self.stack.push(value, effective_tag);
         Ok(())
     }
@@ -388,9 +390,41 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
+        let expect_integer = |cell: Cell| {
+            match cell {
+                Integer(value) => Ok(value),
+                found => Err(TypeError {
+                    expected: Integer(0),
+                    found,
+                }),
+            }
+        };
+
         let left = expect_integer(left)?;
         let right = expect_integer(right)?;
-        let result = calculate_binary(instr, left, right)?;
+        let result = {
+            use BinaryOp::*;
+
+            let from_bool = |value: bool| Immediate::from(value);
+
+            match instr {
+                Add => left.checked_add(right).ok_or(ArithmeticOverflow),
+                Mul => left.checked_mul(right).ok_or(ArithmeticOverflow),
+                Div => left.checked_div(right).ok_or(DivisionByZero),
+                And => Ok(left & right),
+                Or => Ok(left | right),
+                Xor => Ok(left ^ right),
+                ShiftLeftLogical => Ok(left << right),
+                ShiftRightLogical => Ok(((left as u64) >> right) as i64),
+                ShiftRightArithmetic => Ok(left >> right),
+                SetEqual => Ok(from_bool(left == right)),
+                SetNotEqual => Ok(from_bool(left != right)),
+                SetLessThan => Ok(from_bool(left < right)),
+                SetLessThanOrEqual => Ok(from_bool(left <= right)),
+                SetGreaterThan => Ok(from_bool(left > right)),
+                SetGreaterThanOrEqual => Ok(from_bool(left >= right)),
+            }
+        }?;
         self.push_new_value(Integer(result), result_tag)?;
 
         Ok(())
@@ -475,44 +509,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 fn reverse_index(stack_len: usize, reverse_offset: CellIndex) -> Option<CellIndex> {
     let last_index = CellIndex::try_from(stack_len).ok()?.checked_sub(1)?;
     last_index.checked_sub(reverse_offset)
-}
-
-fn expect_integer<Tag: FlowTag>(cell: Cell) -> Result<Immediate, ExecutorError<Tag>> {
-    match cell {
-        Integer(value) => Ok(value),
-        found => Err(TypeError {
-            expected: Integer(0),
-            found,
-        }),
-    }
-}
-
-fn calculate_binary<Tag: FlowTag>(
-    operation: &BinaryOp,
-    left: Immediate,
-    right: Immediate,
-) -> Result<Immediate, ExecutorError<Tag>> {
-    use BinaryOp::*;
-
-    let from_bool = |value: bool| Immediate::from(value);
-
-    match operation {
-        Add => left.checked_add(right).ok_or(ArithmeticOverflow),
-        Mul => left.checked_mul(right).ok_or(ArithmeticOverflow),
-        Div => left.checked_div(right).ok_or(DivisionByZero),
-        And => Ok(left & right),
-        Or => Ok(left | right),
-        Xor => Ok(left ^ right),
-        ShiftLeftLogical => Ok(left << right),
-        ShiftRightLogical => Ok(((left as u64) >> right) as i64),
-        ShiftRightArithmetic => Ok(left >> right),
-        SetEqual => Ok(from_bool(left == right)),
-        SetNotEqual => Ok(from_bool(left != right)),
-        SetLessThan => Ok(from_bool(left < right)),
-        SetLessThanOrEqual => Ok(from_bool(left <= right)),
-        SetGreaterThan => Ok(from_bool(left > right)),
-        SetGreaterThanOrEqual => Ok(from_bool(left >= right)),
-    }
 }
 
 impl From<Vec<Cell>> for Executor {
