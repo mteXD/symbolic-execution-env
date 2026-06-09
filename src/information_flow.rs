@@ -43,7 +43,13 @@
 
 use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
-/// Trait bound required for values used as information-flow tags. Blanket implementation.
+type TagIndex = usize;
+type ReachabilityMatrix = Vec<Vec<bool>>;
+
+/// Trait bound required for values used as information-flow tags.
+///
+/// This trait has a blanket implementation, so any small enum deriving
+/// `Copy`, `Eq`, `Hash`, and `Debug` can be used directly as a tag.
 pub trait FlowTag: Copy + Eq + Hash + Debug {}
 
 impl<T: Copy + Eq + Hash + Debug> FlowTag for T {}
@@ -70,12 +76,12 @@ pub enum FlowError<Tag: FlowTag> {
 /// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
 pub struct FlowGraph<Tag: FlowTag> {
-    /// Tags in the stable order
+    /// Tags in their stable insertion order.
     tags: Vec<Tag>,
-    /// Maps tag values to indices in `tags` and the reachability/CCD matrices.
-    indices: HashMap<Tag, usize>,
+    /// Maps tag values to indices used by the graph matrices.
+    indices: HashMap<Tag, TagIndex>,
     /// `reachable[a][b]` == true iff `a` may flow to `b`.
-    reachable: Vec<Vec<bool>>,
+    reachable: ReachabilityMatrix,
     /// Precomputed closest common descendant for every pair of tags.
     ccd: Vec<Vec<Option<Tag>>>,
 }
@@ -177,18 +183,15 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
 
     /// Returns whether information tagged `from` may flow to `to`.
     pub fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
-        let from = *self.indices.get(&from).ok_or(FlowError::UnknownTag(from))?;
-        let to = *self.indices.get(&to).ok_or(FlowError::UnknownTag(to))?;
-        Ok(self.reachable[from][to])
+        let from_index = self.index_of(from)?;
+        let to_index = self.index_of(to)?;
+        Ok(self.reachable[from_index][to_index])
     }
 
     /// Returns the closest common descendant of `left` and `right`, if it exists.
     pub fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
-        let left_index = *self.indices.get(&left).ok_or(FlowError::UnknownTag(left))?;
-        let right_index = *self
-            .indices
-            .get(&right)
-            .ok_or(FlowError::UnknownTag(right))?;
+        let left_index = self.index_of(left)?;
+        let right_index = self.index_of(right)?;
         self.ccd[left_index][right_index].ok_or(FlowError::NoCommonDescendant { left, right })
     }
 
@@ -205,6 +208,13 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
             result = self.closest_common_descendant(left, result)?;
         }
         Ok(Some(result))
+    }
+
+    fn index_of(&self, tag: Tag) -> Result<TagIndex, FlowError<Tag>> {
+        self.indices
+            .get(&tag)
+            .copied()
+            .ok_or(FlowError::UnknownTag(tag))
     }
 }
 
@@ -286,11 +296,7 @@ impl<Tag: FlowTag> InformationFlowPolicy for GraphFlowPolicy<Tag> {
     }
 
     fn validate_tag(&self, tag: Tag) -> Result<(), FlowError<Tag>> {
-        if self.graph.contains(tag) {
-            Ok(())
-        } else {
-            Err(FlowError::UnknownTag(tag))
-        }
+        self.graph.index_of(tag).map(|_| ())
     }
 
     fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {

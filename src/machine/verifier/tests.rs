@@ -5,7 +5,10 @@ use crate::{
         Instruction::{self, *},
         UnaryOpCell, UnaryOpImm,
     },
-    machine::verifier::{ValueSpan, Verifier, VerifierError},
+    machine::{
+        CoreError,
+        verifier::{ValueSpan, Verifier, VerifierError},
+    },
     programs,
 };
 
@@ -109,13 +112,7 @@ fn push_pop() {
     let len = verifier.cells.len();
     assert_eq!(len, 2);
     for i in 0..len {
-        assert_eq!(
-            verifier.cells[i],
-            ValueSpan {
-                min: (1) as i64,
-                max: (1) as i64
-            }
-        );
+        assert_eq!(verifier.cells[i], ValueSpan { min: 1, max: 1 });
     }
 
     program.extend(vec![
@@ -355,13 +352,13 @@ mod ifelse {
     #[test]
     fn ifelse_rebase_in_branch_forbidden() {
         let program = programs::ifelse_rebase_in_branch_forbidden();
-        assert_last_err!(program, RebaseError);
+        assert_last_err!(program, Core(CoreError::RebaseError));
     }
 
     #[test]
     fn ifelse_rebase_in_branch_inside_block() {
         let program = programs::ifelse_rebase_in_branch_inside_block();
-        assert_last_err!(program, RebaseError);
+        assert_last_err!(program, Core(CoreError::RebaseError));
     }
 
     #[test]

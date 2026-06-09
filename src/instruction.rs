@@ -17,12 +17,12 @@ pub enum UnaryOpCell {
     // Tail, // Tail call not needed right now.
 }
 
-#[derive(Debug, Clone)]
 /// An operation that takes one immediate value encoded in the instruction.
 ///
 /// The tag parameter is only used by [`UnaryOpImm::TaggedPush`]. It defaults
 /// to `()`, so ordinary unmonitored programs keep using the simple
 /// `UnaryOpImm` type.
+#[derive(Debug, Clone)]
 pub enum UnaryOpImm<Tag = ()> {
     Push,
     TaggedPush(Tag),

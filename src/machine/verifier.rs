@@ -135,7 +135,7 @@ impl ValueSpan {
             } else {
                 ValueSpan::new(0, 0)
             }
-        } else if self.disjunct(&other) {
+        } else if self.disjunct(other) {
             ValueSpan::new(0, 0)
         } else {
             ValueSpan::new(0, 1)
@@ -419,11 +419,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
     pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<Tag>> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
-        if self.cells.len()
-            < required
-                .try_into()
-                .expect("CellIndex value should fit into usize")
-        {
+        if self.cells.len() < usize::from(required) {
             return Err(NotEnoughCells {
                 required,
                 available: self.cells.len(),
@@ -461,7 +457,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         self.read(idx)
     }
 
-    fn get_prev_instr(&self) -> Result<&Instruction<Tag>, VerifierError<Tag>> {
+    fn previous_instruction(&self) -> Result<&Instruction<Tag>, VerifierError<Tag>> {
         let pc = match self.machine.program_data.get_pc() {
             Address::Null => {
                 panic!("PC cannot be null here, program already started executing.")
@@ -485,38 +481,34 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         Ok(self.cells.last())
     }
 
-    fn check_good_if_placement(&self) -> Result<(), VerifierError<Tag>> {
+    fn validate_if_placement(&self) -> Result<(), VerifierError<Tag>> {
         use BinaryOp::*;
         use Instruction::AluBinary;
 
-        let throw_err = || {
+        let invalid_placement = || {
             error!(
                 "Condition instruction not preceded by a comparison instruction. This is unsafe."
             );
-            return Err(VerifierError::UnsafeCondPlacement);
+            Err(VerifierError::UnsafeCondPlacement)
         };
 
-        match self.get_prev_instr()? {
-            AluBinary(cmp, _, _) => {
-                match cmp {
-                    SetNotEqual
-                    | SetLessThan
-                    | SetLessThanOrEqual
-                    | SetGreaterThan
-                    | SetGreaterThanOrEqual => (),
-                    _ => return throw_err(),
-                };
-            }
-            _ => {
-                return throw_err();
-            }
-        };
-        Ok(())
+        match self.previous_instruction()? {
+            AluBinary(
+                SetNotEqual
+                | SetLessThan
+                | SetLessThanOrEqual
+                | SetGreaterThan
+                | SetGreaterThanOrEqual,
+                _,
+                _,
+            ) => Ok(()),
+            _ => invalid_placement(),
+        }
     }
 
-    fn check_unnecessary_if(last: &ValueSpan) -> Option<bool> {
-        if last.is_single_value() {
-            if last.min == 0 {
+    fn known_truth_value(condition: &ValueSpan) -> Option<bool> {
+        if condition.is_single_value() {
+            if condition.min == 0 {
                 warn!("Condition will always be false, skipping the next instruction.");
                 Some(false)
             } else {
@@ -743,14 +735,18 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<(), Self::Error> {
+    fn evaluate_function(
+        &mut self,
+        instr: &FunctionOp,
+        function_name: &str,
+    ) -> Result<(), Self::Error> {
         use FunctionDataError::FunctionUndefined;
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => self.verify_function_definition(fun)?,
+            FunctionDefine => self.verify_function_definition(function_name)?,
             FunctionCall => {
-                self.machine.function_get(fun)?;
+                self.machine.function_get(function_name)?;
 
                 let available = self.cells.len();
 
@@ -759,8 +755,10 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                 let deepest_missing = self
                     .findings
                     .func_data
-                    .get(fun)
-                    .ok_or_else(|| VerifierError::from(FunctionUndefined(fun.to_owned())))?
+                    .get(function_name)
+                    .ok_or_else(|| {
+                        VerifierError::from(FunctionUndefined(function_name.to_owned()))
+                    })?
                     .arg_indices
                     .iter()
                     .map(|index| index.required_depth())
@@ -794,18 +792,10 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             (Print, Cell(_)) => (),
             (Input, Cell(_)) => self.push(ValueSpan::inf()),
             (FileRead, Str(path)) => {
-                if path.is_empty() {
-                    self.machine.input = Input::Stdin;
-                } else {
-                    self.machine.input = Input::File(path.clone());
-                }
+                self.machine.input = Input::from_path(path);
             }
             (FileWrite, Str(path)) => {
-                if path.is_empty() {
-                    self.machine.output = Output::Stdout;
-                } else {
-                    self.machine.output = Output::File(path.clone());
-                }
+                self.machine.output = Output::from_path(path);
             }
             _ => return Err(DebugError("Invalid intrinsic argument type")),
         }
@@ -819,14 +809,11 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         when_true: Rc<Instruction<Tag>>,
         when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error> {
-        /* First, check if the previous instr was a comparison instr.
-        If not, warn that this is not really safe. */
-
         let condition = self.read(cond_idx)?;
-        self.check_good_if_placement()?;
-        let value = Self::check_unnecessary_if(&condition);
+        self.validate_if_placement()?;
+        let known_truth_value = Self::known_truth_value(&condition);
 
-        match value {
+        match known_truth_value {
             // Condition is statically known: only the taken branch runs, and it
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
@@ -837,13 +824,13 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             // the parent stack in place, so we keep a single copy of the initial
             // cells to re-run the false branch from the same starting point.
             None => {
-                let initial = self.stack.cells.clone(); // unavoidable: both branches start here
+                let initial_cells = self.stack.cells.clone();
 
                 self.run_ifelse_branch(&when_true)?;
-                let true_cells = std::mem::replace(&mut self.stack.cells, initial);
+                let true_cells = std::mem::replace(&mut self.stack.cells, initial_cells);
 
                 self.run_ifelse_branch(&when_false)?;
-                let false_cells = std::mem::replace(&mut self.stack.cells, Vec::new());
+                let false_cells = std::mem::take(&mut self.stack.cells);
 
                 let (true_len, false_len) = (true_cells.len(), false_cells.len());
                 if true_len != false_len {
@@ -858,7 +845,7 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                 // Cell-by-cell merge of the two final stacks.
                 self.stack.cells = true_cells
                     .into_iter()
-                    .zip(false_cells.into_iter())
+                    .zip(false_cells)
                     .map(|(a, b)| a.combine(b))
                     .collect();
             }

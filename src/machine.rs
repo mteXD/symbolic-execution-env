@@ -59,11 +59,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
     }
 
     pub fn function_get(&self, name: &str) -> CoreResult<&Instruction<Tag>> {
-        Ok(self.function_data.get(name)?)
+        self.function_data.get(name).map_err(Into::into)
     }
 
     pub fn function_insert(&mut self, name: String, entry: FdEntry<Tag>) -> CoreResult<()> {
-        Ok(self.function_data.insert(name, entry)?)
+        self.function_data.insert(name, entry)?;
+        Ok(())
     }
 
     pub fn function_insert_current(&mut self, name: String) -> CoreResult<()> {
@@ -74,12 +75,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
     }
 
-    pub fn common_function_logic(&mut self, arg: &str) -> CoreResult<()> {
-        let mut definitions: Vec<String> = Vec::new();
+    pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<()> {
+        let mut aliases = Vec::new();
 
         while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
             debug!("Found consecutive definition: '{}'", name);
-            definitions.push(name);
+            aliases.push(name);
         }
 
         match self.program_data.get_current() {
@@ -98,10 +99,11 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
             }
         }
 
-        self.function_insert_current(arg.to_owned())?;
+        let function_name = function_name.to_owned();
+        self.function_insert_current(function_name.clone())?;
 
-        for name in definitions {
-            self.function_insert(name, FdEntry::Str(arg.to_owned()))?; // PERF: to_owned()
+        for alias in aliases {
+            self.function_insert(alias, FdEntry::Str(function_name.clone()))?;
         }
 
         Ok(())
@@ -116,6 +118,7 @@ impl<Tag: Clone + Debug> Iterator for CoreMachine<Tag> {
     }
 }
 
+/// Dispatches instructions
 trait Evaluate<Tag: Debug = ()> {
     type Error;
 
@@ -185,7 +188,7 @@ trait Evaluate<Tag: Debug = ()> {
         when_true: Rc<Instruction<Tag>>,
         when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error>;
-    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> Result<(), Self::Error>;
+    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &str) -> Result<(), Self::Error>;
     fn evaluate_intrinsic(
         &mut self,
         instr: &IntrinsicOp,
@@ -345,6 +348,13 @@ pub struct PairedStack<Value: Copy, Tag: Copy> {
     tags: StackFrames<Tag>,
 }
 
+/// Saved base positions for the value and tag sides of a [`PairedStack`].
+#[derive(Clone, Copy, Debug)]
+pub struct PairedBlockBases {
+    values: usize,
+    tags: usize,
+}
+
 impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
     pub fn new() -> Self {
         Self {
@@ -353,7 +363,8 @@ impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
         }
     }
 
-    fn assert_synchronized(&self) {
+    /// Debug assertion that checks that value and tag stacks are of the same length.
+    fn debug_assert_synchronized(&self) {
         debug_assert_eq!(self.values.cells.len(), self.tags.cells.len());
         debug_assert_eq!(self.values.base, self.tags.base);
         debug_assert_eq!(self.values.frames.len(), self.tags.frames.len());
@@ -367,14 +378,19 @@ impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
         &self.tags.cells
     }
 
-    pub fn get_tag(&self, idx: usize) -> Option<&Tag> {
-        self.tags.get(idx)
+    /// Gets the value and tag at the given index, if it exists.
+    pub fn get(&self, index: usize) -> Option<(Value, Tag)> {
+        self.values
+            .get(index)
+            .copied()
+            .zip(self.tags.get(index).copied())
     }
 
+    /// Pushes a value and tag together.
     pub fn push(&mut self, value: Value, tag: Tag) {
         self.values.push(value);
         self.tags.push(tag);
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
     }
 
     pub fn pop(&mut self) -> Option<(Value, Tag)> {
@@ -383,34 +399,37 @@ impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
             .tags
             .pop()
             .expect("paired tag stack is shorter than value stack");
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
         Some((value, tag))
     }
 
-    pub fn enter_block(&mut self) -> (usize, usize) {
-        let saved = (self.values.enter_block(), self.tags.enter_block());
-        self.assert_synchronized();
-        saved
+    pub fn enter_block(&mut self) -> PairedBlockBases {
+        let saved_bases = PairedBlockBases {
+            values: self.values.enter_block(),
+            tags: self.tags.enter_block(),
+        };
+        self.debug_assert_synchronized();
+        saved_bases
     }
 
-    pub fn exit_block(&mut self, saved_base: (usize, usize)) -> (Option<(Value, Tag)>, usize) {
-        let (value, value_size) = self.values.exit_block(saved_base.0);
-        let (tag, tag_size) = self.tags.exit_block(saved_base.1);
+    pub fn exit_block(&mut self, saved_bases: PairedBlockBases) -> (Option<(Value, Tag)>, usize) {
+        let (value, value_size) = self.values.exit_block(saved_bases.values);
+        let (tag, tag_size) = self.tags.exit_block(saved_bases.tags);
         assert_eq!(value_size, tag_size, "paired block stacks diverged");
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
         (value.zip(tag), value_size)
     }
 
     pub fn enter_ifelse_branch(&mut self) {
         self.values.enter_ifelse_branch();
         self.tags.enter_ifelse_branch();
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
     }
 
     pub fn exit_ifelse_branch(&mut self) {
         self.values.exit_ifelse_branch();
         self.tags.exit_ifelse_branch();
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
     }
 
     pub fn rebase(&mut self) -> Result<(), CoreError> {
@@ -418,14 +437,14 @@ impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
         self.tags
             .rebase()
             .expect("paired tag stack rejected a value-stack rebase");
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
         Ok(())
     }
 
     pub fn set_values_for_unmonitored(&mut self, values: Vec<Value>, default_tag: Tag) {
         self.values.cells = values;
         self.tags.cells = vec![default_tag; self.values.cells.len()];
-        self.assert_synchronized();
+        self.debug_assert_synchronized();
     }
 }
 

@@ -135,34 +135,27 @@ impl<Tag> FunctionData<Tag> {
         Ok(())
     }
 
-    fn internal_get(&self, name: &str) -> Result<&FdEntry<Tag>, FunctionDataError> {
+    fn entry(&self, name: &str) -> Result<&FdEntry<Tag>, FunctionDataError> {
         self.function_table
             .get(name)
             .ok_or(FunctionUndefined(name.to_owned()))
     }
 
     pub fn get(&self, name: &str) -> Result<&Instruction<Tag>, FunctionDataError> {
-        let mut maybe_instr = self.internal_get(name)?;
-        let max_defs = self.function_table.len();
-        let mut counter = 0;
+        let mut entry = self.entry(name)?;
+        let mut aliases_followed = 0;
 
-        let instr: &Instruction<Tag> = {
-            loop {
-                match maybe_instr {
-                    FdEntry::Str(s) => maybe_instr = self.internal_get(s)?,
-                    FdEntry::Inst(i) => break i,
-                }
-
-                counter += 1;
-
-                if counter > max_defs {
-                    panic!("Cyclic function definition detected for '{}'", name);
-                    // return Err(FunctionUndefined(name.to_owned()));
-                }
+        loop {
+            match entry {
+                FdEntry::Str(alias) => entry = self.entry(alias)?,
+                FdEntry::Inst(instruction) => return Ok(instruction),
             }
-        };
 
-        Ok(instr)
+            aliases_followed += 1;
+            if aliases_followed > self.function_table.len() {
+                panic!("Cyclic function definition detected for '{name}'");
+            }
+        }
     }
 
     pub fn contains_key(&self, name: &str) -> bool {
@@ -199,9 +192,8 @@ impl<Tag> ProgramData<Tag> {
     }
 
     pub fn get_at(&self, pc: Address) -> Result<&Instruction<Tag>, ProgramDataError> {
-        self.program
-            .get::<usize>(pc.try_into()?)
-            .ok_or(InvalidPC { pc })
+        let index: usize = pc.try_into()?;
+        self.program.get(index).ok_or(InvalidPC { pc })
     }
 
     pub fn get_current(&self) -> Result<&Instruction<Tag>, ProgramDataError> {
@@ -218,8 +210,8 @@ impl<Tag: Clone> Iterator for ProgramData<Tag> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.pc.inc();
-        let instr = self.program.get::<usize>(self.pc.try_into().ok()?)?;
-        Some(instr.clone())
+        let index: usize = self.pc.try_into().ok()?;
+        self.program.get(index).cloned()
     }
 }
 
@@ -238,13 +230,21 @@ pub enum Input {
 }
 
 impl Output {
+    pub fn from_path(path: &str) -> Self {
+        if path.is_empty() {
+            Self::Stdout
+        } else {
+            Self::File(path.to_owned())
+        }
+    }
+
     pub fn write(&mut self, data: &[Immediate]) {
-        let vec = data.iter().map(|byte| *byte as u8).collect::<Vec<u8>>();
+        let bytes = data.iter().map(|byte| *byte as u8).collect::<Vec<u8>>();
 
         match self {
             Output::Stdout => {
                 let mut out = io::stdout();
-                let _ = out.write_all(vec.as_slice());
+                let _ = out.write_all(bytes.as_slice());
             }
             Output::File(path) => {
                 use std::fs::OpenOptions;
@@ -255,7 +255,7 @@ impl Output {
                     .open(path)
                     .unwrap();
 
-                let _ = file.write_all(vec.as_slice());
+                let _ = file.write_all(bytes.as_slice());
             }
             Output::Buffer(buf) => {
                 let mut buf = buf.borrow_mut();
@@ -266,6 +266,14 @@ impl Output {
 }
 
 impl Input {
+    pub fn from_path(path: &str) -> Self {
+        if path.is_empty() {
+            Self::Stdin
+        } else {
+            Self::File(path.to_owned())
+        }
+    }
+
     pub fn read_all(&mut self) -> Vec<Immediate> {
         match self {
             Input::Stdin => {

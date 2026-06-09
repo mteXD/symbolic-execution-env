@@ -165,7 +165,7 @@ fn basic_block() {
     assert_eq!(machine.cells[2], 30); // Result of first addition
     assert_eq!(machine.cells[3], 60); // Result of multiplication inside block
     assert_eq!(machine.cells[4], 90); // Final result
-    assert!(matches!(machine.cells.get(5), None)); // Ensure no extra cells exist
+    assert!(machine.cells.get(5).is_none()); // Ensure no extra cells exist
     assert_eq!(machine.cells.len(), 5);
 }
 
@@ -307,7 +307,7 @@ fn sequential_definitions() {
     assert_eq!(machine.cells[0], 2);
     assert_eq!(machine.cells[1], 2);
     assert_eq!(machine.cells[2], 2);
-    assert!(matches!(machine.cells.get(3), None));
+    assert!(machine.cells.get(3).is_none());
 }
 
 // TODO: Solve what to do here

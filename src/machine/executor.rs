@@ -1,13 +1,14 @@
-use std::{ops::Deref, rc::Rc};
+use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use super::*;
+use log::debug;
+
 use crate::{
     information_flow::{FlowError, FlowTag, InformationFlowPolicy, NoFlow},
     instruction::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine, PairedStack, StackFrames},
+    machine::{CoreError, CoreMachine, Evaluate, PairedStack, StackFrames},
     types::{self, Cell, CellIndex, Immediate, ProgramData},
 };
 use Cell::*;
@@ -54,8 +55,8 @@ pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     function_depth: usize,
 }
 
-// Convenience: lets `executor.cells`, `executor.base`, and the stack methods
-// (`push`, `pop`, `get`) resolve directly through the inner `StackFrames`.
+// Preserve read-only access to the existing value-stack API (`cells`, `base`,
+// and `get`) without exposing mutations that could desynchronize the tag stack.
 impl<P: InformationFlowPolicy> Deref for Executor<P> {
     type Target = StackFrames<Cell>;
     fn deref(&self) -> &StackFrames<Cell> {
@@ -64,6 +65,7 @@ impl<P: InformationFlowPolicy> Deref for Executor<P> {
 }
 
 impl Executor<NoFlow> {
+    /// Creates an ordinary executor with information-flow monitoring disabled.
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
@@ -76,6 +78,7 @@ impl Executor<NoFlow> {
 }
 
 impl<P: InformationFlowPolicy> Executor<P> {
+    /// Creates a monitored executor and validates every tag embedded in the program.
     pub fn with_policy(
         program: impl Into<Rc<[Instruction<P::Tag>]>>,
         policy: P,
@@ -94,54 +97,80 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     fn validate_program(program: &[Instruction<P::Tag>], policy: &P) -> ExecutorResult<(), P> {
         for instruction in program {
-            match instruction {
-                Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
-                    policy.validate_tag(*tag)?
-                }
-                Instruction::Block(inner) => Self::validate_program(inner, policy)?,
-                Instruction::IfElse(_, when_true, when_false) => {
-                    Self::validate_program(std::slice::from_ref(when_true.as_ref()), policy)?;
-                    Self::validate_program(std::slice::from_ref(when_false.as_ref()), policy)?;
-                }
-                _ => {}
-            }
+            Self::validate_instruction(instruction, policy)?;
         }
         Ok(())
     }
 
+    fn validate_instruction(
+        instruction: &Instruction<P::Tag>,
+        policy: &P,
+    ) -> ExecutorResult<(), P> {
+        match instruction {
+            Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
+                policy.validate_tag(*tag)?
+            }
+            Instruction::Block(body) => Self::validate_program(body, policy)?,
+            Instruction::IfElse(_, when_true, when_false) => {
+                Self::validate_instruction(when_true, policy)?;
+                Self::validate_instruction(when_false, policy)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Redirects the source used by input instructions.
     pub fn redirect_input(&mut self, new_input: types::Input) {
         self.machine.input = new_input;
     }
 
+    /// Redirects the destination used by print instructions.
     pub fn redirect_output(&mut self, new_output: types::Output) {
         self.machine.output = new_output;
     }
 
-    #[inline]
-    pub fn read(&self, reg: CellIndex) -> ExecutorResult<Cell, P> {
-        self.get(reg.into()).copied().ok_or(InvalidCell)
+    /// Reads a value cell without exposing its tag.
+    pub fn read(&self, index: CellIndex) -> ExecutorResult<Cell, P> {
+        self.read_entry(index).map(|(value, _)| value)
     }
 
-    pub fn read_tag(&self, reg: CellIndex) -> ExecutorResult<P::Tag, P> {
-        self.stack.get_tag(reg.into()).copied().ok_or(InvalidCell)
+    /// Reads the tag corresponding to a value cell.
+    pub fn read_tag(&self, index: CellIndex) -> ExecutorResult<P::Tag, P> {
+        self.read_entry(index).map(|(_, tag)| tag)
     }
 
+    /// Returns the parallel tag stack.
     pub fn tags(&self) -> &[P::Tag] {
         self.stack.tags()
     }
 
+    /// Returns the tag of the top value cell.
     pub fn last_tag(&self) -> Option<P::Tag> {
         self.tags().last().copied()
     }
 
-    fn combine_tags(&self, left: P::Tag, right: P::Tag) -> ExecutorResult<P::Tag, P> {
-        Ok(self.policy.closest_common_descendant(left, right)?)
+    /// Reads value and tag at the given index
+    fn read_entry(&self, index: CellIndex) -> ExecutorResult<(Cell, P::Tag), P> {
+        self.stack.get(index.into()).ok_or(InvalidCell)
     }
 
-    fn push_with_tag(&mut self, value: Cell, tag: P::Tag) -> ExecutorResult<(), P> {
-        let effective = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(value, effective);
+    fn combine_tags(&self, left: P::Tag, right: P::Tag) -> ExecutorResult<P::Tag, P> {
+        self.policy
+            .closest_common_descendant(left, right)
+            .map_err(Into::into)
+    }
+
+    /// Pushes a newly-created value, including the current control-flow tag.
+    fn push_new_value(&mut self, value: Cell, source_tag: P::Tag) -> ExecutorResult<(), P> {
+        let effective_tag = self.combine_tags(source_tag, self.pc_tag)?;
+        self.stack.push(value, effective_tag);
         Ok(())
+    }
+
+    /// Restores a result that already carries its final effective tag.
+    fn push_existing_entry(&mut self, entry: (Cell, P::Tag)) {
+        self.stack.push(entry.0, entry.1);
     }
 
     fn run(&mut self) -> ExecutorResult<(), P> {
@@ -151,6 +180,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         Ok(())
     }
 
+    /// Executes the remaining program and returns its final value cell.
     pub fn exec(&mut self) -> ExecutorResult<Option<&Cell>, P> {
         self.run()?;
         Ok(self.cells.last())
@@ -158,50 +188,124 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Runs `instrs` as a nested context (block / function body / ifelse branch).
     ///
-    /// Saves and restores `program_data` (so the inner program is scoped) and
-    /// `function_data` (so inner `FunctionDefine`s don't leak to the parent).
-    /// Cells are managed in-place via the [`StackFrames`] helper.
+    /// Saves and restores `program_data` while [`PairedStack`] scopes the value
+    /// and tag cells together.
     fn run_nested(
         &mut self,
         instrs: Rc<[Instruction<P::Tag>]>,
     ) -> ExecutorResult<Option<(Cell, P::Tag)>, P> {
-        let saved_base = self.stack.enter_block();
-        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+        let saved_bases = self.stack.enter_block();
+        let saved_program =
+            std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
-        let exec_result = self.run();
+        let run_result = self.run();
 
-        self.machine.program_data = saved_pd;
-        let (result, _) = self.stack.exit_block(saved_base);
+        self.machine.program_data = saved_program;
+        let (result, _) = self.stack.exit_block(saved_bases);
 
-        exec_result?;
+        run_result?;
         Ok(result)
     }
 
     /// Runs the body of an ifelse branch *inline* on the parent stack: cells
     /// are not isolated, so pops and pushes persist after the branch ends.
-    /// `program_data` and `function_data` are still scoped. The marker frame
-    /// pushed via [`StackFrames::enter_ifelse_branch`] makes `Rebase` an error
-    /// inside the branch.
+    /// `program_data` is still scoped. The marker frame pushed via
+    /// [`StackFrames::enter_ifelse_branch`] makes `Rebase` an error inside the
+    /// branch.
     fn run_ifelse_branch(
         &mut self,
         instrs: Rc<[Instruction<P::Tag>]>,
         condition_tag: P::Tag,
     ) -> ExecutorResult<(), P> {
         let branch_pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
-        // Save program_data and function_data; add a ifelse frame
         self.stack.enter_ifelse_branch();
-        let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+        let saved_program =
+            std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
         let saved_pc_tag = self.pc_tag;
         self.pc_tag = branch_pc_tag;
 
-        let exec_result = self.run();
+        let run_result = self.run();
 
-        // Restore program_data and function_data; pop the ifelse frame
-        self.machine.program_data = saved_pd;
+        self.machine.program_data = saved_program;
         self.pc_tag = saved_pc_tag;
         self.stack.exit_ifelse_branch();
 
-        exec_result
+        run_result
+    }
+
+    fn call_function(&mut self, function_name: &str) -> ExecutorResult<(), P> {
+        let body = self.machine.function_get(function_name)?.clone();
+
+        self.function_depth += 1;
+        if self.function_depth > RECURSION_LIMIT {
+            panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{function_name}'");
+        }
+
+        let result = self.run_nested(Rc::from(vec![body]));
+        self.function_depth -= 1;
+
+        if let Some(entry) = result? {
+            self.push_existing_entry(entry);
+        }
+        Ok(())
+    }
+
+    fn print_cell(&mut self, index: CellIndex) -> ExecutorResult<(), P> {
+        let (value, value_tag) = self.read_entry(index)?;
+        self.ensure_output_allowed(value_tag)?;
+
+        match &mut self.machine.output {
+            types::Output::Stdout => print!("{value}"),
+            types::Output::File(_) | types::Output::Buffer(_) => {
+                let immediate = value.into_immediate().map_err(|_| InvalidCell)?;
+                self.machine.output.write(&[immediate]);
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_output_allowed(&self, value_tag: P::Tag) -> ExecutorResult<(), P> {
+        let effective_tag = self.combine_tags(value_tag, self.pc_tag)?;
+        let output_guard = self.policy.output_tag();
+
+        if self.policy.can_flow(effective_tag, output_guard)? {
+            Ok(())
+        } else {
+            Err(FlowError::InformationFlowViolation {
+                found: effective_tag,
+                guard: output_guard,
+            }
+            .into())
+        }
+    }
+
+    fn read_input_value(&mut self) -> ExecutorResult<Immediate, P> {
+        use types::Input;
+
+        let value = match &self.machine.input {
+            Input::Stdin => {
+                let mut input = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .expect("Failed to read input");
+                match input.trim().parse() {
+                    Ok(value) => value,
+                    Err(error) => todo!("For now, invalid input is a fatal error: {error}"),
+                }
+            }
+            Input::File(_) => {
+                let mut data = self.machine.input.read_all();
+                let value = data.pop().ok_or(Core(CoreError::IoReadError))?;
+                self.machine.input = Input::Buffer(Rc::new(RefCell::new(data)));
+                value
+            }
+            Input::Buffer(buffer) => buffer
+                .borrow_mut()
+                .pop()
+                .ok_or(Core(CoreError::IoReadError))?,
+        };
+
+        Ok(value)
     }
 }
 
@@ -227,8 +331,8 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         use UnaryOpImm::*;
 
         match instr {
-            Push => self.push_with_tag(Integer(arg), self.policy.default_tag())?,
-            TaggedPush(tag) => self.push_with_tag(Integer(arg), *tag)?,
+            Push => self.push_new_value(Integer(arg), self.policy.default_tag())?,
+            TaggedPush(tag) => self.push_new_value(Integer(arg), *tag)?,
         }
 
         Ok(())
@@ -243,10 +347,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         match instr {
             Not => {
-                let val = self.read(arg)?;
-                let tag = self.read_tag(arg)?;
-                if let Integer(v) = val {
-                    self.push_with_tag(Integer(!v), tag)?;
+                let (val, tag) = self.read_entry(arg)?;
+                if let Integer(val) = val {
+                    self.push_new_value(Integer(!val), tag)?;
                 } else {
                     return Err(TypeError {
                         expected: Integer(0),
@@ -255,24 +358,17 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 }
             }
             Read => {
-                let val = self.read(arg)?;
-                let tag = self.read_tag(arg)?;
-                self.push_with_tag(val, tag)?;
+                let (val, tag) = self.read_entry(arg)?;
+                self.push_new_value(val, tag)?;
             }
             ReadReverse => {
-                // like python's negative indexing.
-                let index = u16::try_from(self.cells.len())
-                    .ok()
-                    .and_then(|len| len.checked_sub(1))
-                    .and_then(|len| len.checked_sub(arg))
-                    .ok_or(InvalidCell)?;
-                let val = self.read(index)?;
-                let tag = self.read_tag(index)?;
-                self.push_with_tag(val, tag)?;
+                let index = reverse_index(self.cells.len(), arg).ok_or(InvalidCell)?;
+                let (val, tag) = self.read_entry(index)?;
+                self.push_new_value(val, tag)?;
             }
             Pop => {
                 for _ in 0..arg {
-                    self.stack.pop().ok_or(StackUnderflow)?; // Discard the popped value/tag pair
+                    self.stack.pop().ok_or(StackUnderflow)?;
                 }
             }
         }
@@ -286,47 +382,16 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         arg1: CellIndex,
         arg2: CellIndex,
     ) -> ExecutorResult<(), P> {
-        use BinaryOp::*;
-        fn from_bool<T: From<bool>>(value: bool) -> T {
-            value.into()
-        }
+        let (left, left_tag) = self.read_entry(arg1)?;
+        let (right, right_tag) = self.read_entry(arg2)?;
+        let result_tag = self.combine_tags(left_tag, right_tag)?;
 
-        let a = self.read(arg1)?;
-        let b = self.read(arg2)?;
-        let tag = self.combine_tags(self.read_tag(arg1)?, self.read_tag(arg2)?)?;
+        debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        debug!("Evaluating binary: {:?} {:?} {:?}", a, instr, b);
-
-        if let (Integer(a), Integer(b)) = (a, b) {
-            let calculated_value = match instr {
-                Add => a.checked_add(b).ok_or(ArithmeticOverflow)?,
-                Mul => a.checked_mul(b).ok_or(ArithmeticOverflow)?,
-                Div => a.checked_div(b).ok_or(DivisionByZero)?,
-                And => a & b,
-                Or => a | b,
-                Xor => a ^ b,
-                ShiftLeftLogical => a << b,
-                ShiftRightLogical => ((a as u64) >> b) as i64,
-                ShiftRightArithmetic => a >> b,
-                SetEqual => from_bool(a == b),
-                SetNotEqual => from_bool(a != b),
-                SetLessThan => from_bool(a < b),
-                SetLessThanOrEqual => from_bool(a <= b),
-                SetGreaterThan => from_bool(a > b),
-                SetGreaterThanOrEqual => from_bool(a >= b),
-            };
-
-            self.push_with_tag(Integer(calculated_value), tag)?;
-        } else {
-            return Err(TypeError {
-                expected: Integer(0),
-                found: self
-                    .cells
-                    .last()
-                    .copied()
-                    .expect("Stack should not be empty here"),
-            });
-        }
+        let left = expect_integer(left)?;
+        let right = expect_integer(right)?;
+        let result = calculate_binary(instr, left, right)?;
+        self.push_new_value(Integer(result), result_tag)?;
 
         Ok(())
     }
@@ -335,32 +400,22 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         // Each block must leave at least one value on its local stack so the parent can
         // observe a result. A block that ends with an empty local stack is a "void" error.
         match self.run_nested(instrs)? {
-            Some((val, tag)) => self.stack.push(val, tag),
+            Some(entry) => self.push_existing_entry(entry),
             None => return Err(BlockHasEmptyStack),
         }
         Ok(())
     }
 
-    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &String) -> ExecutorResult<(), P> {
+    fn evaluate_function(
+        &mut self,
+        instr: &FunctionOp,
+        function_name: &str,
+    ) -> ExecutorResult<(), P> {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => self.machine.common_function_logic(fun)?,
-            FunctionCall => {
-                let instr = self.machine.function_get(fun)?.clone();
-
-                self.function_depth += 1;
-                if self.function_depth > RECURSION_LIMIT {
-                    panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{fun}'");
-                }
-
-                let result = self.run_nested(Rc::<[Instruction<P::Tag>]>::from(vec![instr]));
-                self.function_depth -= 1;
-
-                if let Some(val) = result? {
-                    self.stack.push(val.0, val.1);
-                }
-            }
+            FunctionDefine => self.machine.common_function_logic(function_name)?,
+            FunctionCall => self.call_function(function_name)?,
         }
 
         Ok(())
@@ -376,69 +431,16 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         use types::{Input, Output};
 
         match (instr, arg) {
-            (Print, Cell(cell_idx)) => {
-                let val = self.read(*cell_idx)?;
-                let val_tag = self.read_tag(*cell_idx)?;
-                let effective_tag = self.combine_tags(val_tag, self.pc_tag)?;
-                let output_tag = self.policy.output_tag();
-                if !self.policy.can_flow(effective_tag, output_tag)? {
-                    return Err(FlowError::InformationFlowViolation {
-                        found: effective_tag,
-                        guard: output_tag,
-                    }
-                    .into());
-                }
-                match &mut self.machine.output {
-                    Output::Stdout => print!("{val}"),
-                    Output::File(_) | Output::Buffer(_) => {
-                        let imm = val.into_immediate().map_err(|_| InvalidCell)?;
-                        self.machine.output.write(&[imm]);
-                    }
-                }
+            (Print, Cell(cell_index)) => self.print_cell(*cell_index)?,
+            (Input, Cell(_)) => {
+                let value = self.read_input_value()?;
+                self.push_new_value(Integer(value), self.policy.input_tag())?;
             }
-            (Input, Cell(_)) => match &self.machine.input {
-                Input::Stdin => {
-                    let mut input: String = String::new();
-                    std::io::stdin()
-                        .read_line(&mut input)
-                        .expect("Failed to read input");
-
-                    match input.trim().parse::<i64>() {
-                        Ok(val) => self.push_with_tag(Integer(val), self.policy.input_tag())?,
-                        Err(e) => todo!("For now, invalid input is a fatal error: {e}"),
-                    }
-                }
-                Input::File(_) => {
-                    let mut data = self.machine.input.read_all();
-                    if let Some(val) = data.pop() {
-                        self.push_with_tag(Integer(val), self.policy.input_tag())?;
-                        self.machine.input =
-                            Input::Buffer(std::rc::Rc::new(std::cell::RefCell::new(data)));
-                    } else {
-                        return Err(Core(CoreError::IoReadError));
-                    }
-                }
-                Input::Buffer(ref_cell) => {
-                    let new_val = ref_cell
-                        .borrow_mut()
-                        .pop()
-                        .ok_or(Core(CoreError::IoReadError))?;
-                    self.push_with_tag(Integer(new_val), self.policy.input_tag())?;
-                }
-            },
             (FileRead, Str(path)) => {
-                if path.is_empty() {
-                    self.machine.input = Input::Stdin;
-                } else {
-                    self.machine.input = Input::File(path.clone());
-                }
+                self.machine.input = Input::from_path(path);
             }
             (FileWrite, Str(path)) => {
-                if path.is_empty() {
-                    self.machine.output = Output::Stdout;
-                } else {
-                    self.machine.output = Output::File(path.clone());
-                }
+                self.machine.output = Output::from_path(path);
             }
             _ => return Err(InvalidCell),
         }
@@ -452,8 +454,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         when_true: Rc<Instruction<P::Tag>>,
         when_false: Rc<Instruction<P::Tag>>,
     ) -> ExecutorResult<(), P> {
-        let condition = self.get(cond_idx.into()).copied().ok_or(InvalidCell)?;
-        let condition_tag = self.read_tag(cond_idx)?;
+        let (condition, condition_tag) = self.read_entry(cond_idx)?;
 
         let branch = match condition {
             Integer(0) => when_false,
@@ -466,13 +467,51 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
             }
         };
 
-        // The chosen branch runs inline on the parent's cells: its pops and
-        // pushes are permanent, and `Rebase` is forbidden inside it.
-        // PERF: clone
-        self.run_ifelse_branch(
-            Rc::<[Instruction<P::Tag>]>::from(vec![(*branch).clone()]),
-            condition_tag,
-        )
+        let branch_program = Rc::from(vec![branch.as_ref().clone()]);
+        self.run_ifelse_branch(branch_program, condition_tag)
+    }
+}
+
+fn reverse_index(stack_len: usize, reverse_offset: CellIndex) -> Option<CellIndex> {
+    let last_index = CellIndex::try_from(stack_len).ok()?.checked_sub(1)?;
+    last_index.checked_sub(reverse_offset)
+}
+
+fn expect_integer<Tag: FlowTag>(cell: Cell) -> Result<Immediate, ExecutorError<Tag>> {
+    match cell {
+        Integer(value) => Ok(value),
+        found => Err(TypeError {
+            expected: Integer(0),
+            found,
+        }),
+    }
+}
+
+fn calculate_binary<Tag: FlowTag>(
+    operation: &BinaryOp,
+    left: Immediate,
+    right: Immediate,
+) -> Result<Immediate, ExecutorError<Tag>> {
+    use BinaryOp::*;
+
+    let from_bool = |value: bool| Immediate::from(value);
+
+    match operation {
+        Add => left.checked_add(right).ok_or(ArithmeticOverflow),
+        Mul => left.checked_mul(right).ok_or(ArithmeticOverflow),
+        Div => left.checked_div(right).ok_or(DivisionByZero),
+        And => Ok(left & right),
+        Or => Ok(left | right),
+        Xor => Ok(left ^ right),
+        ShiftLeftLogical => Ok(left << right),
+        ShiftRightLogical => Ok(((left as u64) >> right) as i64),
+        ShiftRightArithmetic => Ok(left >> right),
+        SetEqual => Ok(from_bool(left == right)),
+        SetNotEqual => Ok(from_bool(left != right)),
+        SetLessThan => Ok(from_bool(left < right)),
+        SetLessThanOrEqual => Ok(from_bool(left <= right)),
+        SetGreaterThan => Ok(from_bool(left > right)),
+        SetGreaterThanOrEqual => Ok(from_bool(left >= right)),
     }
 }
 
