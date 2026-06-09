@@ -1,9 +1,54 @@
+//! Dynamic information-flow tags, graphs, and executor policies.
+//!
+//! A tag describes where a value may flow. The graph's directed edges are
+//! written in the same direction as allowed information flow:
+//!
+//! ```text
+//! Public -> Constrained -> Secret
+//! ```
+//!
+//! Perimeter guards define how data enters and exits the system, e.g. no data
+//! tagged `Secret` may flow to `Public` outputs.
+//!
+//! # Example
+//!
+//! ```
+//! use virtual_machine::information_flow::{FlowError, FlowGraph, GraphFlowPolicy};
+//!
+//! #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+//! enum Confidentiality {
+//!     Public,
+//!     Constrained,
+//!     Secret,
+//! }
+//!
+//! use Confidentiality::*;
+//!
+//! # fn main() -> Result<(), FlowError<Confidentiality>> {
+//! let graph = FlowGraph::new(
+//!     [Public, Constrained, Secret],
+//!     [(Public, Constrained), (Constrained, Secret)],
+//! )?;
+//!
+//! // Transitive flows and CCDs are precomputed when the graph is built.
+//! assert!(graph.can_flow(Public, Secret)?);
+//! assert_eq!(graph.closest_common_descendant(Public, Secret)?, Secret);
+//!
+//! // Ordinary constants are Public, inputs are Secret, and outputs only
+//! // accept values that are allowed to flow to Public.
+//! let _policy = GraphFlowPolicy::new(graph, Public, Secret, Public)?;
+//! # Ok(())
+//! # }
+//! ```
+
 use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
+/// Trait bound required for values used as information-flow tags. Blanket implementation.
 pub trait FlowTag: Copy + Eq + Hash + Debug {}
 
 impl<T: Copy + Eq + Hash + Debug> FlowTag for T {}
 
+/// Errors produced while building a flow graph or enforcing a flow policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlowError<Tag: FlowTag> {
     DuplicateTag(Tag),
@@ -14,11 +59,24 @@ pub enum FlowError<Tag: FlowTag> {
     InformationFlowViolation { found: Tag, guard: Tag },
 }
 
+/// A validated directed graph of allowed information flows.
+///
+/// `FlowGraph` stores the edges for a tag collection and precomputes the reflexive transitive
+/// closure and closest common descendants. This speeds up the
+/// [`Executor`](crate::machine::executor::Executor) checks.
+///
+/// Cycles and ambiguous closest common descendants are rejected.
+/// Pairs with no common descendant are allowed, but attempting to combine such
+/// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
 pub struct FlowGraph<Tag: FlowTag> {
+    /// Tags in the stable order
     tags: Vec<Tag>,
+    /// Maps tag values to indices in `tags` and the reachability/CCD matrices.
     indices: HashMap<Tag, usize>,
+    /// `reachable[a][b]` == true iff `a` may flow to `b`.
     reachable: Vec<Vec<bool>>,
+    /// Precomputed closest common descendant for every pair of tags.
     ccd: Vec<Vec<Option<Tag>>>,
 }
 
@@ -35,16 +93,20 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
             }
         }
 
+        // Reflexivity: every tag flows to itself.
         let mut reachable = vec![vec![false; tags.len()]; tags.len()];
         for (index, row) in reachable.iter_mut().enumerate() {
             row[index] = true;
         }
+
+        // Add the edges supplied
         for (from, to) in edges {
             let from_index = *indices.get(&from).ok_or(FlowError::UnknownTag(from))?;
             let to_index = *indices.get(&to).ok_or(FlowError::UnknownTag(to))?;
             reachable[from_index][to_index] = true;
         }
 
+        // Transitivity: if `a -> b` and `b -> c`, then `a -> c`.
         for through in 0..tags.len() {
             for from in 0..tags.len() {
                 for to in 0..tags.len() {
@@ -53,6 +115,7 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
             }
         }
 
+        // Reject cycles
         for (left, left_row) in reachable.iter().enumerate() {
             for (right, right_row) in reachable.iter().enumerate().skip(left + 1) {
                 if left_row[right] && right_row[left] {
@@ -64,9 +127,12 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
         let mut ccd = vec![vec![None; tags.len()]; tags.len()];
         for left in 0..tags.len() {
             for right in 0..tags.len() {
+                // Find all common descendants of `left` and `right`.
                 let common: Vec<usize> = (0..tags.len())
                     .filter(|candidate| reachable[left][*candidate] && reachable[right][*candidate])
                     .collect();
+                // Find closest among common descendants. If any of the candidates is reachable
+                // from another, it's not closest.
                 let closest: Vec<usize> = common
                     .iter()
                     .copied()
@@ -99,20 +165,24 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
         })
     }
 
+    /// Returns whether `tag` belongs to this graph.
     pub fn contains(&self, tag: Tag) -> bool {
         self.indices.contains_key(&tag)
     }
 
+    /// Returns all graph tags in their original insertion order.
     pub fn tags(&self) -> &[Tag] {
         &self.tags
     }
 
+    /// Returns whether information tagged `from` may flow to `to`.
     pub fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
         let from = *self.indices.get(&from).ok_or(FlowError::UnknownTag(from))?;
         let to = *self.indices.get(&to).ok_or(FlowError::UnknownTag(to))?;
         Ok(self.reachable[from][to])
     }
 
+    /// Returns the closest common descendant of `left` and `right`, if it exists.
     pub fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
         let left_index = *self.indices.get(&left).ok_or(FlowError::UnknownTag(left))?;
         let right_index = *self
@@ -122,6 +192,7 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
         self.ccd[left_index][right_index].ok_or(FlowError::NoCommonDescendant { left, right })
     }
 
+    /// Returns ccd for multiple tags, i.e. `ccd(a, b, c) = ccd(a, ccd(b, c))`.
     pub fn closest_common_descendant_all(
         &self,
         tags: impl IntoIterator<Item = Tag>,
@@ -137,21 +208,33 @@ impl<Tag: FlowTag> FlowGraph<Tag> {
     }
 }
 
+/// Trait for operations on tags from the perspective of policies.
 pub trait InformationFlowPolicy {
     type Tag: FlowTag;
 
     fn default_tag(&self) -> Self::Tag;
     fn input_tag(&self) -> Self::Tag;
     fn output_tag(&self) -> Self::Tag;
+    /// Checks that a tag embedded in a program is known to this policy.
     fn validate_tag(&self, tag: Self::Tag) -> Result<(), FlowError<Self::Tag>>;
+    /// Computes the closest common descendant of two tags, if it exists.
     fn closest_common_descendant(
         &self,
         left: Self::Tag,
         right: Self::Tag,
     ) -> Result<Self::Tag, FlowError<Self::Tag>>;
+    /// Checks whether 'from -> to' holds for given tags.
     fn can_flow(&self, from: Self::Tag, to: Self::Tag) -> Result<bool, FlowError<Self::Tag>>;
 }
 
+/// Standard information-flow policy backed by a [`FlowGraph`].
+///
+/// Besides the graph, this policy configures the three perimeter/default tags
+/// needed by the executor:
+///
+/// - `default_tag`: tag for ordinary constants.
+/// - `input_tag`: tag automatically applied to input values.
+/// - `output_tag`: guard that output values must be allowed to flow to.
 #[derive(Debug, Clone)]
 pub struct GraphFlowPolicy<Tag: FlowTag> {
     graph: FlowGraph<Tag>,
@@ -161,6 +244,7 @@ pub struct GraphFlowPolicy<Tag: FlowTag> {
 }
 
 impl<Tag: FlowTag> GraphFlowPolicy<Tag> {
+    /// Creates a graph-backed policy and validates all configured policy tags.
     pub fn new(
         graph: FlowGraph<Tag>,
         default_tag: Tag,
@@ -180,6 +264,7 @@ impl<Tag: FlowTag> GraphFlowPolicy<Tag> {
         })
     }
 
+    /// Returns the underlying validated flow graph.
     pub fn graph(&self) -> &FlowGraph<Tag> {
         &self.graph
     }
@@ -217,6 +302,11 @@ impl<Tag: FlowTag> InformationFlowPolicy for GraphFlowPolicy<Tag> {
     }
 }
 
+/// Policy used by the ordinary, unmonitored executor.
+///
+/// Its only tag is `()`. All combinations and flows succeed, preserving the
+/// behavior of programs created with
+/// [`Executor::new`](crate::machine::executor::Executor::new).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoFlow;
 
@@ -237,7 +327,6 @@ impl InformationFlowPolicy for NoFlow {
     }
 }
 
-// TODO: Review
 #[cfg(test)]
 mod tests {
     use super::*;

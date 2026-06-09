@@ -18,8 +18,14 @@ pub enum UnaryOpCell {
 }
 
 #[derive(Debug, Clone)]
-pub enum UnaryOpImm {
+/// An operation that takes one immediate value encoded in the instruction.
+///
+/// The tag parameter is only used by [`UnaryOpImm::TaggedPush`]. It defaults
+/// to `()`, so ordinary unmonitored programs keep using the simple
+/// `UnaryOpImm` type.
+pub enum UnaryOpImm<Tag = ()> {
     Push,
+    TaggedPush(Tag),
 }
 
 #[derive(Debug, Clone)]
@@ -68,8 +74,7 @@ pub enum IntrinsicArg {
 #[derive(Debug, Clone)]
 pub enum Instruction<Tag = ()> {
     AluNullary(NullaryOp),
-    AluUnaryImm(UnaryOpImm, Immediate),
-    TaggedPush { value: Immediate, tag: Tag },
+    AluUnaryImm(UnaryOpImm<Tag>, Immediate),
     AluUnaryCell(UnaryOpCell, CellIndex),
     AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Rc<[Instruction<Tag>]>),

@@ -560,20 +560,15 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
 
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm,
+        instr: &UnaryOpImm<Tag>,
         arg: Immediate,
     ) -> Result<(), Self::Error> {
         use UnaryOpImm::*;
 
         match instr {
-            Push => self.push(ValueSpan::new(arg, arg)),
+            Push | TaggedPush(_) => self.push(ValueSpan::new(arg, arg)),
         }
 
-        Ok(())
-    }
-
-    fn evaluate_tagged_push(&mut self, value: Immediate, _tag: &Tag) -> Result<(), Self::Error> {
-        self.push(ValueSpan::new(value, value));
         Ok(())
     }
 

@@ -95,7 +95,9 @@ impl<P: InformationFlowPolicy> Executor<P> {
     fn validate_program(program: &[Instruction<P::Tag>], policy: &P) -> ExecutorResult<(), P> {
         for instruction in program {
             match instruction {
-                Instruction::TaggedPush { tag, .. } => policy.validate_tag(*tag)?,
+                Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
+                    policy.validate_tag(*tag)?
+                }
                 Instruction::Block(inner) => Self::validate_program(inner, policy)?,
                 Instruction::IfElse(_, when_true, when_false) => {
                     Self::validate_program(std::slice::from_ref(when_true.as_ref()), policy)?;
@@ -219,20 +221,17 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm,
+        instr: &UnaryOpImm<P::Tag>,
         arg: Immediate,
     ) -> ExecutorResult<(), P> {
         use UnaryOpImm::*;
 
         match instr {
             Push => self.push_with_tag(Integer(arg), self.policy.default_tag())?,
+            TaggedPush(tag) => self.push_with_tag(Integer(arg), *tag)?,
         }
 
         Ok(())
-    }
-
-    fn evaluate_tagged_push(&mut self, value: Immediate, tag: &P::Tag) -> ExecutorResult<(), P> {
-        self.push_with_tag(Integer(value), *tag)
     }
 
     fn evaluate_alu_unary_cell(

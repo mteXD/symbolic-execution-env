@@ -15,10 +15,10 @@ macro_rules! add_instr {
         AluUnaryImm(UnaryOpImm::$op, $a)
     };
     (tag Push, $value:expr, $tag:expr) => {
-        $crate::instruction::Instruction::TaggedPush {
-            value: $value,
-            tag: $tag,
-        }
+        $crate::instruction::Instruction::AluUnaryImm(
+            $crate::instruction::UnaryOpImm::TaggedPush($tag),
+            $value,
+        )
     };
     (R $op:ident, $a:expr) => {
         // for register

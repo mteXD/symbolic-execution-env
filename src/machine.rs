@@ -116,7 +116,7 @@ impl<Tag: Clone + Debug> Iterator for CoreMachine<Tag> {
     }
 }
 
-trait Evaluate<Tag = ()> {
+trait Evaluate<Tag: Debug = ()> {
     type Error;
 
     fn evaluate_instruction(&mut self, instr: &Instruction<Tag>) -> Result<(), Self::Error> {
@@ -131,10 +131,6 @@ trait Evaluate<Tag = ()> {
             AluUnaryImm(instr, imm) => {
                 debug!("Evaling: {:?}, imm: {:?}", instr, imm);
                 self.evaluate_alu_unary_imm(instr, *imm)
-            }
-            TaggedPush { value, tag } => {
-                debug!("Evaling tagged push: {:?}, tag", value);
-                self.evaluate_tagged_push(*value, tag)
             }
             AluUnaryCell(instr, cell) => {
                 debug!("Evaling: {:?}, cell: {:?}", instr, cell);
@@ -168,10 +164,9 @@ trait Evaluate<Tag = ()> {
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error>;
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm,
+        instr: &UnaryOpImm<Tag>,
         arg: Immediate,
     ) -> Result<(), Self::Error>;
-    fn evaluate_tagged_push(&mut self, value: Immediate, tag: &Tag) -> Result<(), Self::Error>;
     fn evaluate_alu_unary_cell(
         &mut self,
         instr: &UnaryOpCell,
@@ -270,7 +265,7 @@ impl<T: Copy> StackFrames<T> {
 
     /// Begin a block-style isolating context. Pushes a `Block` frame, sets
     /// `base` to the current stack length, and returns the previous `base`
-    /// (which the caller must pass to [`exit_block`] to restore).
+    /// (which the caller must pass to [`Self::exit_block`] to restore).
     pub fn enter_block(&mut self) -> usize {
         let saved_base = self.base;
         self.base = self.cells.len();
