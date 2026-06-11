@@ -2,13 +2,13 @@ use std::rc::Rc;
 
 use crate::types::{CellIndex, Immediate};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NullaryOp {
     Nop,
     Rebase,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpCell {
     Not,
     Read,
@@ -22,13 +22,13 @@ pub enum UnaryOpCell {
 /// The tag parameter is only used by [`UnaryOpImm::TaggedPush`]. It defaults
 /// to `()`, so ordinary unmonitored programs keep using the simple
 /// `UnaryOpImm` type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpImm<Tag = ()> {
     Push,
     TaggedPush(Tag),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic instructions
     Add,
@@ -51,13 +51,13 @@ pub enum BinaryOp {
     SetGreaterThanOrEqual,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionOp {
     FunctionDefine,
     FunctionCall,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicOp {
     Print,
     Input,
@@ -65,13 +65,13 @@ pub enum IntrinsicOp {
     FileWrite,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicArg {
     Cell(CellIndex),
     Str(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<Tag = ()> {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm<Tag>, Immediate),

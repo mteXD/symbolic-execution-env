@@ -84,6 +84,12 @@ pub struct ValueSpan {
     pub max: Immediate,
 }
 
+impl From<Immediate> for ValueSpan {
+    fn from(val: Immediate) -> Self {
+        ValueSpan::new(val, val)
+    }
+}
+
 impl ValueSpan {
     fn new(min: Immediate, max: Immediate) -> Self {
         if min > max {
@@ -95,16 +101,20 @@ impl ValueSpan {
         Self { min, max }
     }
 
-    #[inline]
-    fn is_unbounded(&self) -> bool {
-        self.min == Immediate::MIN || self.max == Immediate::MAX
-    }
-
     fn inf() -> Self {
         Self {
             min: Immediate::MIN,
             max: Immediate::MAX,
         }
+    }
+
+    fn from_list(list: impl IntoIterator<Item = Immediate>) -> Vec<Self> {
+        list.into_iter().map(ValueSpan::from).collect()
+    }
+
+    #[inline]
+    fn is_unbounded(&self) -> bool {
+        self.min == Immediate::MIN || self.max == Immediate::MAX
     }
 
     fn disjunct(&self, other: &ValueSpan) -> bool {
@@ -253,7 +263,7 @@ impl Findings {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Verifier<Tag: Clone + Debug = ()> {
     machine: CoreMachine<Tag>,
     pub stack: StackFrames<ValueSpan>,
@@ -276,6 +286,8 @@ impl<Tag: Clone + Debug> DerefMut for Verifier<Tag> {
 
 impl Verifier<()> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
+        // crate::logging::init();
+
         Self::with_tags(program)
     }
 }
@@ -289,12 +301,14 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         }
     }
 
-    pub fn redirect_input(&mut self, new_input: types::Input) {
+    pub fn redirect_input(mut self, new_input: types::Input) -> Self {
         self.machine.input = new_input;
+        self
     }
 
-    pub fn redirect_output(&mut self, new_output: types::Output) {
+    pub fn redirect_output(mut self, new_output: types::Output) -> Self {
         self.machine.output = new_output;
+        self
     }
 
     fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
@@ -377,18 +391,17 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
                 inner_function: fun.to_owned(),
             });
         }
-        self.machine.common_function_logic(fun)?;
+        let aliases = self.machine.common_function_logic(fun)?;
+
         // Shadowing is not permitted; compilers can generate unique function names.
         // Borrow the current instruction and clone only the block's `Rc` (a
         // cheap pointer bump) rather than deep-cloning the instruction tree.
-        let Instruction::Block(inner) = self.machine.program_data.get_current()? else {
-            warn!(
-                "Function '{}' is not defined by a block; skipping argument analysis.",
-                fun
-            );
-            return Ok(());
+        let to_check = match self.machine.program_data.get_current()? {
+            Instruction::Block(inner) => Rc::clone(inner),
+            instr => {
+                Rc::new([instr.clone()]) // Not expensive
+            }
         };
-        let inner = Rc::clone(inner);
 
         // Scope only the argument-collection state. `func_data` (the discovered
         // argument counts) must persist so callers and recursive calls see it.
@@ -401,12 +414,34 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         });
         self.findings.values_after_rebase = None;
 
-        let run_result = self.run_nested(inner);
+        let run_result = self.run_nested(to_check);
+
+        self.findings
+            .func_data
+            .insert(fun.to_string(), self.findings.func_defining.clone().unwrap());
+        for alias in aliases {
+            self.findings
+                .func_data
+                .insert(alias, self.findings.func_defining.clone().unwrap());
+        }
 
         self.findings.func_defining = saved_defining;
         self.findings.values_after_rebase = saved_after_rebase;
 
+        // Extra debug code
+
         run_result?;
+
+        trace!("Finished verifying function definition for '{}'", fun);
+        trace!(
+            "Discovered argument indices for '{}': {:?}",
+            fun,
+            self.findings
+                .func_data
+                .get(fun)
+                .map(|info| &info.arg_indices)
+        );
+
         Ok(())
     }
 
@@ -470,9 +505,9 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
             .map_err(Into::into)
     }
 
-    pub fn verify(&mut self) -> Result<Option<&ValueSpan>, VerifierError<Tag>> {
+    pub fn verify(mut self) -> Result<Self, VerifierError<Tag>> {
         self.run_loop()?;
-        Ok(self.cells.last())
+        Ok(self)
     }
 
     // FIXME: This function no longer works as it did before.
@@ -746,6 +781,12 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             FunctionDefine => self.verify_function_definition(function_name)?,
             FunctionCall => {
                 self.machine.function_get(function_name)?;
+                let x = self.findings.func_data.get(function_name);
+
+                trace!(
+                    "Tried to get function data for '{}': {:#?}",
+                    function_name, x
+                );
 
                 let available = self.cells.len();
 
@@ -771,6 +812,8 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     });
                 }
 
+                // TODO: Check if function returns a constant value and push it instead of inf when
+                // possible.
                 self.push(ValueSpan::inf());
             }
         }

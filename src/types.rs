@@ -14,7 +14,7 @@ pub type CellIndex = u16;
 pub type Immediate = i64;
 
 // PERF: Copy for Strings can be expensive.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum Cell {
     Integer(Immediate),
     Text(char),
@@ -51,7 +51,7 @@ impl Display for Cell {
     }
 }
 
-#[derive(Debug, Clone, Default, Copy)]
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
 pub enum Address {
     #[default]
     Null,
@@ -94,13 +94,13 @@ impl TryInto<usize> for Address {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FdEntry<Tag = ()> {
     Str(String),
     Inst(Instruction<Tag>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionDataError {
     FunctionRedefinition(String),
     FunctionUndefined(String),
@@ -163,7 +163,7 @@ impl<Tag> FunctionData<Tag> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgramDataError {
     InvalidPC { pc: Address },
 }
@@ -215,18 +215,43 @@ impl<Tag: Clone> Iterator for ProgramData<Tag> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IoBuffer {
+    buffer: Rc<RefCell<Vec<Immediate>>>,
+}
+
+impl IoBuffer {
+    pub fn new(list: impl IntoIterator<Item = Immediate>) -> Self {
+        Self {
+            buffer: Rc::new(RefCell::new(list.into_iter().collect())),
+        }
+    }
+
+    pub fn get_buffer(&self) -> Rc<RefCell<Vec<Immediate>>> {
+        self.buffer.clone()
+    }
+
+    pub fn borrow_mut(&self) -> std::cell::RefMut<Vec<Immediate>> {
+        self.buffer.borrow_mut()
+    }
+
+    pub fn borrow(&self) -> std::cell::Ref<Vec<Immediate>> {
+        self.buffer.borrow()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Output {
     Stdout,
     File(String),
-    Buffer(Rc<RefCell<Vec<Immediate>>>),
+    Buffer(IoBuffer),
 }
 
 #[derive(Debug, Clone)]
 pub enum Input {
     Stdin,
     File(String),
-    Buffer(Rc<RefCell<Vec<Immediate>>>),
+    Buffer(IoBuffer),
 }
 
 impl Output {
@@ -293,5 +318,17 @@ impl Input {
                 buf
             }
         }
+    }
+}
+
+impl From<IoBuffer> for Input {
+    fn from(buf: IoBuffer) -> Self {
+        Input::Buffer(buf)
+    }
+}
+
+impl From<IoBuffer> for Output {
+    fn from(buf: IoBuffer) -> Self {
+        Output::Buffer(buf)
     }
 }

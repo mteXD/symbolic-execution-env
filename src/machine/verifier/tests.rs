@@ -6,10 +6,15 @@ use crate::{
         UnaryOpCell, UnaryOpImm,
     },
     machine::{
-        CoreError,
+        CoreError, Evaluate,
         verifier::{ValueSpan, Verifier, VerifierError},
     },
-    programs,
+    programs::testable::{
+        arithmetic,
+        blocks::{self, rebasing},
+        conditional, functions, intrinsics, stack,
+    },
+    types::IoBuffer,
 };
 
 use VerifierError::*;
@@ -17,13 +22,6 @@ use VerifierError::*;
 #[derive(Debug, Clone, Copy)]
 enum TestTag {
     Public,
-}
-
-#[test]
-fn tagged_push_is_verified_without_a_flow_policy() {
-    let program = vec![add_instr!(tag Push, 42, TestTag::Public)];
-    let mut verifier = Verifier::with_tags(program);
-    assert_eq!(verifier.verify().unwrap(), Some(&ValueSpan::new(42, 42)));
 }
 
 macro_rules! assert_last {
@@ -84,365 +82,544 @@ macro_rules! create_test {
     };
 }
 
-#[test]
-fn push_pop() {
-    let mut program: Vec<Instruction> = programs::push5().to_vec();
-    let mut verifier = Verifier::new(program.clone());
-    let result = verifier.verify();
-    assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-    let len = verifier.cells.len();
-    assert_eq!(len, 5);
-    for i in 0..len {
-        assert_eq!(
-            verifier.cells[i],
-            ValueSpan {
-                min: (i + 1) as i64,
-                max: (i + 1) as i64
-            }
-        );
-    }
-
-    program.extend(vec![
-        add_instr!(R Pop, 4),  // Pops 4
-        add_instr!(R Read, 0), // Reads remaining one
-    ]);
-    let mut verifier = Verifier::new(program.clone());
-    let result = verifier.verify();
-    assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-    let len = verifier.cells.len();
-    assert_eq!(len, 2);
-    for i in 0..len {
-        assert_eq!(verifier.cells[i], ValueSpan { min: 1, max: 1 });
-    }
-
-    program.extend(vec![
-        add_instr!(R Pop, 2),  // Should pop 3 and 2
-        add_instr!(R Read, 0), // Should fail
-    ]);
-
-    let mut verifier = Verifier::new(program);
-    let result = verifier.verify();
-    if let Err(VerifierError::InvalidCell {
-        instr: _,
-        cell_index: _,
-        cells: _,
-        prog: _,
-        location: _,
-    }) = result
-    {
-        // Test passed
-    } else {
-        panic!("Expected InvalidCell error, but got {:?}", result);
-    }
-}
-
-#[test]
-fn pop_multiple_bad() {
-    let program = programs::pop_multiple_bad();
-    assert_last_err!(program, StackUnderflow);
-}
-
-#[test]
-fn read_bad_index() {
-    let program = programs::read_bad_index();
-    assert_last_err!(program, InvalidCell { .. });
-}
-
-create_test!(read_reverse);
-
-#[test]
-fn read_reverse_bad_empty() {
-    // PART 1
-    let program = programs::read_reverse_bad_empty_1();
-    assert_last_err!(program, InvalidCell { .. });
-
-    // PART 2
-    let program = programs::read_reverse_bad_empty_2();
-    assert_last_err!(program, InvalidCell { .. });
-}
-
-#[test]
-fn read_reverse_bad_index() {
-    // PART 1
-    let program = programs::read_reverse_bad_index_1();
-    assert_last_err!(program, InvalidCell { .. });
-
-    // PART 2
-    let program = programs::read_reverse_bad_index_2();
-    assert_last_err!(program, InvalidCell { .. });
-}
-
-test_binop!(add, Add);
-test_binop!(add_neg, Add);
-test_binop!(mul, Mul);
-test_binop!(div, Div);
-test_binop!(and, And);
-test_binop!(or, Or);
-test_binop!(xor, Xor);
-test_binop!(slt, SetLessThan);
-test_binop!(sgt, SetGreaterThan);
-test_binop!(seq, SetEqual);
-test_binop!(sne, SetNotEqual);
-test_binop!(sle, SetLessThanOrEqual);
-test_binop!(sge, SetGreaterThanOrEqual);
-test_binop!(sll, ShiftLeftLogical);
-test_binop!(srl, ShiftRightLogical);
-test_binop!(sra, ShiftRightArithmetic);
-
-#[test]
-fn div_bad() {
-    let program = vec![
-        add_instr!(Push, 10),
-        add_instr!(Push, 0),
-        add_instr!(Div, 0, 1),
-    ];
-    assert_last_err!(program, DivisionByZero);
-}
-
-create_test!(nop);
-create_test!(bitwise_not);
-
-#[test]
-fn not_bad() {
-    let program = vec![add_instr!(R Not, 0)];
-    assert_last_err!(program, InvalidCell { .. });
-}
-
-create_test!(math_with_read);
-
-#[test]
-fn conditional() {
-    let program = programs::conditional();
-    let mut verifier = Verifier::new(program);
-    let result = verifier.verify();
-    assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-    let result = result.unwrap();
-    assert_eq!(result, Some(&ValueSpan { min: 4, max: 6 }));
-}
-
-mod blocks {
-    use super::*;
-
-    create_test!(basic_block);
-    create_test!(nested_block);
-    create_test!(block_with_pop);
-    create_test!(block_nested_rebase_1);
-    create_test!(block_nested_rebase_2);
-    create_test!(square_add_42);
-
-    #[test]
-    fn void_print_block() {
-        let program = programs::void_print_block();
-
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-
-        assert_eq!(verifier.cells.len(), 2);
-    }
-
-    #[test]
-    fn block_with_pops_only() {
-        let program = programs::block_with_pops_only();
-
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        match result {
-            Err(BlockHasEmptyStack) => (),
-            _ => panic!("Expected BlockHasEmptyStack error, but got {:?}", result),
-        }
-    }
-}
-
-mod functions {
-    use super::*;
-
-    create_test!(simple_function);
-
-    #[test]
-    fn simple_function_no_args() {
-        let program = programs::simple_function_no_args();
-
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        match result {
-            Err(NotEnoughArguments { .. }) => (),
-            _ => panic!("Expected NotEnoughArguments error, but got {:?}", result),
-        }
-    }
-
-    #[test]
-    fn nested_functions() {
-        let program = programs::nested_functions();
-
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        match result {
-            Err(NestedFunctionDefinition {
-                outer_function,
-                inner_function,
-            }) => {
-                assert_eq!(outer_function, "outer");
-                assert_eq!(inner_function, "inner");
-            }
-            _ => panic!(
-                "Expected NestedFunctionDefinition error, but got {:?}",
-                result
+macro_rules! assert_err {
+    ($result: ident, $expected: pat) => {
+        match $result {
+            $expected => (),
+            x => panic!(
+                "\nEXPECTED\n{:#?},\nACTUAL\n{:#?}",
+                stringify!($expected),
+                x
             ),
         }
-    }
-}
-
-mod intrinsics {
-    use super::*;
-    use crate::instruction::{
-        // self,
-        IntrinsicOp,
     };
+}
 
-    // print probably doesn't need to be tested
-    #[test]
-    #[ignore]
-    fn print() {
-        todo!()
-    }
-
-    #[test]
-    fn input() {
-        let program = vec![add_instr!(io Input, 0)];
-
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        assert!(result.is_ok(), "Verification failed: {:?}", result.err());
-        let result = result.unwrap();
-        assert_eq!(result, Some(&ValueSpan::inf()));
+fn assert_stack(verifier: Verifier, expected: Vec<ValueSpan>) {
+    assert_eq!(verifier.stack.len(), expected.len());
+    for (i, &exp_val) in expected.iter().enumerate() {
+        let tru_val = *verifier.stack.get(i).unwrap();
+        assert_eq!(tru_val, exp_val)
     }
 }
 
-mod ifelse {
-    use super::*;
+/// Check that numbers 1-5 are pushed correctly
+#[test]
+fn stack_push() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::push()).verify()?.into();
 
-    // ---- positive cases ----
-    create_test!(ifelse_balanced_push);
-    create_test!(ifelse_balanced_blocks);
-    create_test!(ifelse_known_true_asymmetric);
-    create_test!(ifelse_known_false_asymmetric);
-    create_test!(ifelse_block_in_branch_can_rebase);
-    create_test!(ifelse_nested_balanced);
+    let expected = ValueSpan::from_list([1, 2, 3, 4, 5]);
+    assert_stack(verifier, expected);
 
-    // ---- negative cases ----
-    #[test]
-    fn ifelse_unequal_branches_pop_vs_push() {
-        let program = programs::ifelse_unequal_branches_pop_vs_push();
-        assert_last_err!(program, CondUnequalStackSizes { .. });
-    }
-
-    #[test]
-    fn ifelse_unequal_branches_pop_amounts() {
-        let program = programs::ifelse_unequal_branches_pop_amounts();
-        assert_last_err!(program, CondUnequalStackSizes { .. });
-    }
-
-    #[test]
-    fn ifelse_unequal_block_vs_pop() {
-        let program = programs::ifelse_unequal_block_vs_pop();
-        assert_last_err!(program, CondUnequalStackSizes { .. });
-    }
-
-    #[test]
-    fn ifelse_rebase_in_branch_forbidden() {
-        let program = programs::ifelse_rebase_in_branch_forbidden();
-        assert_last_err!(program, Core(CoreError::RebaseError));
-    }
-
-    #[test]
-    fn ifelse_rebase_in_branch_inside_block() {
-        let program = programs::ifelse_rebase_in_branch_inside_block();
-        assert_last_err!(program, Core(CoreError::RebaseError));
-    }
-
-    #[test]
-    fn ifelse_div_by_zero_in_branch() {
-        let program = programs::ifelse_div_by_zero_in_branch();
-        assert_last_err!(program, DivisionByZero);
-    }
-
-    #[test]
-    fn ifelse_invalid_cell_in_branch() {
-        let program = programs::ifelse_invalid_cell_in_branch();
-        // Either StackUnderflow (Pop walks past block base) or InvalidCell.
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        assert!(
-            result.is_err(),
-            "Expected an error from invalid-cell branch, got {:?}",
-            result
-        );
-    }
-
-    // FIXME: If we implement types, this test will come in handy. For now, it doesn't work since
-    // `IfElse` changed.
-    #[test]
-    #[ignore]
-    fn ifelse_bad_placement() {
-        let program = programs::ifelse_bad_placement();
-        assert_last_err!(program, UnsafeCondPlacement);
-    }
-
-    #[test]
-    fn ifelse_no_condition() {
-        let program = programs::ifelse_no_condition();
-        assert_last_err!(program, InvalidCell { .. });
-    }
+    Ok(())
 }
 
-mod misc {
-    use super::*;
+#[test]
+fn stack_pop_most() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::pop_most()).verify()?.into();
 
-    // ---- positive cases ----
-    create_test!(function_two_args_ok);
-    create_test!(special_argument_providing);
-    create_test!(long_arithmetic_chain);
+    let expected = ValueSpan::from_list([1]);
+    assert_stack(verifier, expected);
 
-    // ---- negative cases ----
-    #[test]
-    fn function_call_missing_args() {
-        let program = programs::function_call_missing_args();
-        let mut verifier = Verifier::new(program);
-        let result = verifier.verify();
-        assert!(
-            matches!(result, Err(NotEnoughArguments { .. }) | Err(StackUnderflow)),
-            "Expected NotEnoughArguments/StackUnderflow, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn pop_underflow_top_level() {
-        let program = programs::pop_underflow_top_level();
-        assert_last_err!(program, StackUnderflow);
-    }
-
-    #[test]
-    fn read_far_beyond_stack() {
-        let program = programs::read_far_beyond_stack();
-        assert_last_err!(program, InvalidCell { .. });
-    }
+    Ok(())
 }
 
-mod whole_programs {
-    use super::*;
+#[test]
+fn stack_pop_all() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::pop_all()).verify()?.into();
 
-    #[test]
-    fn factorial() {
-        let program = programs::prog_factorial(10);
-        assert_last!(program);
-    }
+    let expected = ValueSpan::from_list([]);
+    assert_stack(verifier, expected);
 
-    #[test]
-    fn fibonacci() {
-        let program = programs::prog_fibonacci(10);
-        // panic!("Termination.");
-        assert_last!(program);
-    }
+    Ok(())
 }
+
+#[test]
+fn stack_pop_empty() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::pop_empty()).verify();
+
+    assert_err!(verifier, Err(VerifierError::StackUnderflow));
+
+    Ok(())
+}
+
+#[test]
+fn stack_pop_too_many() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::pop_too_many()).verify();
+
+    assert_err!(verifier, Err(VerifierError::StackUnderflow));
+
+    Ok(())
+}
+
+#[test]
+fn stack_read() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read()).verify()?.into();
+
+    let expected = ValueSpan::from_list([42, 42]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn stack_read_empty() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_empty()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+#[test]
+fn stack_read_multiple() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_multiple()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 20, 30, 10, 20, 30]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+/// [NEGATIVE] Pushes a value and tries to read from index 1
+fn stack_read_bad_index() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_bad_index()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+// [NEGATIVE] Read with index larger than stack size after several pushes.
+#[test]
+fn stack_read_far_beyond_stack() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_far_beyond_stack()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+/// [POSITIVE] Reads the top of stack
+///
+/// Expected final stack state: [10, 10]
+#[test]
+fn stack_read_reverse() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_reverse()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 10]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Reads top 3 values
+///
+/// Expected final stack state: [10, 20, 30, 10, 20, 30]
+#[test]
+fn stack_read_reverse_multiple() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_reverse_multiple())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([10, 20, 30, 10, 20, 30]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [NEGATIVE] Pushes a value and tries to read reverse from index 1
+#[test]
+fn stack_read_reverse_bad_index() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_reverse_bad_index()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+/// [NEGATIVE] Tries to read reverse from an empty stack
+#[test]
+fn stack_read_reverse_bad_empty() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(stack::read_reverse_bad_empty()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+// -------------- Arithmetic tests --------------
+
+/// [POSITIVE] Tests bitwise not
+#[test]
+fn arith_bitwise_not() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(arithmetic::bitwise_not()).verify()?.into();
+
+    let expected = ValueSpan::from_list([0b1100, !0b1100]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Tests Nop
+#[test]
+fn arith_nop() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(arithmetic::nop()).verify()?;
+
+    assert_eq!(verifier.cells.len(), 0);
+
+    Ok(())
+}
+
+/// [NEGATIVE] Tests division by zero
+#[test]
+fn arith_div_by_zero() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(arithmetic::div_by_zero()).verify();
+
+    assert_err!(verifier, Err(VerifierError::DivisionByZero));
+
+    Ok(())
+}
+
+/// [POSITIVE] Tests a simple ifelse with a statically known true condition
+///
+/// Expected final stack state: [10, 5, 1, 42]
+#[test]
+fn cond_ifelse_known_true() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_known_true())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([10, 5, 1, 42]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Tests a simple ifelse with a statically known false condition
+///
+/// Expected final stack state: [3, 5, 0, 0]
+#[test]
+fn cond_ifelse_known_false() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_known_false())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([3, 5, 0, 0]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Tests an ifelse with an unknown condition but balanced branches
+///
+/// Expected final stack state if input > 5: [100, 5, 1, 42]
+/// Expected final stack state if input <= 5: [-100, 5, 0, 0]
+#[test]
+fn cond_ifelse_unknown_balanced() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_unknown_balanced())
+        .verify()?
+        .into();
+
+    let expected = vec![
+        ValueSpan::inf(),
+        5.into(),
+        ValueSpan::new(0, 1),
+        ValueSpan::new(0, 42),
+    ];
+
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Statically-known condition: only the taken branch runs, and the
+/// verifier does not need to compare branch sizes (asymmetric branches are
+/// fine here because the untaken branch is dead code).
+///
+/// Expected final stack state: [10, 3, 1, 42]
+#[test]
+fn cond_ifelse_known_true_asymmetric() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_known_true_asymmetric())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([10, 3, 1, 42]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] Statically-known false condition: only the false branch runs.
+///
+/// Expected final stack state: [0]
+#[test]
+fn cond_ifelse_known_false_asymmetric() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_known_false_asymmetric())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([0]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [NEGATIVE] Tests an ifelse with an unknown condition and unbalanced branches
+///
+/// Expected: No way of detecting this with the verifier.
+///
+/// Expected final stack state if input > 5: [x, 5, 1, 42]
+/// Expected final stack state if input <= 5: [x, 5]
+#[test]
+fn cond_ifelse_unknown_unbalanced() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_unknown_unbalanced()).verify();
+
+    assert_err!(
+        verifier,
+        Err(VerifierError::CondUnequalStackSizes {
+            true_branch_cells: 4,
+            false_branch_cells: 2
+        })
+    );
+
+    Ok(())
+}
+
+/// [NEGATIVE] Condition is not the result of a comparison instruction.
+///
+/// This program will eventually be used to check the type system.
+///
+/// Expected: `TypeError`
+#[test]
+#[ignore = "Type system currently not yet implemented."]
+fn cond_ifelse_bad_placement() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_bad_placement()).verify();
+
+    assert_err!(verifier, Err(VerifierError::TypeError { .. })); // TODO: Implement
+
+    Ok(())
+}
+
+/// [NEGATIVE] No condition on the stack at all when ifelse runs.
+///
+/// Expected: `InvalidCell`.
+#[test]
+fn cond_ifelse_no_condition() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(conditional::ifelse_no_condition()).verify();
+
+    assert_err!(verifier, Err(VerifierError::InvalidCell { .. }));
+
+    Ok(())
+}
+
+/// [POSITIVE] A block with some instructions is fine.
+///
+/// Expected final stack state: [42]
+#[test]
+fn blocks_block_simple() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_simple()).verify()?.into();
+
+    let expected = ValueSpan::from_list([42]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [NEGATIVE] Empty blocks are prohibited.
+// TODO: Implement empty block prohibition
+// pub fn empty_block() -> Snippet
+
+/// [POSITIVE] A block can return a value, which is the last push in the block.
+///
+/// Expected final stack state: [10, 30]
+#[test]
+fn blocks_block_return_val() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_return_val()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 30]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] After block execution, stack state is restored and return value is on top.
+///
+/// Expected final stack state: [10, 20, 30, 10]
+#[test]
+fn blocks_block_pops_only() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_pops_only()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 20, 30, 10]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn blocks_block_nested() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_nested()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 30]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn blocks_block_stack_underflow() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_stack_underflow()).verify();
+
+    assert_err!(verifier, Err(VerifierError::StackUnderflow));
+
+    Ok(())
+}
+
+#[test]
+fn blocks_block_no_return_val() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(blocks::block_no_return_val()).verify();
+
+    assert_err!(verifier, Err(VerifierError::BlockHasEmptyStack));
+
+    Ok(())
+}
+
+/// [POSITIVE] A `Rebase` without previous pushes is still valid, just redundant.
+///
+/// Expected final stack state: [40]
+#[test]
+fn rebasing_rebase_redundant() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_redundant()).verify()?.into();
+
+    let expected = ValueSpan::from_list([40]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] A `Rebase` inside a nested block also works as expected.
+///
+/// Expected final stack state: [10, 80]
+#[test]
+fn rebasing_rebase_nested_1() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_nested_1()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 80]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] A `Rebase` is not necessarily used everywhere, neither is its position fixed
+///
+/// Expected final stack state: [10, 90]
+#[test]
+fn rebasing_rebase_nested_2() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_nested_2()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 90]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn rebasing_rebase_after_pop() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_after_pop()).verify();
+
+    assert_err!(verifier, Err(VerifierError::StackUnderflow));
+
+    Ok(())
+}
+
+#[test]
+fn functions_no_args() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::no_args()).verify();
+
+    assert_err!(
+        verifier,
+        Err(VerifierError::NotEnoughArguments {
+            required: 1,
+            available: 0
+        })
+    );
+
+    Ok(())
+}
+
+/// [POSITIVE] Multiple sequential function definitions count as aliases
+///
+/// Expected final stack state: [2, 2]
+#[test]
+fn functions_sequential_defs() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::sequential_defs()).verify()?.into();
+
+    // TODO: Eventually this should be [2, 2]; verifier should infer it for "constant functions".
+    let expected = vec![ValueSpan::inf(), ValueSpan::inf()];
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn functions_multi_args_missing() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::multi_args_missing()).verify();
+
+    assert_err!(
+        verifier,
+        Err(VerifierError::NotEnoughArguments {
+            required: 3,
+            available: 2
+        })
+    );
+
+    Ok(())
+}
+
+/// [POSITIVE] A function that takes 3 arguments and adds them together.
+///
+/// Expected final stack state: [inf, inf, inf, inf]
+#[test]
+fn functions_multi_args_alt() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::multi_args_alt()).verify()?.into();
+
+    let expected = vec![ValueSpan::inf(); 4];
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+#[test]
+fn functions_multi_args_alt_missing() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::multi_args_alt_missing()).verify();
+
+    assert_err!(
+        verifier,
+        Err(VerifierError::NotEnoughArguments {
+            required: 3,
+            available: 2
+        })
+    );
+
+    Ok(())
+}
+
+/* TODO: implement
+ * test_binop!(add, Add);
+ * test_binop!(add_neg, Add);
+ * test_binop!(mul, Mul);
+ * test_binop!(div, Div);
+ * test_binop!(and, And);
+ * test_binop!(or, Or);
+ * test_binop!(xor, Xor);
+ * test_binop!(slt, SetLessThan);
+ * test_binop!(sgt, SetGreaterThan);
+ * test_binop!(seq, SetEqual);
+ * test_binop!(sne, SetNotEqual);
+ * test_binop!(sle, SetLessThanOrEqual);
+ * test_binop!(sge, SetGreaterThanOrEqual);
+ * test_binop!(sll, ShiftLeftLogical);
+ * test_binop!(srl, ShiftRightLogical);
+ * test_binop!(sra, ShiftRightArithmetic);
+ */

@@ -1,4 +1,4 @@
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use std::{fmt::Debug, rc::Rc};
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 pub mod executor;
 pub mod verifier;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
@@ -75,7 +75,7 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
     }
 
-    pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<()> {
+    pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
         let mut aliases = Vec::new();
 
         while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
@@ -102,11 +102,11 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         let function_name = function_name.to_owned();
         self.function_insert_current(function_name.clone())?;
 
-        for alias in aliases {
-            self.function_insert(alias, FdEntry::Str(function_name.clone()))?;
+        for alias in &aliases {
+            self.function_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
         }
 
-        Ok(())
+        Ok(aliases)
     }
 }
 
@@ -308,11 +308,8 @@ impl<T: Copy> StackFrames<T> {
 
     /// End an ifelse branch.
     pub fn exit_ifelse_branch(&mut self) {
-        match self.frames.pop().expect("exit_ifelse_branch: no frame") {
-            Frame::IfElseBranch => {}
-            Frame::Block { .. } => {
+        if let Some(Frame::Block { .. }) = self.frames.last() {
                 panic!("exit_ifelse_branch called but topmost frame is Block")
-            }
         }
     }
 
@@ -326,19 +323,29 @@ impl<T: Copy> StackFrames<T> {
         }
 
         match self.frames.last_mut() {
-            Some(Frame::IfElseBranch) => Err(RebaseError), // Not rebase-able
+            Some(Frame::IfElseBranch) => {
+                debug!("Entering ifelse branch");
+                Err(RebaseError)
+            }, // Not rebase-able
             Some(Frame::Block { start, saved_below }) => {
+                // Check that we aren't rebasing twice
+                if *start < self.base {
+                    return Err(RebaseError);
+                }
+
                 // Temporarily save the cells below `base`
                 saved_below.extend(self.cells.drain(..self.base).rev());
                 *start = 0;
                 Ok(())
             }
             None => {
-                // No frame: legacy behavior was to drain (and drop) the cells.
-                self.cells.drain(..self.base);
-                Ok(())
+                Err(RebaseError)
             }
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.cells.len()
     }
 }
 

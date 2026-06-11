@@ -1,4 +1,9 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc};
+use std::{
+    cell::RefCell,
+    fmt::{Debug, Display},
+    ops::Deref,
+    rc::Rc,
+};
 
 use log::debug;
 
@@ -9,12 +14,12 @@ use crate::{
         UnaryOpImm,
     },
     machine::{CoreError, CoreMachine, Evaluate, PairedStack, StackFrames},
-    types::{self, Cell, CellIndex, Immediate, ProgramData},
+    types::{self, Cell, CellIndex, Immediate, IoBuffer, ProgramData},
 };
 use Cell::*;
 use ExecutorError::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutorError<Tag = ()>
 where
     Tag: FlowTag,
@@ -53,6 +58,24 @@ pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     policy: P,
     pc_tag: P::Tag,
     function_depth: usize,
+}
+
+impl Display for Executor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Executor {:?}]", self.stack.values().cells.last())
+    }
+}
+
+impl Debug for Executor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Executor")
+            .field("machine", &self.machine)
+            .field("stack", &self.stack)
+            .field("policy", &self.policy)
+            .field("pc_tag", &self.pc_tag)
+            .field("function_depth", &self.function_depth)
+            .finish()
+    }
 }
 
 // Preserve read-only access to the existing value-stack API (`cells`, `base`,
@@ -122,13 +145,15 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Redirects the source used by input instructions.
-    pub fn redirect_input(&mut self, new_input: types::Input) {
+    pub fn redirect_input(mut self, new_input: types::Input) -> Self {
         self.machine.input = new_input;
+        self
     }
 
     /// Redirects the destination used by print instructions.
-    pub fn redirect_output(&mut self, new_output: types::Output) {
+    pub fn redirect_output(mut self, new_output: types::Output) -> Self {
         self.machine.output = new_output;
+        self
     }
 
     /// Reads a value cell without exposing its tag.
@@ -182,10 +207,9 @@ impl<P: InformationFlowPolicy> Executor<P> {
         Ok(())
     }
 
-    /// Executes the remaining program and returns its final value cell.
-    pub fn exec(&mut self) -> ExecutorResult<Option<&Cell>, P> {
+    pub fn exec(mut self) -> ExecutorResult<Self, P> {
         self.run()?;
-        Ok(self.cells.last())
+        Ok(self)
     }
 
     /// Runs `instrs` as a nested context (block / function body / ifelse branch).
@@ -298,7 +322,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
             Input::File(_) => {
                 let mut data = self.machine.input.read_all();
                 let value = data.pop().ok_or(Core(CoreError::IoReadError))?;
-                self.machine.input = Input::Buffer(Rc::new(RefCell::new(data)));
+                self.machine.input = IoBuffer::new(data).into();
                 value
             }
             Input::Buffer(buffer) => buffer
@@ -319,7 +343,14 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         match instr {
             Nop => (),
-            Rebase => self.stack.rebase()?,
+            Rebase => {
+                let this = &mut self.stack;
+                this.values.rebase()?;
+                this.tags
+                    .rebase()
+                    .expect("paired tag stack rejected a value-stack rebase");
+                this.debug_assert_synchronized();
+            }
         }
 
         Ok(())
@@ -390,14 +421,12 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        let expect_integer = |cell: Cell| {
-            match cell {
-                Integer(value) => Ok(value),
-                found => Err(TypeError {
-                    expected: Integer(0),
-                    found,
-                }),
-            }
+        let expect_integer = |cell: Cell| match cell {
+            Integer(value) => Ok(value),
+            found => Err(TypeError {
+                expected: Integer(0),
+                found,
+            }),
         };
 
         let left = expect_integer(left)?;
@@ -448,7 +477,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => self.machine.common_function_logic(function_name)?,
+            FunctionDefine => _ = self.machine.common_function_logic(function_name)?,
             FunctionCall => self.call_function(function_name)?,
         }
 

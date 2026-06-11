@@ -1,12 +1,10 @@
-use std::{cell::RefCell, rc::Rc};
-
 use log::info;
 use virtual_machine::{
     add_instr,
     instruction::{Instruction::*, IntrinsicOp, UnaryOpImm},
     logging,
     machine::executor::Executor,
-    types::{self, Immediate},
+    types::IoBuffer,
 };
 
 fn main() {
@@ -20,10 +18,9 @@ fn main() {
 
     let program = vec![add_instr!(io Input, 0), add_instr!(io Print, 0)];
 
-    let new_input: Rc<RefCell<Vec<Immediate>>> = Rc::new(RefCell::new(vec![42]));
-
-    let mut executor = Executor::new(program);
-    executor.redirect_input(types::Input::Buffer(new_input.clone()));
-    executor.exec().unwrap();
+    Executor::new(program)
+        .redirect_input(IoBuffer::new(vec![42]).into())
+        .exec()
+        .unwrap();
     println!()
 }
