@@ -1,3 +1,7 @@
+//! Unit tests for the verifier without DIFTAM
+//!
+//! For DIFTAM tests, see `diftam_tests.rs`.
+
 use crate::{
     add_instr,
     instruction::{
@@ -9,12 +13,15 @@ use crate::{
         CoreError, Evaluate,
         verifier::{ValueSpan, Verifier, VerifierError},
     },
-    programs::testable::{
-        arithmetic,
-        blocks::{self, rebasing},
-        conditional, functions, intrinsics, stack,
+    programs::{
+        INNER, OUTER,
+        testable::{
+            arithmetic,
+            blocks::{self, rebasing},
+            conditional, functions, intrinsics, stack,
+        },
     },
-    types::IoBuffer,
+    types::{FunctionDataError, IoBuffer},
 };
 
 use VerifierError::*;
@@ -485,6 +492,19 @@ fn blocks_block_no_return_val() -> Result<(), VerifierError> {
     Ok(())
 }
 
+/// [POSITIVE] A `Rebase` inside of a block resters index counting.
+///
+/// Expected final stack state: [10, 40]
+#[test]
+fn rebasing_rebase_simple() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_simple()).verify()?.into();
+
+    let expected = ValueSpan::from_list([10, 40]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
 /// [POSITIVE] A `Rebase` without previous pushes is still valid, just redundant.
 ///
 /// Expected final stack state: [40]
@@ -524,11 +544,69 @@ fn rebasing_rebase_nested_2() -> Result<(), VerifierError> {
     Ok(())
 }
 
+/// [NEGATIVE] `Rebase` cannot be used without blocks
+#[test]
+fn rebasing_rebase_no_block() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_no_block()).verify();
+
+    assert_err!(verifier, Err(VerifierError::Core(CoreError::RebaseError)));
+
+    Ok(())
+}
+
+/// [NEGATIVE] `Rebase` cannot be used twice in the same block
+#[test]
+fn rebasing_rebase_twice() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_twice()).verify();
+
+    assert_err!(verifier, Err(VerifierError::Core(CoreError::RebaseError)));
+
+    Ok(())
+}
+
 #[test]
 fn rebasing_rebase_after_pop() -> Result<(), VerifierError> {
     let verifier = Verifier::new(rebasing::rebase_after_pop()).verify();
 
     assert_err!(verifier, Err(VerifierError::StackUnderflow));
+
+    Ok(())
+}
+
+/// [NEGATIVE] `Rebase` cannot be used in an `IfElse` branch without an inner block.
+///
+/// Expected: `RebaseError`
+#[test]
+fn rebasing_rebase_in_ifelse_branch() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_in_ifelse_branch()).verify();
+
+    assert_err!(verifier, Err(VerifierError::Core(CoreError::RebaseError)));
+
+    Ok(())
+}
+
+/// [POSITIVE] `Rebase` can be used in an `IfElse` branch, as long as it's inside a block.
+///
+/// Expected final stack state: [10, 5, 1, 20]
+#[test]
+fn rebasing_rebase_in_ifelse_block() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(rebasing::rebase_in_ifelse_block())
+        .verify()?
+        .into();
+
+    let expected = ValueSpan::from_list([10, 5, 1, 20]);
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [POSITIVE] A simple function that takes one argument, doubles it, and returns the result.
+#[test]
+fn functions_simple() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::simple()).verify()?.into();
+
+    let expected = vec![3.into(), ValueSpan::inf()];
+    assert_stack(verifier, expected);
 
     Ok(())
 }
@@ -557,6 +635,63 @@ fn functions_sequential_defs() -> Result<(), VerifierError> {
 
     // TODO: Eventually this should be [2, 2]; verifier should infer it for "constant functions".
     let expected = vec![ValueSpan::inf(), ValueSpan::inf()];
+    assert_stack(verifier, expected);
+
+    Ok(())
+}
+
+/// [NEGATIVE] Calling the function that's being defined is obvious infinite recursion.
+#[ignore = "Solve obvious recursion"]
+#[test]
+fn functions_sequential_defs_loop() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::sequential_defs_loop()).verify();
+
+    assert_err!(
+        verifier,
+        Err(VerifierError::Core(CoreError::FunctionDataError(
+            FunctionDataError::FunctionRedefinition(_)
+        )))
+    );
+
+    Ok(())
+}
+
+/// [NEGATIVE] Nested function definitions are prohibited
+#[test]
+fn functions_nested_defs() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::nested_defs()).verify();
+
+    match verifier {
+        Err(VerifierError::NestedFunctionDefinition {
+            outer_function: outer,
+            inner_function: inner,
+        }) if outer == OUTER && inner == INNER => (),
+        x => panic!(
+            "\nEXPECTED\n{:#?},\nACTUAL\n{:#?}",
+            Err::<Verifier, VerifierError>(VerifierError::NestedFunctionDefinition {
+                outer_function: OUTER.to_string(),
+                inner_function: INNER.to_string(),
+            }),
+            x
+        ),
+    };
+
+    Ok(())
+}
+
+/// [POSITIVE] A function that takes 3 arguments and adds them together.
+///
+/// This is the standard way of providing arguments to a function and will easily work for any
+/// length of arguments, as well as as many repetitions of function calls in the main program
+/// body as desired.
+///
+/// Expected final stack state: [10, 20, 30, 60]
+#[test]
+fn functions_multi_args() -> Result<(), VerifierError> {
+    let verifier = Verifier::new(functions::multi_args()).verify()?.into();
+
+    let mut expected = ValueSpan::from_list([10, 20, 30]);
+    expected.push(ValueSpan::inf());
     assert_stack(verifier, expected);
 
     Ok(())
@@ -605,21 +740,20 @@ fn functions_multi_args_alt_missing() -> Result<(), VerifierError> {
     Ok(())
 }
 
-/* TODO: implement
- * test_binop!(add, Add);
- * test_binop!(add_neg, Add);
- * test_binop!(mul, Mul);
- * test_binop!(div, Div);
- * test_binop!(and, And);
- * test_binop!(or, Or);
- * test_binop!(xor, Xor);
- * test_binop!(slt, SetLessThan);
- * test_binop!(sgt, SetGreaterThan);
- * test_binop!(seq, SetEqual);
- * test_binop!(sne, SetNotEqual);
- * test_binop!(sle, SetLessThanOrEqual);
- * test_binop!(sge, SetGreaterThanOrEqual);
- * test_binop!(sll, ShiftLeftLogical);
- * test_binop!(srl, ShiftRightLogical);
- * test_binop!(sra, ShiftRightArithmetic);
- */
+// TODO: implement
+// test_binop!(add, Add);
+// test_binop!(add_neg, Add);
+// test_binop!(mul, Mul);
+// test_binop!(div, Div);
+// test_binop!(and, And);
+// test_binop!(or, Or);
+// test_binop!(xor, Xor);
+// test_binop!(slt, SetLessThan);
+// test_binop!(sgt, SetGreaterThan);
+// test_binop!(seq, SetEqual);
+// test_binop!(sne, SetNotEqual);
+// test_binop!(sle, SetLessThanOrEqual);
+// test_binop!(sge, SetGreaterThanOrEqual);
+// test_binop!(sll, ShiftLeftLogical);
+// test_binop!(srl, ShiftRightLogical);
+// test_binop!(sra, ShiftRightArithmetic);

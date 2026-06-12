@@ -325,7 +325,7 @@ fn cond_ifelse_unknown_balanced() -> Result<(), ExecutorError> {
 }
 
 /// [POSITIVE] Statically-known condition: only the taken branch runs, and the
-/// verifier does not need to compare branch sizes (asymmetric branches are
+/// executor does not need to compare branch sizes (asymmetric branches are
 /// fine here because the untaken branch is dead code).
 ///
 /// Expected final stack state: [10, 3, 1, 42]
@@ -598,9 +598,9 @@ fn rebasing_rebase_nested_2() -> Result<(), ExecutorError> {
 /// [NEGATIVE] `Rebase` cannot be used without blocks
 #[test]
 fn rebasing_rebase_no_block() -> Result<(), ExecutorError> {
-    let verifier = Executor::new(rebasing::rebase_no_block()).exec();
+    let executor = Executor::new(rebasing::rebase_no_block()).exec();
 
-    assert_err!(verifier, Err(ExecutorError::Core(CoreError::RebaseError)));
+    assert_err!(executor, Err(ExecutorError::Core(CoreError::RebaseError)));
 
     Ok(())
 }
@@ -608,9 +608,9 @@ fn rebasing_rebase_no_block() -> Result<(), ExecutorError> {
 /// [NEGATIVE] `Rebase` cannot be used twice in the same block
 #[test]
 fn rebasing_rebase_twice() -> Result<(), ExecutorError> {
-    let verifier = Executor::new(rebasing::rebase_twice()).exec();
+    let executor = Executor::new(rebasing::rebase_twice()).exec();
 
-    assert_err!(verifier, Err(ExecutorError::Core(CoreError::RebaseError)));
+    assert_err!(executor, Err(ExecutorError::Core(CoreError::RebaseError)));
 
     Ok(())
 }
@@ -618,9 +618,9 @@ fn rebasing_rebase_twice() -> Result<(), ExecutorError> {
 /// [NEGATIVE] `Pop` after `Rebase` is a stack underflow.
 #[test]
 fn rebasing_rebase_after_pop() -> Result<(), ExecutorError> {
-    let verifier = Executor::new(rebasing::rebase_after_pop()).exec();
+    let executor = Executor::new(rebasing::rebase_after_pop()).exec();
 
-    assert_err!(verifier, Err(ExecutorError::StackUnderflow));
+    assert_err!(executor, Err(ExecutorError::StackUnderflow));
 
     Ok(())
 }
@@ -630,9 +630,9 @@ fn rebasing_rebase_after_pop() -> Result<(), ExecutorError> {
 /// Expected: `RebaseError`
 #[test]
 fn rebasing_rebase_in_ifelse_branch() -> Result<(), ExecutorError> {
-    let verifier = Executor::new(rebasing::rebase_in_ifelse_branch()).exec();
+    let executor = Executor::new(rebasing::rebase_in_ifelse_branch()).exec();
 
-    assert_err!(verifier, Err(ExecutorError::Core(CoreError::RebaseError)));
+    assert_err!(executor, Err(ExecutorError::Core(CoreError::RebaseError)));
 
     Ok(())
 }

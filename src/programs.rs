@@ -66,8 +66,8 @@ macro_rules! prog {
 
 pub type Snippet = std::rc::Rc<[Instruction]>;
 const FUNC_NAME: &str = "generic_function_name";
-const INNER: &str = "inner";
-const OUTER: &str = "outer";
+pub(crate) const INNER: &str = "inner";
+pub(crate) const OUTER: &str = "outer";
 
 const fn factorial_helper(n: i64) -> i64 {
     if n <= 1 {
