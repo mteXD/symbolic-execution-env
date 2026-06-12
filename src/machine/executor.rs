@@ -550,3 +550,6 @@ impl From<Vec<Cell>> for Executor {
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(test)]
+mod tests_diftam;

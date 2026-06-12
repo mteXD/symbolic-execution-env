@@ -237,21 +237,20 @@ impl MemorizedIndex {
 struct FunctionDefiningInfo {
     function_name: String,
     arg_indices: Vec<MemorizedIndex>,
+    return_value: Option<ValueSpan>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Findings {
-    values_after_rebase: Option<usize>,
+    rebase_seen: bool,
     func_defining: Option<FunctionDefiningInfo>,
     func_data: HashMap<String, FunctionDefiningInfo>,
-    processed_instructions: usize,
-    is_conditional: bool,
 }
 
 impl Findings {
     #[inline]
     fn is_collecting_func_args(&self) -> bool {
-        self.func_defining.is_some() && self.values_after_rebase.is_none()
+        self.func_defining.is_some() && !self.rebase_seen
     }
 
     /// Records an out-of-scope read performed while collecting a function's
@@ -314,7 +313,6 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
     fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;
-            self.findings.processed_instructions += 1;
         }
         Ok(())
     }
@@ -406,15 +404,21 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         // Scope only the argument-collection state. `func_data` (the discovered
         // argument counts) must persist so callers and recursive calls see it.
         let saved_defining = self.findings.func_defining.take();
-        let saved_after_rebase = self.findings.values_after_rebase.take();
+        let saved_rebase_seen = std::mem::replace(&mut self.findings.rebase_seen, false);
 
         self.findings.func_defining = Some(FunctionDefiningInfo {
             function_name: fun.to_owned(),
             arg_indices: Vec::new(),
+            return_value: None,
         });
-        self.findings.values_after_rebase = None;
 
         let run_result = self.run_nested(to_check);
+
+        if let Ok((Some(return_value), _)) = &run_result {
+            if let Some(ref mut info) = self.findings.func_defining {
+                info.return_value = Some(*return_value);
+            }
+        }
 
         self.findings
             .func_data
@@ -426,7 +430,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         }
 
         self.findings.func_defining = saved_defining;
-        self.findings.values_after_rebase = saved_after_rebase;
+        self.findings.rebase_seen = saved_rebase_seen;
 
         // Extra debug code
 
@@ -574,7 +578,7 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                         .func_data
                         .insert(info.function_name.clone(), info);
                 }
-                self.findings.values_after_rebase = Some(self.cells.len());
+                self.findings.rebase_seen = true;
             }
         }
 
@@ -812,9 +816,13 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     });
                 }
 
-                // TODO: Check if function returns a constant value and push it instead of inf when
-                // possible.
-                self.push(ValueSpan::inf());
+                let return_value = self
+                    .findings
+                    .func_data
+                    .get(function_name)
+                    .and_then(|info| info.return_value)
+                    .unwrap_or_else(ValueSpan::inf);
+                self.push(return_value);
             }
         }
 
@@ -894,8 +902,6 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         }
 
         debug!("Finished verifying ifelse; cells = {:?}", self.cells);
-
-        self.findings.is_conditional = true;
 
         Ok(())
     }

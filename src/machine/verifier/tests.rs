@@ -633,8 +633,7 @@ fn functions_no_args() -> Result<(), VerifierError> {
 fn functions_sequential_defs() -> Result<(), VerifierError> {
     let verifier = Verifier::new(functions::sequential_defs()).verify()?.into();
 
-    // TODO: Eventually this should be [2, 2]; verifier should infer it for "constant functions".
-    let expected = vec![ValueSpan::inf(), ValueSpan::inf()];
+    let expected = ValueSpan::from_list([2, 2]);
     assert_stack(verifier, expected);
 
     Ok(())
