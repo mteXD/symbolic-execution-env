@@ -1,25 +1,22 @@
-/*
- * A virtual machine that's a hybrid between a register-based and stack-based
- * architecture.
- *
- * Registers (referred to as "Cells") are temporarily represented as i64 value.
- * These "registers" are referred to as "cells" in the code.
- *
- * It has a push instruction - it places a value to the next available cell.
- * This is similar to Single Static Assignment (SSA) form in compilers.
- *
- * Pop doesn't have to exist for reading purposes, as we can read directly from
- * available cell.
- *
- * However, pop can be used to free up cells when needed.
- */
+//! An abstract execution machine that's a hybrid between a register-based and stack-based
+//! architecture.
+//!
+//! The stack-based architecture with immutability of pushed values allows for easier reasoning
+//! about information flow and data dependencies and for easier security analysis / verification.
+//! Each push creates a new value that cannot be modified, ensuring that data flows
+//! are explicit and traceable.
+//!
+//! Values can still be cleaned up by using the Pop instruction
+//!
+//! To see what this machine can do, check out the [`programs`] module.
+//!
+//! The actual machine is in the [`machine`] module and its submodules.
+//!
+//! The instruction set can be found in the [`instruction`] module.
 
-// mod verificator;
 pub mod information_flow;
 pub mod instruction;
 pub mod logging;
 pub mod machine;
-pub mod types;
-
-#[macro_use]
 pub mod programs;
+pub mod types;

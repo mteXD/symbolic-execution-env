@@ -420,9 +420,10 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
             }
         }
 
-        self.findings
-            .func_data
-            .insert(fun.to_string(), self.findings.func_defining.clone().unwrap());
+        self.findings.func_data.insert(
+            fun.to_string(),
+            self.findings.func_defining.clone().unwrap(),
+        );
         for alias in aliases {
             self.findings
                 .func_data

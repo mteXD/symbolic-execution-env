@@ -4,9 +4,11 @@ use crate::{
     add_instr,
     information_flow::{FlowError, SecurityPolicy, Topology},
     instruction::{
-        BinaryOp, FunctionOp, IntrinsicOp,
-        Instruction::{AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm},
-        NullaryOp, UnaryOpCell, UnaryOpImm,
+        BinaryOp, FunctionOp,
+        Instruction::{
+            AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm,
+        },
+        IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
     },
     make_block,
     types::{Cell, IoBuffer},
@@ -149,10 +151,7 @@ fn ifelse_condition_taints_branch_pushes() {
         .exec()
         .unwrap();
 
-    assert_eq!(
-        executor.cells,
-        vec![Integer(1), Integer(7), Integer(11)]
-    );
+    assert_eq!(executor.cells, vec![Integer(1), Integer(7), Integer(11)]);
     // Value pushed inside Secret branch is tainted by the Secret condition
     assert_eq!(executor.read_tag(1).unwrap(), Secret);
     // Value pushed after the branch restores pc_tag to Public

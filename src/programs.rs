@@ -83,7 +83,7 @@ const fn fibonacci_helper(n: i64) -> i64 {
     fibonacci_helper(n - 1) + fibonacci_helper(n - 2)
 }
 
-pub mod testable;
-pub mod testable_diftam;
 pub mod showcase;
 pub mod showcase_diftam;
+pub mod testable;
+pub mod testable_diftam;

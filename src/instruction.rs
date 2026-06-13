@@ -1,3 +1,5 @@
+//! This module defines the instruction set for the virtual machine.
+
 use std::rc::Rc;
 
 use crate::types::{CellIndex, Immediate};

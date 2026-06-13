@@ -309,7 +309,7 @@ impl<T: Copy> StackFrames<T> {
     /// End an ifelse branch.
     pub fn exit_ifelse_branch(&mut self) {
         if let Some(Frame::Block { .. }) = self.frames.last() {
-                panic!("exit_ifelse_branch called but topmost frame is Block")
+            panic!("exit_ifelse_branch called but topmost frame is Block")
         }
     }
 
@@ -326,7 +326,7 @@ impl<T: Copy> StackFrames<T> {
             Some(Frame::IfElseBranch) => {
                 debug!("Entering ifelse branch");
                 Err(RebaseError)
-            }, // Not rebase-able
+            } // Not rebase-able
             Some(Frame::Block { start, saved_below }) => {
                 // Check that we aren't rebasing twice
                 if *start < self.base {
@@ -338,9 +338,7 @@ impl<T: Copy> StackFrames<T> {
                 *start = 0;
                 Ok(())
             }
-            None => {
-                Err(RebaseError)
-            }
+            None => Err(RebaseError),
         }
     }
 
