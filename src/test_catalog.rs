@@ -1,0 +1,321 @@
+//! Unified declarative test catalog.
+//!
+//! Each VM program is written inline and paired with *both* its verifier and
+//! executor expectations in one place via the [`test_program!`] macro, so
+//! adding a program forces a statement of what both runners should do.
+//!
+//! The catalog is split into four groups:
+//! - [`unit`] — unit tests for core VM behavior.
+//! - [`unit_diftam`] — unit tests exercising tagged (DIFTAM) information flow.
+//! - [`showcases`] — larger, more realistic programs.
+//! - [`showcases_diftam`] — placeholder; no DIFTAM showcase programs exist yet.
+
+// Shared prelude, re-exported so the group submodules can `use super::*`.
+pub(crate) use crate::{
+    add_instr,
+    information_flow::{FlowError, SecurityPolicy, Topology},
+    instruction::{
+        BinaryOp, FunctionOp,
+        Instruction::{
+            self, AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm,
+        },
+        IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+    },
+    machine::{
+        CoreError,
+        executor::{Executor, ExecutorError},
+        verifier::{ValueSpan, Verifier, VerifierError},
+    },
+    make_block,
+    types::{Cell, FunctionDataError, IoBuffer},
+};
+
+// ---------------------------------------------------------------------------
+// Shared program-construction constants
+// ---------------------------------------------------------------------------
+
+/// Generic function name used by single-function programs.
+pub(crate) const FUNC_NAME: &str = "generic_function_name";
+/// Inner function name used by the nested-definition program.
+pub(crate) const INNER: &str = "inner";
+/// Outer function name used by the nested-definition program.
+pub(crate) const OUTER: &str = "outer";
+
+// ---------------------------------------------------------------------------
+// Shared DIFTAM policy helpers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Confidentiality {
+    Public,
+    Confidential,
+    Secret,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Integrity {
+    Low,
+    Medium,
+    High,
+}
+
+pub(crate) fn confidentiality_policy() -> SecurityPolicy<Confidentiality> {
+    use Confidentiality::*;
+
+    let graph = Topology::linear([Public, Confidential, Secret])
+        .into_graph()
+        .unwrap();
+    SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
+}
+
+pub(crate) fn integrity_policy() -> SecurityPolicy<Integrity> {
+    use Integrity::*;
+
+    let graph = Topology::linear([Low, Medium, High]).into_graph().unwrap();
+    SecurityPolicy::new(graph, Low, Low, High).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Helper assertion functions
+// ---------------------------------------------------------------------------
+
+/// Asserts the verifier's final value stack equals `expected`.
+pub(crate) fn check_verifier_stack(verifier: Verifier, expected: Vec<ValueSpan>) {
+    assert_eq!(verifier.stack.cells, expected);
+}
+
+/// Asserts the executor's final value stack equals `expected`.
+pub(crate) fn check_executor_stack(executor: Executor, expected: Vec<Cell>) {
+    assert_eq!(executor.cells, expected);
+}
+
+// ---------------------------------------------------------------------------
+// Expectation sub-grammar helper macros
+// ---------------------------------------------------------------------------
+
+/// Interprets a single verifier expectation against a program expression.
+///
+/// The `custom |program| { … }` form binds the program to a caller-provided
+/// identifier so the block can reference it (sharing the caller's hygiene).
+macro_rules! verify_expect {
+    (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {{
+        let verifier = $crate::machine::verifier::Verifier::new($prog)
+            .verify()
+            .expect("verifier should accept program");
+        let expected: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
+            ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($e) ),* ];
+        $crate::test_catalog::check_verifier_stack(verifier, expected);
+    }};
+    (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
+        let result = $crate::machine::verifier::Verifier::new($prog).verify();
+        match result {
+            Err($pat) $(if $guard)? => {}
+            other => panic!(
+                "\nEXPECTED verifier Err({})\nACTUAL\n{:#?}",
+                stringify!($pat),
+                other
+            ),
+        }
+    }};
+    (($prog:expr) custom |$program:ident| $body:block) => {{
+        let $program = $prog;
+        $body
+    }};
+}
+
+/// Interprets a single executor expectation against a program expression.
+///
+/// The `custom |program| { … }` form binds the program to a caller-provided
+/// identifier so the block can reference it (sharing the caller's hygiene).
+macro_rules! exec_expect {
+    (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {{
+        let executor = $crate::machine::executor::Executor::new($prog)
+            .exec()
+            .expect("executor should run program");
+        let expected: ::std::vec::Vec<$crate::types::Cell> =
+            ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+        $crate::test_catalog::check_executor_stack(executor, expected);
+    }};
+    (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
+        let result = $crate::machine::executor::Executor::new($prog).exec();
+        match result {
+            Err($pat) $(if $guard)? => {}
+            other => panic!(
+                "\nEXPECTED executor Err({})\nACTUAL\n{:#?}",
+                stringify!($pat),
+                other
+            ),
+        }
+    }};
+    (($prog:expr) custom |$program:ident| $body:block) => {{
+        let $program = $prog;
+        $body
+    }};
+    (($prog:expr) input [ $($in:expr),* $(,)? ] => stack [ $($e:expr),* $(,)? ]) => {{
+        let executor = $crate::machine::executor::Executor::new($prog)
+            .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+            .exec()
+            .expect("executor should run program");
+        let expected: ::std::vec::Vec<$crate::types::Cell> =
+            ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+        $crate::test_catalog::check_executor_stack(executor, expected);
+    }};
+    (($prog:expr) input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]) => {{
+        let out_buf = $crate::types::IoBuffer::new(::std::vec![]);
+        let _ = $crate::machine::executor::Executor::new($prog)
+            .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+            .redirect_output(out_buf.clone().into())
+            .exec()
+            .expect("executor should run program");
+        let expected: ::std::vec::Vec<$crate::types::Immediate> = ::std::vec![ $($o),* ];
+        assert_eq!(*out_buf.borrow(), expected);
+    }};
+    (($prog:expr) cases { $($cases:tt)* }) => {
+        $crate::test_catalog::exec_expect!(@cases ($prog) $($cases)*);
+    };
+    // Internal `cases` muncher: each case is `input [..] => stack [..]` or
+    // `input [..] => output [..]`, separated/terminated by `;`. The program
+    // expression is re-evaluated for each case.
+    (@cases ($prog:expr)) => {};
+    (@cases ($prog:expr)
+        input [ $($in:expr),* $(,)? ] => stack [ $($e:expr),* $(,)? ]
+        $(; $($rest:tt)*)?
+    ) => {
+        {
+            let executor = $crate::machine::executor::Executor::new($prog)
+                .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+                .exec()
+                .expect("executor should run program");
+            let expected: ::std::vec::Vec<$crate::types::Cell> =
+                ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+            $crate::test_catalog::check_executor_stack(executor, expected);
+        }
+        $( $crate::test_catalog::exec_expect!(@cases ($prog) $($rest)*); )?
+    };
+    (@cases ($prog:expr)
+        input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]
+        $(; $($rest:tt)*)?
+    ) => {
+        {
+            let out_buf = $crate::types::IoBuffer::new(::std::vec![]);
+            let _ = $crate::machine::executor::Executor::new($prog)
+                .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+                .redirect_output(out_buf.clone().into())
+                .exec()
+                .expect("executor should run program");
+            let expected: ::std::vec::Vec<$crate::types::Immediate> = ::std::vec![ $($o),* ];
+            assert_eq!(*out_buf.borrow(), expected);
+        }
+        $( $crate::test_catalog::exec_expect!(@cases ($prog) $($rest)*); )?
+    };
+}
+
+// ---------------------------------------------------------------------------
+// The `test_program!` macro
+// ---------------------------------------------------------------------------
+
+/// Declares a program together with both its verifier and executor
+/// expectations. See the module docs for the supported forms.
+macro_rules! test_program {
+    // ---- Combined: one #[test] running both assertions ----
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        program: $prog:expr,
+        verifier: { $($v:tt)* },
+        executor: { $($e:tt)* } $(,)?
+    ) => {
+        $(#[$meta])*
+        #[test]
+        fn $name() {
+            $crate::test_catalog::verify_expect!(($prog) $($v)*);
+            $crate::test_catalog::exec_expect!(($prog) $($e)*);
+        }
+    };
+
+    // ---- Split: two tests, each with its own attributes ----
+    //
+    // Each side's body may begin with its own attributes (e.g. `#[ignore]`).
+    // The `@gen_v` / `@gen_e` munchers peel those leading attributes off the
+    // expectation tokens and forward them onto the generated test function.
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        program: $prog:expr,
+        split,
+        verifier: { $($v:tt)* },
+        executor: { $($e:tt)* } $(,)?
+    ) => {
+        $crate::test_catalog::test_program!(@gen_v [$(#[$meta])*] $name ($prog) [] $($v)*);
+        $crate::test_catalog::test_program!(@gen_e [$(#[$meta])*] $name ($prog) [] $($e)*);
+    };
+
+    (@gen_v [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
+        $crate::test_catalog::test_program!(
+            @gen_v [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
+        );
+    };
+    (@gen_v [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] $($body:tt)*) => {
+        ::paste::paste! {
+            $($outer)*
+            $($attrs)*
+            #[test]
+            fn [<$name _verifier>]() {
+                $crate::test_catalog::verify_expect!(($prog) $($body)*);
+            }
+        }
+    };
+
+    (@gen_e [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
+        $crate::test_catalog::test_program!(
+            @gen_e [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
+        );
+    };
+    (@gen_e [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] $($body:tt)*) => {
+        ::paste::paste! {
+            $($outer)*
+            $($attrs)*
+            #[test]
+            fn [<$name _executor>]() {
+                $crate::test_catalog::exec_expect!(($prog) $($body)*);
+            }
+        }
+    };
+
+    // ---- Verifier-only ----
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        program: $prog:expr,
+        verifier_only: { $($v:tt)* } $(,)?
+    ) => {
+        $(#[$meta])*
+        #[test]
+        fn $name() {
+            $crate::test_catalog::verify_expect!(($prog) $($v)*);
+        }
+    };
+
+    // ---- Executor-only ----
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        program: $prog:expr,
+        executor_only: { $($e:tt)* } $(,)?
+    ) => {
+        $(#[$meta])*
+        #[test]
+        fn $name() {
+            $crate::test_catalog::exec_expect!(($prog) $($e)*);
+        }
+    };
+}
+
+pub(crate) use exec_expect;
+pub(crate) use test_program;
+pub(crate) use verify_expect;
+
+mod showcases;
+mod showcases_diftam;
+mod unit;
+mod unit_diftam;

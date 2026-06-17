@@ -84,3 +84,61 @@ pub enum Instruction<Tag = ()> {
     AluFunction(FunctionOp, String),
     AluIntrinsic(IntrinsicOp, IntrinsicArg),
 }
+
+/// Convenience constructor for a single [`Instruction`].
+///
+/// The unqualified arms expect the relevant [`Instruction`] variants and op
+/// enums (e.g. `Push`, `NullaryOp`, ...) to be in scope at the call site.
+#[macro_export]
+macro_rules! add_instr {
+    ($op:ident) => {
+        AluNullary(NullaryOp::$op)
+    };
+    ($op:ident, $a:expr) => {
+        // for immediate
+        AluUnaryImm(UnaryOpImm::$op, $a)
+    };
+    (tag Push, $value:expr, $tag:expr) => {
+        $crate::instruction::Instruction::AluUnaryImm(
+            $crate::instruction::UnaryOpImm::TaggedPush($tag),
+            $value,
+        )
+    };
+    (R $op:ident, $a:expr) => {
+        // for register
+        AluUnaryCell(UnaryOpCell::$op, $a)
+    };
+    ($op:ident, $a:expr, $b:expr) => {
+        AluBinary(BinaryOp::$op, $a, $b)
+    };
+    (fun $op:ident, $name:expr) => {
+        AluFunction(FunctionOp::$op, String::from($name))
+    };
+    (io $op:ident, $a:expr) => {
+        AluIntrinsic(
+            IntrinsicOp::$op,
+            $crate::instruction::IntrinsicArg::Cell($a),
+        )
+    };
+    (io_str $op:ident, $a:expr) => {
+        AluIntrinsic(
+            IntrinsicOp::$op,
+            $crate::instruction::IntrinsicArg::Str(String::from($a)),
+        )
+    };
+    (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
+        $crate::instruction::Instruction::IfElse(
+            $cond,
+            std::rc::Rc::new($when_true),
+            std::rc::Rc::new($when_false),
+        )
+    };
+}
+
+/// Builds an [`Instruction::Block`] from one or more instruction expressions.
+#[macro_export]
+macro_rules! make_block {
+    ($($instr:expr),*  $(,)?) => { // Variadic arguments, at least one
+        $crate::instruction::Instruction::Block(std::rc::Rc::from(vec![ $( $instr ),* ]))
+    };
+}

@@ -1,4 +1,4 @@
-use log::{debug, error, trace, warn};
+use log::{debug, error, warn};
 use std::{fmt::Debug, rc::Rc};
 
 use crate::{

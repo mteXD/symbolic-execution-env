@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     fmt::{Debug, Display},
     ops::Deref,
     rc::Rc,
@@ -547,9 +546,3 @@ impl From<Vec<Cell>> for Executor {
         machine
     }
 }
-
-#[cfg(test)]
-pub mod tests;
-
-#[cfg(test)]
-mod tests_diftam;

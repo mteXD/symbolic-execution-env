@@ -99,7 +99,7 @@ impl From<Immediate> for ValueSpan {
 }
 
 impl ValueSpan {
-    fn new(min: Immediate, max: Immediate) -> Self {
+    pub(crate) fn new(min: Immediate, max: Immediate) -> Self {
         if min > max {
             panic!(
                 "ValueSpan cannot have min greater than max. Got min: {}, max: {}",
@@ -109,15 +109,11 @@ impl ValueSpan {
         Self { min, max }
     }
 
-    fn inf() -> Self {
+    pub(crate) fn inf() -> Self {
         Self {
             min: Immediate::MIN,
             max: Immediate::MAX,
         }
-    }
-
-    fn from_list(list: impl IntoIterator<Item = Immediate>) -> Vec<Self> {
-        list.into_iter().map(ValueSpan::from).collect()
     }
 
     #[inline]
@@ -418,18 +414,21 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
     /// Reads the tag corresponding to a value cell.
     pub fn read_tag(&self, idx: CellIndex) -> Result<P::Tag, VerifierError<P::Tag>> {
-        self.tags.get(idx.into()).copied().ok_or_else(|| InvalidCell {
-            instr: self
-                .machine
-                .program_data
-                .get_current()
-                .cloned()
-                .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
-            cell_index: idx,
-            cells: self.stack.cells.clone(),
-            prog: self.machine.program_data.get_program(),
-            location: "Verifier::read_tag",
-        })
+        self.tags
+            .get(idx.into())
+            .copied()
+            .ok_or_else(|| InvalidCell {
+                instr: self
+                    .machine
+                    .program_data
+                    .get_current()
+                    .cloned()
+                    .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
+                cell_index: idx,
+                cells: self.stack.cells.clone(),
+                prog: self.machine.program_data.get_program(),
+                location: "Verifier::read_tag",
+            })
     }
 
     /// Returns the parallel tag stack.
@@ -837,9 +836,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 }
                 for _ in 0..arg {
                     self.stack.pop().ok_or(StackUnderflow)?;
-                    self.tags
-                        .pop()
-                        .expect("tag stack shorter than value stack");
+                    self.tags.pop().expect("tag stack shorter than value stack");
                 }
             }
         }
@@ -1116,9 +1113,3 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-pub mod tests;
-
-#[cfg(test)]
-mod tests_diftam;

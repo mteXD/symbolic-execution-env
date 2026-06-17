@@ -231,11 +231,11 @@ impl IoBuffer {
         self.buffer.clone()
     }
 
-    pub fn borrow_mut(&self) -> std::cell::RefMut<Vec<Immediate>> {
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Immediate>> {
         self.buffer.borrow_mut()
     }
 
-    pub fn borrow(&self) -> std::cell::Ref<Vec<Immediate>> {
+    pub fn borrow(&self) -> std::cell::Ref<'_, Vec<Immediate>> {
         self.buffer.borrow()
     }
 }

@@ -8,15 +8,17 @@
 //!
 //! Values can still be cleaned up by using the Pop instruction
 //!
-//! To see what this machine can do, check out the [`programs`] module.
-//!
 //! The actual machine is in the [`machine`] module and its submodules.
 //!
-//! The instruction set can be found in the [`instruction`] module.
+//! The instruction set can be found in the [`instruction`] module, along with
+//! the [`add_instr!`](crate::add_instr) and [`make_block!`](crate::make_block)
+//! helpers for building programs.
 
 pub mod information_flow;
 pub mod instruction;
 pub mod logging;
 pub mod machine;
-pub mod programs;
 pub mod types;
+
+#[cfg(test)]
+mod test_catalog;
