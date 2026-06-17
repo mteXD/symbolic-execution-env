@@ -26,11 +26,6 @@ use crate::{
 
 use VerifierError::*;
 
-#[derive(Debug, Clone, Copy)]
-enum TestTag {
-    Public,
-}
-
 macro_rules! assert_last {
     ($prog:expr) => {
         let mut verifier = Verifier::new($prog.clone());

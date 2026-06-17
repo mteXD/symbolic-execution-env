@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    information_flow::{FlowError, FlowTag, InformationFlowPolicy, NoFlow},
     instruction::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
@@ -22,7 +23,7 @@ use VerifierError::*;
 use log::{debug, error, trace, warn};
 
 #[derive(Debug, Clone)]
-pub enum VerifierError<Tag: Clone + Debug = ()> {
+pub enum VerifierError<Tag: FlowTag = ()> {
     Core(CoreError),
     InvalidCell {
         instr: Instruction<Tag>,
@@ -58,23 +59,30 @@ pub enum VerifierError<Tag: Clone + Debug = ()> {
         inner_function: String,
     },
     InstructionError,
+    Flow(FlowError<Tag>),
 }
 
-impl<Tag: Clone + Debug> From<CoreError> for VerifierError<Tag> {
+impl<Tag: FlowTag> From<CoreError> for VerifierError<Tag> {
     fn from(e: CoreError) -> Self {
         VerifierError::Core(e)
     }
 }
 
-impl<Tag: Clone + Debug> From<ProgramDataError> for VerifierError<Tag> {
+impl<Tag: FlowTag> From<ProgramDataError> for VerifierError<Tag> {
     fn from(e: ProgramDataError) -> Self {
         VerifierError::Core(e.into())
     }
 }
 
-impl<Tag: Clone + Debug> From<FunctionDataError> for VerifierError<Tag> {
+impl<Tag: FlowTag> From<FunctionDataError> for VerifierError<Tag> {
     fn from(e: FunctionDataError) -> Self {
         VerifierError::Core(e.into())
+    }
+}
+
+impl<Tag: FlowTag> From<FlowError<Tag>> for VerifierError<Tag> {
+    fn from(e: FlowError<Tag>) -> Self {
+        VerifierError::Flow(e)
     }
 }
 
@@ -233,21 +241,43 @@ impl MemorizedIndex {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct FunctionDefiningInfo {
+#[derive(Debug, Clone)]
+struct FunctionDefiningInfo<Tag: FlowTag = ()> {
     function_name: String,
     arg_indices: Vec<MemorizedIndex>,
     return_value: Option<ValueSpan>,
+    return_tag: Option<Tag>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Findings {
+impl<Tag: FlowTag> Default for FunctionDefiningInfo<Tag> {
+    fn default() -> Self {
+        Self {
+            function_name: String::new(),
+            arg_indices: Vec::new(),
+            return_value: None,
+            return_tag: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Findings<Tag: FlowTag = ()> {
     rebase_seen: bool,
-    func_defining: Option<FunctionDefiningInfo>,
-    func_data: HashMap<String, FunctionDefiningInfo>,
+    func_defining: Option<FunctionDefiningInfo<Tag>>,
+    func_data: HashMap<String, FunctionDefiningInfo<Tag>>,
 }
 
-impl Findings {
+impl<Tag: FlowTag> Default for Findings<Tag> {
+    fn default() -> Self {
+        Self {
+            rebase_seen: false,
+            func_defining: None,
+            func_data: HashMap::new(),
+        }
+    }
+}
+
+impl<Tag: FlowTag> Findings<Tag> {
     #[inline]
     fn is_collecting_func_args(&self) -> bool {
         self.func_defining.is_some() && !self.rebase_seen
@@ -263,41 +293,89 @@ impl Findings {
 }
 
 #[derive(Clone, Debug)]
-pub struct Verifier<Tag: Clone + Debug = ()> {
-    machine: CoreMachine<Tag>,
+pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
+    machine: CoreMachine<P::Tag>,
     pub stack: StackFrames<ValueSpan>,
-    findings: Findings,
+    tags: StackFrames<P::Tag>,
+    policy: P,
+    pc_tag: P::Tag,
+    findings: Findings<P::Tag>,
 }
 
 // Convenience: lets `verifier.cells`, `verifier.base`, and the stack methods
 // resolve directly through the inner `StackFrames`.
-impl<Tag: Clone + Debug> Deref for Verifier<Tag> {
+impl<P: InformationFlowPolicy> Deref for Verifier<P> {
     type Target = StackFrames<ValueSpan>;
     fn deref(&self) -> &StackFrames<ValueSpan> {
         &self.stack
     }
 }
-impl<Tag: Clone + Debug> DerefMut for Verifier<Tag> {
+impl<P: InformationFlowPolicy> DerefMut for Verifier<P> {
     fn deref_mut(&mut self) -> &mut StackFrames<ValueSpan> {
         &mut self.stack
     }
 }
 
-impl Verifier<()> {
+impl Verifier<NoFlow> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
-        // crate::logging::init();
-
-        Self::with_tags(program)
-    }
-}
-
-impl<Tag: Clone + Debug> Verifier<Tag> {
-    pub fn with_tags(program: impl Into<Rc<[Instruction<Tag>]>>) -> Self {
+        let policy = NoFlow;
+        let pc_tag = policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
             stack: StackFrames::new(),
+            tags: StackFrames::new(),
+            policy,
+            pc_tag,
             findings: Findings::default(),
         }
+    }
+}
+
+impl<P: InformationFlowPolicy> Verifier<P> {
+    /// Creates a monitored verifier and validates every tag embedded in the program.
+    pub fn with_policy(
+        program: impl Into<Rc<[Instruction<P::Tag>]>>,
+        policy: P,
+    ) -> Result<Self, VerifierError<P::Tag>> {
+        let program = program.into();
+        Self::validate_program(&program, &policy)?;
+        let pc_tag = policy.default_tag();
+        Ok(Self {
+            machine: CoreMachine::new(program),
+            stack: StackFrames::new(),
+            tags: StackFrames::new(),
+            policy,
+            pc_tag,
+            findings: Findings::default(),
+        })
+    }
+
+    fn validate_program(
+        program: &[Instruction<P::Tag>],
+        policy: &P,
+    ) -> Result<(), VerifierError<P::Tag>> {
+        for instruction in program {
+            Self::validate_instruction(instruction, policy)?;
+        }
+        Ok(())
+    }
+
+    fn validate_instruction(
+        instruction: &Instruction<P::Tag>,
+        policy: &P,
+    ) -> Result<(), VerifierError<P::Tag>> {
+        match instruction {
+            Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
+                policy.validate_tag(*tag)?;
+            }
+            Instruction::Block(body) => Self::validate_program(body, policy)?,
+            Instruction::IfElse(_, when_true, when_false) => {
+                Self::validate_instruction(when_true, policy)?;
+                Self::validate_instruction(when_false, policy)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub fn redirect_input(mut self, new_input: types::Input) -> Self {
@@ -310,61 +388,150 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         self
     }
 
-    fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
+    // ---- Tag helpers --------------------------------------------------------
+
+    /// Calculates ccd(left, right).
+    fn combine_tags(&self, left: P::Tag, right: P::Tag) -> Result<P::Tag, VerifierError<P::Tag>> {
+        self.policy
+            .closest_common_descendant(left, right)
+            .map_err(VerifierError::Flow)
+    }
+
+    /// Pushes a newly-created value, including the current control-flow tag.
+    fn push_with_tag(
+        &mut self,
+        value: ValueSpan,
+        tag: P::Tag,
+    ) -> Result<(), VerifierError<P::Tag>> {
+        let effective_tag = self.combine_tags(tag, self.pc_tag)?;
+        self.stack.push(value);
+        self.tags.push(effective_tag);
+        Ok(())
+    }
+
+    /// Pushes a value whose tag is already final (e.g. block / function return).
+    /// Does NOT combine with pc_tag.
+    fn push_existing(&mut self, value: ValueSpan, tag: P::Tag) {
+        self.stack.push(value);
+        self.tags.push(tag);
+    }
+
+    /// Reads the tag corresponding to a value cell.
+    pub fn read_tag(&self, idx: CellIndex) -> Result<P::Tag, VerifierError<P::Tag>> {
+        self.tags.get(idx.into()).copied().ok_or_else(|| InvalidCell {
+            instr: self
+                .machine
+                .program_data
+                .get_current()
+                .cloned()
+                .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
+            cell_index: idx,
+            cells: self.stack.cells.clone(),
+            prog: self.machine.program_data.get_program(),
+            location: "Verifier::read_tag",
+        })
+    }
+
+    /// Returns the parallel tag stack.
+    pub fn tags(&self) -> &[P::Tag] {
+        &self.tags.cells
+    }
+
+    /// Returns the tag of the top value cell.
+    pub fn last_tag(&self) -> Option<P::Tag> {
+        self.tags.cells.last().copied()
+    }
+
+    fn ensure_output_allowed(&self, value_tag: P::Tag) -> Result<(), VerifierError<P::Tag>> {
+        let effective_tag = self.combine_tags(value_tag, self.pc_tag)?;
+        let output_guard = self.policy.output_tag();
+
+        if self
+            .policy
+            .can_flow(effective_tag, output_guard)
+            .map_err(VerifierError::Flow)?
+        {
+            Ok(())
+        } else {
+            Err(VerifierError::Flow(FlowError::InformationFlowViolation {
+                found: effective_tag,
+                guard: output_guard,
+            }))
+        }
+    }
+
+    // ---- Core execution -----------------------------------------------------
+
+    fn run_loop(&mut self) -> Result<(), VerifierError<P::Tag>> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;
         }
         Ok(())
     }
 
-    /// Low-level nested run: scopes `cells` (via [`StackFrames`]) and `program_data`.
-    /// Returns `(last_cell_at_end_of_body, body_stack_size)`.
+    /// Low-level nested run: scopes `cells` and `tags` (via [`StackFrames`])
+    /// and `program_data`.
+    /// Returns `(last_value, last_tag, body_stack_size)`.
     ///
     /// Callers needing to also scope `findings` or `function_data` should use
     /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
-        instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, usize), VerifierError<Tag>> {
+        instrs: Rc<[Instruction<P::Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<P::Tag>, usize), VerifierError<P::Tag>> {
         let saved_base = self.stack.enter_block();
+        let saved_tag_base = self.tags.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let exit = self.exit_block(saved_base);
+        let (last_value, body_size) = self.stack.exit_block(saved_base);
+        let (last_tag, _) = self.tags.exit_block(saved_tag_base);
 
         exec_result?;
-        Ok(exit)
+        Ok((last_value, last_tag, body_size))
     }
 
     /// Verifies a single ifelse-branch instruction on the parent stack:
     /// cells are mutated in place. `function_data` and `findings` are scoped
     /// (saved on entry, restored on exit) so branches don't leak metadata into
     /// the parent. `Rebase` is forbidden inside the branch via the
-    /// `IfElseBranch` marker frame.
-    fn run_ifelse_branch(&mut self, instr: &Instruction<Tag>) -> Result<(), VerifierError<Tag>> {
+    /// `IfElseBranch` marker frame on the value stack.
+    ///
+    /// The `condition_tag` is combined with the current `pc_tag` so that all
+    /// values pushed inside the branch carry the condition's taint.
+    fn run_ifelse_branch(
+        &mut self,
+        instr: &Instruction<P::Tag>,
+        condition_tag: P::Tag,
+    ) -> Result<(), VerifierError<P::Tag>> {
         let saved_findings = self.findings.clone();
-        // Evaluate the branch instruction directly: a `Block` branch scopes its
-        // own `program_data` via `evaluate_block`, and other instructions don't
-        // touch it, so there's no need to wrap the branch in a one-element
-        // program (which would force cloning the instruction).
+        let saved_pc_tag = self.pc_tag;
+        self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
+
+        // Only push IfElseBranch on the value stack (for the Rebase guard).
+        // The tags stack is managed manually via cells save/restore in
+        // evaluate_ifelse — this is safe because IfElseBranch frames are
+        // transparent to pop() and the value stack's rebase() guard fires
+        // before the tags stack's rebase() is attempted.
         self.stack.enter_ifelse_branch();
         let exec_result = self.evaluate_instruction(instr);
         self.stack.exit_ifelse_branch();
 
+        self.pc_tag = saved_pc_tag;
         self.findings = saved_findings;
 
         exec_result
     }
 
-    /// Runs `instrs` as a fully-scoped block: `cells`, `program_data`,
+    /// Runs `instrs` as a fully-scoped block: `cells`, `tags`, `program_data`,
     /// `findings`, and `function_data` are all saved on entry and restored on
     /// exit. Used by `evaluate_block` and `evaluate_ifelse`.
     fn run_block_scoped(
         &mut self,
-        instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, usize), VerifierError<Tag>> {
+        instrs: Rc<[Instruction<P::Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<P::Tag>, usize), VerifierError<P::Tag>> {
         let saved_findings = self.findings.clone();
         let result = self.run_nested(instrs);
         self.findings = saved_findings;
@@ -382,7 +549,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
     /// Nested function definitions are intentionally unsupported: they clash
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
-    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
+    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<P::Tag>> {
         if let Some(ref outer) = self.findings.func_defining {
             return Err(NestedFunctionDefinition {
                 outer_function: outer.function_name.clone(),
@@ -410,13 +577,15 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
             function_name: fun.to_owned(),
             arg_indices: Vec::new(),
             return_value: None,
+            return_tag: None,
         });
 
         let run_result = self.run_nested(to_check);
 
-        if let Ok((Some(return_value), _)) = &run_result {
+        if let Ok((Some(return_value), return_tag, _)) = &run_result {
             if let Some(ref mut info) = self.findings.func_defining {
                 info.return_value = Some(*return_value);
+                info.return_tag = *return_tag;
             }
         }
 
@@ -433,8 +602,6 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         self.findings.func_defining = saved_defining;
         self.findings.rebase_seen = saved_rebase_seen;
 
-        // Extra debug code
-
         run_result?;
 
         trace!("Finished verifying function definition for '{}'", fun);
@@ -450,7 +617,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         Ok(())
     }
 
-    pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<Tag>> {
+    pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<P::Tag>> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
         if self.cells.len() < usize::from(required) {
@@ -463,7 +630,7 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
         Ok(())
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
+    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<P::Tag>> {
         self.stack.get(reg.into()).copied().ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: reg,
@@ -482,16 +649,21 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
 
     /// Like [`read`](Self::read), but while collecting a function's arguments
     /// an out-of-scope read is recorded as a `Normal` argument index and
-    /// yields an unbounded span instead of erroring.
-    fn read_normal(&mut self, idx: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
+    /// yields an unbounded span (with `default_tag`) instead of erroring.
+    fn read_normal(
+        &mut self,
+        idx: CellIndex,
+    ) -> Result<(ValueSpan, P::Tag), VerifierError<P::Tag>> {
         if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
             self.findings.record_arg(MemorizedIndex::Normal(idx));
-            return Ok(ValueSpan::inf());
+            return Ok((ValueSpan::inf(), self.policy.default_tag()));
         }
-        self.read(idx)
+        let val = self.read(idx)?;
+        let tag = self.read_tag(idx)?;
+        Ok((val, tag))
     }
 
-    fn previous_instruction(&self) -> Result<&Instruction<Tag>, VerifierError<Tag>> {
+    fn previous_instruction(&self) -> Result<&Instruction<P::Tag>, VerifierError<P::Tag>> {
         let pc = match self.machine.program_data.get_pc() {
             Address::Null => {
                 panic!("PC cannot be null here, program already started executing.")
@@ -510,14 +682,14 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
             .map_err(Into::into)
     }
 
-    pub fn verify(mut self) -> Result<Self, VerifierError<Tag>> {
+    pub fn verify(mut self) -> Result<Self, VerifierError<P::Tag>> {
         self.run_loop()?;
         Ok(self)
     }
 
     // FIXME: This function no longer works as it did before.
     /// Checks that the current `IfElse` instruction uses the correct condition.
-    fn validate_if_placement(&self) -> Result<(), VerifierError<Tag>> {
+    fn validate_if_placement(&self) -> Result<(), VerifierError<P::Tag>> {
         use BinaryOp::*;
         use Instruction::AluBinary;
 
@@ -557,8 +729,8 @@ impl<Tag: Clone + Debug> Verifier<Tag> {
     }
 }
 
-impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
-    type Error = VerifierError<Tag>;
+impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
+    type Error = VerifierError<P::Tag>;
 
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
         use NullaryOp::*;
@@ -567,6 +739,9 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             Nop => (),
             Rebase => {
                 self.stack.rebase()?;
+                self.tags
+                    .rebase()
+                    .expect("paired tag stack rejected a value-stack rebase");
                 // Crossing `Rebase` ends argument collection: freeze the count
                 // discovered so far and publish it for callers / recursion.
                 if self.findings.is_collecting_func_args() {
@@ -588,13 +763,14 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
 
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm<Tag>,
+        instr: &UnaryOpImm<P::Tag>,
         arg: Immediate,
     ) -> Result<(), Self::Error> {
         use UnaryOpImm::*;
 
         match instr {
-            Push | TaggedPush(_) => self.push(ValueSpan::new(arg, arg)),
+            Push => self.push_with_tag(ValueSpan::new(arg, arg), self.policy.default_tag())?,
+            TaggedPush(tag) => self.push_with_tag(ValueSpan::new(arg, arg), *tag)?,
         }
 
         Ok(())
@@ -608,17 +784,17 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         use UnaryOpCell::*;
 
         match instr {
-            Not => match self.read_normal(arg)? {
-                ValueSpan { min, max } if min == max => {
-                    self.push(ValueSpan::new(!min, !max));
-                }
-                _ => {
-                    self.push(ValueSpan::inf());
-                }
-            },
+            Not => {
+                let (val, tag) = self.read_normal(arg)?;
+                let result = match val {
+                    ValueSpan { min, max } if min == max => ValueSpan::new(!min, !max),
+                    _ => ValueSpan::inf(),
+                };
+                self.push_with_tag(result, tag)?;
+            }
             Read => {
-                let val = self.read_normal(arg)?;
-                self.push(val);
+                let (val, tag) = self.read_normal(arg)?;
+                self.push_with_tag(val, tag)?;
             }
             ReadReverse => {
                 debug!("ReadReverse with arg: {}", arg);
@@ -632,7 +808,7 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     if usize::from(arg) >= loaded {
                         self.findings.record_arg(MemorizedIndex::Reverse(arg));
                     }
-                    self.push(ValueSpan::inf());
+                    self.push_with_tag(ValueSpan::inf(), self.policy.default_tag())?;
                 } else {
                     trace!(
                         "Not collecting function arguments, performing normal read with reverse indexing."
@@ -651,7 +827,8 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                         })?;
 
                     let val = self.read(index)?;
-                    self.push(val);
+                    let tag = self.read_tag(index)?;
+                    self.push_with_tag(val, tag)?;
                 }
             }
             Pop => {
@@ -659,7 +836,10 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     return Err(InstructionError);
                 }
                 for _ in 0..arg {
-                    self.pop().ok_or(StackUnderflow)?;
+                    self.stack.pop().ok_or(StackUnderflow)?;
+                    self.tags
+                        .pop()
+                        .expect("tag stack shorter than value stack");
                 }
             }
         }
@@ -697,8 +877,9 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             }
         };
 
-        let a = self.read_normal(arg1)?;
-        let b = self.read_normal(arg2)?;
+        let (a, tag_a) = self.read_normal(arg1)?;
+        let (b, tag_b) = self.read_normal(arg2)?;
+        let result_tag = self.combine_tags(tag_a, tag_b)?;
 
         // TODO: Write tests for arithmetic overflow checks
         let calculated_value = match instr {
@@ -761,15 +942,16 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             SetGreaterThanOrEqual => a.chck_gte(&b),
         };
 
-        self.push(calculated_value);
+        self.push_with_tag(calculated_value, result_tag)?;
 
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> Result<(), Self::Error> {
-        match self.run_block_scoped(instrs)?.0 {
-            Some(val) => self.push(val),
-            None => return Err(BlockHasEmptyStack),
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction<P::Tag>]>) -> Result<(), Self::Error> {
+        match self.run_block_scoped(instrs)? {
+            (Some(val), Some(tag), _) => self.push_existing(val, tag),
+            (Some(val), None, _) => self.push_existing(val, self.policy.default_tag()),
+            (None, _, _) => return Err(BlockHasEmptyStack),
         }
         Ok(())
     }
@@ -823,7 +1005,13 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     .get(function_name)
                     .and_then(|info| info.return_value)
                     .unwrap_or_else(ValueSpan::inf);
-                self.push(return_value);
+                let return_tag = self
+                    .findings
+                    .func_data
+                    .get(function_name)
+                    .and_then(|info| info.return_tag)
+                    .unwrap_or_else(|| self.policy.default_tag());
+                self.push_existing(return_value, return_tag);
             }
         }
 
@@ -840,8 +1028,13 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
         use types::{Input, Output};
 
         match (instr, arg) {
-            (Print, Cell(_)) => (),
-            (Input, Cell(_)) => self.push(ValueSpan::inf()),
+            (Print, Cell(cell_index)) => {
+                let tag = self.read_tag(*cell_index)?;
+                self.ensure_output_allowed(tag)?;
+            }
+            (Input, Cell(_)) => {
+                self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
+            }
             (FileRead, Str(path)) => {
                 self.machine.input = Input::from_path(path);
             }
@@ -857,10 +1050,11 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<Tag>>,
-        when_false: Rc<Instruction<Tag>>,
+        when_true: Rc<Instruction<P::Tag>>,
+        when_false: Rc<Instruction<P::Tag>>,
     ) -> Result<(), Self::Error> {
         let condition = self.read(cond_idx)?;
+        let condition_tag = self.read_tag(cond_idx)?;
         // self.validate_if_placement()?;
         let known_truth_value = Self::known_truth_value(&condition);
 
@@ -869,24 +1063,28 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
                 let chosen = if taken { when_true } else { when_false };
-                self.run_ifelse_branch(&chosen)?;
+                self.run_ifelse_branch(&chosen, condition_tag)?;
             }
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a single copy of the initial
             // cells to re-run the false branch from the same starting point.
             None => {
                 let initial_cells = self.stack.cells.clone();
+                let initial_tags = self.tags.cells.clone();
 
-                self.run_ifelse_branch(&when_true)?;
+                self.run_ifelse_branch(&when_true, condition_tag)?;
                 let true_cells = std::mem::replace(&mut self.stack.cells, initial_cells);
+                let true_tags = std::mem::replace(&mut self.tags.cells, initial_tags);
 
-                self.run_ifelse_branch(&when_false)?;
+                self.run_ifelse_branch(&when_false, condition_tag)?;
                 let false_cells = std::mem::take(&mut self.stack.cells);
+                let false_tags = std::mem::take(&mut self.tags.cells);
 
                 let (true_len, false_len) = (true_cells.len(), false_cells.len());
                 if true_len != false_len {
                     // Restore a valid stack before returning the error.
                     self.stack.cells = true_cells;
+                    self.tags.cells = true_tags;
                     return Err(CondUnequalStackSizes {
                         true_branch_cells: true_len,
                         false_branch_cells: false_len,
@@ -899,6 +1097,17 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
                     .zip(false_cells)
                     .map(|(a, b)| a.combine(b))
                     .collect();
+
+                // Tag-by-tag merge using closest common descendant.
+                self.tags.cells = true_tags
+                    .into_iter()
+                    .zip(false_tags)
+                    .map(|(a, b)| {
+                        self.policy
+                            .closest_common_descendant(a, b)
+                            .map_err(VerifierError::Flow)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
             }
         }
 
@@ -910,3 +1119,6 @@ impl<Tag: Clone + Debug> Evaluate<Tag> for Verifier<Tag> {
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(test)]
+mod tests_diftam;
