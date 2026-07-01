@@ -12,7 +12,7 @@ use crate::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine, Evaluate, Slot, StackFrames},
+    machine::{CoreError, CoreMachine, Evaluate, Slot, Stack},
     types::{self, Cell, CellIndex, Immediate, IoBuffer, ProgramData},
 };
 use Cell::*;
@@ -27,11 +27,11 @@ where
     ArithmeticOverflow,
     StackUnderflow,
     InvalidCell,
-    TypeError { expected: Cell, found: Cell },
     BlockHasEmptyStack,
     EmptyBlock,
     Core(CoreError),
     Flow(FlowError<Tag>),
+    DebugError(&'static str),
 }
 
 impl<Tag: FlowTag> From<CoreError> for ExecutorError<Tag> {
@@ -70,7 +70,7 @@ struct ActiveDowngrader {
 
 pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    stack: StackFrames<Slot<Cell, P::Tag>>,
+    stack: Stack<Cell, P::Tag>,
     policy: P,
     pc_tag: P::Tag,
     function_depth: usize,
@@ -102,7 +102,7 @@ impl Executor<NoFlow> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
+            stack: Stack::new(),
             policy: NoFlow,
             pc_tag: (),
             function_depth: 0,
@@ -122,7 +122,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
+            stack: Stack::new(),
             policy,
             pc_tag,
             function_depth: 0,
@@ -518,10 +518,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 if let Integer(val) = val {
                     self.push_new_value(Integer(!val), tag)?;
                 } else {
-                    return Err(TypeError {
-                        expected: Integer(0),
-                        found: val,
-                    });
+                    todo!("This will eventually be a TypeError, in case types get implemented.")
                 }
             }
             Read => {
@@ -555,13 +552,11 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        let expect_integer = |cell: Cell| match cell {
+        let expect_integer = |cell: Cell| -> ExecutorResult<i64, P> {match cell {
             Integer(value) => Ok(value),
-            found => Err(TypeError {
-                expected: Integer(0),
-                found,
-            }),
-        };
+            _found => todo!("This will eventually be a TypeError, in case types get implemented.")
+
+        }};
 
         let left = expect_integer(left)?;
         let right = expect_integer(right)?;
@@ -681,12 +676,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         let branch = match condition {
             Integer(0) => when_false,
             Integer(_) => when_true,
-            other => {
-                return Err(TypeError {
-                    expected: Integer(0),
-                    found: other,
-                });
-            }
+            _other => todo!("This will eventually be a TypeError, in case types get implemented.")
         };
 
         let branch_program = Rc::from(vec![branch.as_ref().clone()]);

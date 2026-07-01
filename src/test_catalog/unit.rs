@@ -310,8 +310,8 @@ test_program! {
             add_instr!(Push, 20)
         ),
     ],
-    verifier: { error VerifierError::TypeError { .. } },
-    executor: { error ExecutorError::TypeError { .. } },
+    verifier: { error VerifierError::DebugError { .. } },
+    executor: { error ExecutorError::DebugError { .. } },
 }
 
 test_program! {

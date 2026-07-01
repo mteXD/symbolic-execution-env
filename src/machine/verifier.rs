@@ -8,14 +8,14 @@ use crate::{
     },
     machine::{
         CoreError::{self},
-        CoreMachine, DowngradeCounts, Evaluate, Slot, StackFrames,
+        CoreMachine, DowngradeCounts, Evaluate, Slot, Stack,
     },
     types::{
         self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
     },
 };
 use VerifierError::*;
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 
 #[derive(Debug, Clone)]
 pub enum VerifierError<Tag: FlowTag = ()> {
@@ -27,14 +27,6 @@ pub enum VerifierError<Tag: FlowTag = ()> {
     },
     ArithmeticOverflow,
     DivisionByZero,
-    TypeError {
-        expected: ValueSpan,
-        found: ValueSpan,
-    },
-    NotEnoughCells {
-        required: CellIndex,
-        available: usize,
-    },
     NotEnoughArguments {
         required: CellIndex,
         available: usize,
@@ -288,7 +280,7 @@ impl<Tag: FlowTag> Findings<Tag> {
 #[derive(Clone, Debug)]
 pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    stack: StackFrames<Slot<ValueSpan, P::Tag>>,
+    stack: Stack<ValueSpan, P::Tag>,
     policy: P,
     pc_tag: P::Tag,
     findings: Findings<P::Tag>,
@@ -304,7 +296,7 @@ impl Verifier<NoFlow> {
         let pc_tag = policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
+            stack: Stack::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
@@ -324,7 +316,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
+            stack: Stack::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
@@ -803,17 +795,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok(())
     }
 
-    pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<P::Tag>> {
-        if self.stack.len() < usize::from(required) {
-            return Err(NotEnoughCells {
-                required,
-                available: self.stack.len(),
-            });
-        }
-
-        Ok(())
-    }
-
     pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<P::Tag>> {
         self.stack.value_at(reg.into()).ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
@@ -854,25 +835,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let val = self.read(idx)?;
         let tag = self.read_tag(idx)?;
         Ok((val, tag))
-    }
-
-    fn previous_instruction(&self) -> Result<&Instruction<P::Tag>, VerifierError<P::Tag>> {
-        let pc = match self.machine.program_data.get_pc() {
-            Address::Null => {
-                panic!("PC cannot be null here, program already started executing.")
-            }
-            Address::Value(0) => {
-                return Err(VerifierError::NotEnoughCells {
-                    required: 1,
-                    available: 0,
-                });
-            }
-            Address::Value(v) => v - 1,
-        };
-        self.machine
-            .program_data
-            .get_at(Address::Value(pc))
-            .map_err(Into::into)
     }
 
     pub fn verify(mut self) -> Result<Self, VerifierError<P::Tag>> {

@@ -2,16 +2,14 @@ use log::{debug, error, warn};
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use crate::{
-    instruction::{
+    information_flow::FlowTag, instruction::{
         BinaryOp, FunctionOp,
         Instruction::{self},
         IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
-    },
-    machine::CoreError::RebaseError,
-    types::{
+    }, machine::CoreError::RebaseError, types::{
         CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output, ProgramData,
         ProgramDataError,
-    },
+    }
 };
 
 pub mod executor;
@@ -24,6 +22,21 @@ pub enum CoreError {
     RebaseError,
     IoReadError,
     IoWriteError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommonError<Tag: FlowTag = ()> {
+    StackUnderflow,
+    InvalidCell {
+        instr: Instruction<Tag>,
+        cell_index: CellIndex,
+    },
+    ArithmeticOverflow,
+    DivisionByZero,
+    // TypeError {
+    //     expected: ValueSpan,
+    //     found: ValueSpan,
+    // },
 }
 
 impl From<FunctionDataError> for CoreError {
@@ -246,19 +259,25 @@ impl DowngradeCounts {
 }
 
 #[derive(Clone, Debug)]
-pub enum Frame<T> {
-    Block { start: usize, saved_below: Vec<T> },
+pub enum Frame<V, T> {
+    Block { start: usize, saved_below: Vec<Slot<V, T>> },
     IfElseBranch,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct StackFrames<T: Clone> {
-    cells: Vec<T>,
+#[derive(Clone, Debug)]
+pub struct Stack<V, T> {
+    cells: Vec<Slot<V, T>>,
     base: usize,
-    frames: Vec<Frame<T>>,
+    frames: Vec<Frame<V, T>>,
 }
 
-impl<T: Clone> StackFrames<T> {
+impl<V: Clone, T: Clone> Default for Stack<V, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V: Clone, T: Clone> Stack<V, T> {
     pub fn new() -> Self {
         Self {
             cells: Vec::new(),
@@ -268,7 +287,7 @@ impl<T: Clone> StackFrames<T> {
     }
 
     #[inline]
-    pub fn push(&mut self, value: T) {
+    pub fn push(&mut self, value: Slot<V, T>) {
         self.cells.push(value);
     }
 
@@ -276,7 +295,7 @@ impl<T: Clone> StackFrames<T> {
     /// of the innermost enclosing `Block` frame, the popped value is saved
     /// against that block (and its `start` is decremented). `IfElseBranch`
     /// frames are transparent to this accounting.
-    pub fn pop(&mut self) -> Option<T> {
+    pub fn pop(&mut self) -> Option<Slot<V, T>> {
         let popped = self.cells.pop()?;
         let len = self.cells.len();
         for frame in self.frames.iter_mut().rev() {
@@ -295,7 +314,7 @@ impl<T: Clone> StackFrames<T> {
     }
 
     #[inline]
-    pub fn get(&self, idx: usize) -> Option<&T> {
+    pub fn get(&self, idx: usize) -> Option<&Slot<V, T>> {
         self.cells.get(idx)
     }
 
@@ -315,7 +334,7 @@ impl<T: Clone> StackFrames<T> {
     /// End a block-style context: restore `base`, drop body-local cells, and
     /// replay any displaced parent cells. Returns `(last_cell_at_end_of_body,
     /// body_stack_size)`.
-    pub fn exit_block(&mut self, saved_base: usize) -> (Option<T>, usize) {
+    pub fn exit_block(&mut self, saved_base: usize) -> (Option<Slot<V, T>>, usize) {
         self.base = saved_base;
 
         match self.frames.pop().expect("exit_block: no frame") {
@@ -386,7 +405,7 @@ impl<T: Clone> StackFrames<T> {
     }
 }
 
-impl<V: Copy, T: Copy> StackFrames<Slot<V, T>> {
+impl<V: Copy, T: Copy> Stack<V, T> {
     /// Values only, cloned out for inspection and error reporting.
     pub fn values(&self) -> Vec<V> {
         self.cells.iter().map(|slot| slot.value).collect()
