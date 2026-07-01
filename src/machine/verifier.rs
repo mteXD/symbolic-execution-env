@@ -1156,7 +1156,8 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 self.run_ifelse_branch(&when_false, condition_tag)?;
                 let false_cells = self.stack.take_slots();
 
-                let (true_len, false_len) = (true_cells.len(), false_cells.len());
+                let true_len= true_cells.len();
+                let false_len = false_cells.len();
                 if true_len != false_len {
                     // Restore a valid stack before returning the error.
                     self.stack.set_slots(true_cells);

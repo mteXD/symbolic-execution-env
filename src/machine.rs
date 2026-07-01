@@ -444,18 +444,15 @@ impl<V: Copy, T: Copy> Stack<V, T> {
     }
 }
 
-/// A single stack cell bundling a value with its security tag and per-cell
-/// downgrade counters. Keeping all per-value metadata in one record means it
-/// travels together automatically through pushes, pops, blocks, and rebases —
-/// there is only ever one stack to keep consistent.
+/// A single stack cell, containing a value and a tag.
 #[derive(Clone, Debug)]
-pub struct Cell<Value, Tag> {
-    value: Value,
-    tag: Tag,
+pub struct Cell<V, T> {
+    value: V,
+    tag: T,
 }
 
-impl<Value, Tag> Cell<Value, Tag> {
-    pub fn new(value: Value, tag: Tag) -> Self {
+impl<V, T> Cell<V, T> {
+    pub fn new(value: V, tag: T) -> Self {
         Self {
             value,
             tag,
