@@ -14,14 +14,14 @@ pub type CellIndex = u16;
 pub type Immediate = i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
-pub enum Cell {
+pub enum Value {
     Integer(Immediate),
     Text(char),
 }
 
-impl PartialEq<Immediate> for Cell {
+impl PartialEq<Immediate> for Value {
     fn eq(&self, other: &Immediate) -> bool {
-        use Cell::*;
+        use Value::*;
 
         match self {
             Integer(i) => i == other,
@@ -30,18 +30,18 @@ impl PartialEq<Immediate> for Cell {
     }
 }
 
-impl Cell {
+impl Value {
     pub fn into_immediate(self) -> Result<Immediate, &'static str> {
         match self {
-            Cell::Integer(i) => Ok(i),
-            Cell::Text(c) => Ok(c as Immediate),
+            Value::Integer(i) => Ok(i),
+            Value::Text(c) => Ok(c as Immediate),
         }
     }
 }
 
-impl Display for Cell {
+impl Display for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        use Cell::*;
+        use Value::*;
 
         match self {
             Integer(i) => write!(f, "{}", i),

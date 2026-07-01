@@ -12,10 +12,10 @@ use crate::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine, Evaluate, Slot, Stack},
-    types::{self, Cell, CellIndex, Immediate, IoBuffer, ProgramData},
+    machine::{CoreError, CoreMachine, Evaluate, Cell, Stack},
+    types::{self, Value, CellIndex, Immediate, IoBuffer, ProgramData},
 };
-use Cell::*;
+use Value::*;
 use ExecutorError::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +70,7 @@ struct ActiveDowngrader {
 
 pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    stack: Stack<Cell, P::Tag>,
+    stack: Stack<Value, P::Tag>,
     policy: P,
     pc_tag: P::Tag,
     function_depth: usize,
@@ -169,7 +169,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Reads a value cell without exposing its tag. Does not affect downgrade
     /// accounting (intended for external inspection).
-    pub fn read(&self, index: CellIndex) -> ExecutorResult<Cell, P> {
+    pub fn read(&self, index: CellIndex) -> ExecutorResult<Value, P> {
         self.stack
             .get(index.into())
             .map(|s| s.value)
@@ -185,7 +185,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Returns the value cells, cloned out for inspection.
-    pub fn values(&self) -> Vec<Cell> {
+    pub fn values(&self) -> Vec<Value> {
         self.stack.values()
     }
 
@@ -202,7 +202,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// Reads value and tag at the given index. While a downgrader body runs, a
     /// read of one of its caller's argument cells is counted against that
     /// cell's per-downgrader budget.
-    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Cell, P::Tag), P> {
+    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Value, P::Tag), P> {
         let abs = usize::from(index);
         self.note_downgrade_arg(abs)?;
         self.stack
@@ -230,16 +230,16 @@ impl<P: InformationFlowPolicy> Executor<P> {
         }
         let name = active.name.clone();
         let max_calls = active.max_calls;
-        let count = self.stack.bump_count(abs, &name);
-        if let Some(limit) = max_calls {
-            if count > limit {
-                return Err(FlowError::DowngraderCallLimitExceeded {
-                    downgrader: name,
-                    limit,
-                }
-                .into());
-            }
-        }
+        // let count = self.stack.bump_count(abs, &name); TODO:
+        // if let Some(limit) = max_calls {
+        //     if count > limit {
+        //         return Err(FlowError::DowngraderCallLimitExceeded {
+        //             downgrader: name,
+        //             limit,
+        //         }
+        //         .into());
+        //     }
+        // }
         Ok(())
     }
 
@@ -251,15 +251,15 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.
-    fn push_new_value(&mut self, value: Cell, tag: P::Tag) -> ExecutorResult<(), P> {
+    fn push_new_value(&mut self, value: Value, tag: P::Tag) -> ExecutorResult<(), P> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(Slot::new(value, effective_tag));
+        self.stack.push(Cell::new(value, effective_tag));
         Ok(())
     }
 
     /// Restores a result that already carries its final effective tag.
-    fn push_existing_entry(&mut self, entry: (Cell, P::Tag)) {
-        self.stack.push(Slot::new(entry.0, entry.1));
+    fn push_existing_entry(&mut self, entry: (Value, P::Tag)) {
+        self.stack.push(Cell::new(entry.0, entry.1));
     }
 
     fn run(&mut self) -> ExecutorResult<(), P> {
@@ -281,7 +281,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     fn run_nested(
         &mut self,
         instrs: Rc<[Instruction<P::Tag>]>,
-    ) -> ExecutorResult<Option<(Cell, P::Tag)>, P> {
+    ) -> ExecutorResult<Option<(Value, P::Tag)>, P> {
         let saved_bases = self.stack.enter_block();
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
@@ -398,7 +398,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
                         }
                         .into());
                     }
-                    self.stack.push(Slot::new(value, connection.target));
+                    self.stack.push(Cell::new(value, connection.target));
                 }
                 None => self.push_existing_entry((value, tag)),
             }
@@ -552,7 +552,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        let expect_integer = |cell: Cell| -> ExecutorResult<i64, P> {match cell {
+        let expect_integer = |cell: Value| -> ExecutorResult<i64, P> {match cell {
             Integer(value) => Ok(value),
             _found => todo!("This will eventually be a TypeError, in case types get implemented.")
 
@@ -689,8 +689,8 @@ fn reverse_index(stack_len: usize, reverse_offset: CellIndex) -> Option<CellInde
     last_index.checked_sub(reverse_offset)
 }
 
-impl From<Vec<Cell>> for Executor {
-    fn from(value: Vec<Cell>) -> Self {
+impl From<Vec<Value>> for Executor {
+    fn from(value: Vec<Value>) -> Self {
         let mut machine = Self::new(Vec::<Instruction>::new());
         machine.stack.set_values_for_unmonitored(value, ());
         machine

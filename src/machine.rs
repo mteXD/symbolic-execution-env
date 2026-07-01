@@ -2,14 +2,17 @@ use log::{debug, error, warn};
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use crate::{
-    information_flow::FlowTag, instruction::{
+    information_flow::FlowTag,
+    instruction::{
         BinaryOp, FunctionOp,
         Instruction::{self},
         IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
-    }, machine::CoreError::RebaseError, types::{
+    },
+    machine::CoreError::RebaseError,
+    types::{
         CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output, ProgramData,
         ProgramDataError,
-    }
+    },
 };
 
 pub mod executor;
@@ -225,48 +228,18 @@ trait Evaluate<Tag: Debug = ()> {
 //                       enclosing block's restore-on-exit remains correct).
 // =============================================================================
 
-/// Per-cell record of how many times each named downgrader has downgraded the
-/// value occupying this cell. Carried as cell metadata so it is saved/restored
-/// together with the value through pops, blocks, and rebases, and discarded for
-/// good when the cell is finally popped.
-#[derive(Clone, Debug, Default)]
-pub struct DowngradeCounts(HashMap<String, usize>);
-
-impl DowngradeCounts {
-    /// Increments the counter for `downgrader` and returns the new total.
-    pub fn bump(&mut self, downgrader: &str) -> usize {
-        let entry = self.0.entry(downgrader.to_owned()).or_insert(0);
-        *entry += 1;
-        *entry
-    }
-
-    /// Current count for `downgrader` (0 if never downgraded).
-    pub fn get(&self, downgrader: &str) -> usize {
-        self.0.get(downgrader).copied().unwrap_or(0)
-    }
-
-    /// Element-wise maximum with `other` (per downgrader). Used by the verifier
-    /// to merge the two arms of an `if`/`else` conservatively: a value's count
-    /// after the branch is the larger of the two possibilities.
-    pub fn merge_max(&self, other: &Self) -> Self {
-        let mut merged = self.0.clone();
-        for (name, &count) in &other.0 {
-            let entry = merged.entry(name.clone()).or_insert(0);
-            *entry = (*entry).max(count);
-        }
-        DowngradeCounts(merged)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum Frame<V, T> {
-    Block { start: usize, saved_below: Vec<Slot<V, T>> },
+    Block {
+        start: usize,
+        saved_below: Vec<Cell<V, T>>,
+    },
     IfElseBranch,
 }
 
 #[derive(Clone, Debug)]
 pub struct Stack<V, T> {
-    cells: Vec<Slot<V, T>>,
+    cells: Vec<Cell<V, T>>,
     base: usize,
     frames: Vec<Frame<V, T>>,
 }
@@ -287,7 +260,7 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     }
 
     #[inline]
-    pub fn push(&mut self, value: Slot<V, T>) {
+    pub fn push(&mut self, value: Cell<V, T>) {
         self.cells.push(value);
     }
 
@@ -295,7 +268,7 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     /// of the innermost enclosing `Block` frame, the popped value is saved
     /// against that block (and its `start` is decremented). `IfElseBranch`
     /// frames are transparent to this accounting.
-    pub fn pop(&mut self) -> Option<Slot<V, T>> {
+    pub fn pop(&mut self) -> Option<Cell<V, T>> {
         let popped = self.cells.pop()?;
         let len = self.cells.len();
         for frame in self.frames.iter_mut().rev() {
@@ -314,7 +287,7 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     }
 
     #[inline]
-    pub fn get(&self, idx: usize) -> Option<&Slot<V, T>> {
+    pub fn get(&self, idx: usize) -> Option<&Cell<V, T>> {
         self.cells.get(idx)
     }
 
@@ -334,7 +307,7 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     /// End a block-style context: restore `base`, drop body-local cells, and
     /// replay any displaced parent cells. Returns `(last_cell_at_end_of_body,
     /// body_stack_size)`.
-    pub fn exit_block(&mut self, saved_base: usize) -> (Option<Slot<V, T>>, usize) {
+    pub fn exit_block(&mut self, saved_base: usize) -> (Option<Cell<V, T>>, usize) {
         self.base = saved_base;
 
         match self.frames.pop().expect("exit_block: no frame") {
@@ -371,7 +344,11 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     /// inside ifelse branches).
     pub fn rebase(&mut self) -> Result<(), CoreError> {
         if self.base > self.cells.len() {
-            panic!("Base {} is greater than stack length {}, this should not happen", self.base, self.cells.len());
+            panic!(
+                "Base {} is greater than stack length {}, this should not happen",
+                self.base,
+                self.cells.len()
+            );
         }
 
         match self.frames.last_mut() {
@@ -392,14 +369,17 @@ impl<V: Clone, T: Clone> Stack<V, T> {
         }
     }
 
+    /// A "getter" method for cells' length
     pub fn len(&self) -> usize {
         self.cells.len()
     }
 
+    /// A "getter" method for cells' is_empty method
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
 
+    /// A "getter" method for base
     pub fn base(&self) -> usize {
         self.base
     }
@@ -426,11 +406,6 @@ impl<V: Copy, T: Copy> Stack<V, T> {
         self.cells.last().map(|slot| slot.tag)
     }
 
-    /// Per-cell downgrade counters, cloned out for inspection.
-    pub fn counts(&self) -> Vec<DowngradeCounts> {
-        self.cells.iter().map(|slot| slot.counts.clone()).collect()
-    }
-
     /// Value at `index`, if it exists.
     pub fn value_at(&self, index: usize) -> Option<V> {
         self.cells.get(index).map(|slot| slot.value)
@@ -441,39 +416,30 @@ impl<V: Copy, T: Copy> Stack<V, T> {
         self.cells.get(index).map(|slot| slot.tag)
     }
 
-    /// Increments the per-cell downgrade counter for `downgrader` at `index`,
-    /// returning the new total (0 if `index` is out of range).
-    pub fn bump_count(&mut self, index: usize, downgrader: &str) -> usize {
-        self.cells
-            .get_mut(index)
-            .map(|slot| slot.counts.bump(downgrader))
-            .unwrap_or(0)
-    }
-
     /// Read-only view of the underlying slots.
-    pub fn slots(&self) -> &[Slot<V, T>] {
+    pub fn slots(&self) -> &[Cell<V, T>] {
         &self.cells
     }
 
     /// Replaces the underlying slots, returning the previous contents.
-    pub fn replace_slots(&mut self, slots: Vec<Slot<V, T>>) -> Vec<Slot<V, T>> {
+    pub fn replace_slots(&mut self, slots: Vec<Cell<V, T>>) -> Vec<Cell<V, T>> {
         std::mem::replace(&mut self.cells, slots)
     }
 
     /// Takes the underlying slots, leaving an empty stack behind.
-    pub fn take_slots(&mut self) -> Vec<Slot<V, T>> {
+    pub fn take_slots(&mut self) -> Vec<Cell<V, T>> {
         std::mem::take(&mut self.cells)
     }
 
     /// Overwrites the underlying slots.
-    pub fn set_slots(&mut self, slots: Vec<Slot<V, T>>) {
+    pub fn set_slots(&mut self, slots: Vec<Cell<V, T>>) {
         self.cells = slots;
     }
 
     pub fn set_values_for_unmonitored(&mut self, values: Vec<V>, default_tag: T) {
         self.cells = values
             .into_iter()
-            .map(|value| Slot::new(value, default_tag))
+            .map(|value| Cell::new(value, default_tag))
             .collect();
     }
 }
@@ -483,19 +449,16 @@ impl<V: Copy, T: Copy> Stack<V, T> {
 /// travels together automatically through pushes, pops, blocks, and rebases —
 /// there is only ever one stack to keep consistent.
 #[derive(Clone, Debug)]
-pub struct Slot<Value, Tag> {
+pub struct Cell<Value, Tag> {
     value: Value,
     tag: Tag,
-    counts: DowngradeCounts,
 }
 
-impl<Value, Tag> Slot<Value, Tag> {
+impl<Value, Tag> Cell<Value, Tag> {
     pub fn new(value: Value, tag: Tag) -> Self {
         Self {
             value,
             tag,
-            counts: DowngradeCounts::default(),
         }
     }
 }
-

@@ -8,7 +8,7 @@ use crate::{
     },
     machine::{
         CoreError::{self},
-        CoreMachine, DowngradeCounts, Evaluate, Slot, Stack,
+        CoreMachine, Evaluate, Cell, Stack,
     },
     types::{
         self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
@@ -118,6 +118,13 @@ impl ValueSpan {
         Self {
             min: self.min.min(other.min),
             max: self.max.max(other.max),
+        }
+    }
+
+    pub fn map(self, f: impl Fn(Immediate) -> Immediate) -> Self {
+        Self {
+            min: f(self.min),
+            max: f(self.max),
         }
     }
 
@@ -388,14 +395,14 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         tag: P::Tag,
     ) -> Result<(), VerifierError<P::Tag>> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(Slot::new(value, effective_tag));
+        self.stack.push(Cell::new(value, effective_tag));
         Ok(())
     }
 
     /// Pushes a value whose tag is already final (e.g. block / function return).
     /// Does NOT combine with pc_tag.
     fn push_existing(&mut self, value: ValueSpan, tag: P::Tag) {
-        self.stack.push(Slot::new(value, tag));
+        self.stack.push(Cell::new(value, tag));
     }
 
     /// Reads the tag corresponding to a value cell.
@@ -421,11 +428,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// Returns the parallel tag stack.
     pub fn tags(&self) -> Vec<P::Tag> {
         self.stack.tags()
-    }
-
-    /// Returns the parallel per-cell downgrade counters.
-    pub fn counts(&self) -> Vec<DowngradeCounts> {
-        self.stack.counts()
     }
 
     /// Returns the tag of the top value cell.
@@ -764,17 +766,17 @@ impl<P: InformationFlowPolicy> Verifier<P> {
             positions.sort_unstable();
             positions.dedup();
             for position in positions {
-                let count = self.stack.bump_count(position, function_name);
-                if let Some(limit) = downgrader.max_calls {
-                    if count > limit {
-                        return Err(VerifierError::Flow(
-                            FlowError::DowngraderCallLimitExceeded {
-                                downgrader: function_name.to_owned(),
-                                limit,
-                            },
-                        ));
-                    }
-                }
+                // let count = self.stack.bump_count(position, function_name);
+                // if let Some(limit) = downgrader.max_calls {
+                //     if count > limit {
+                //         return Err(VerifierError::Flow(
+                //             FlowError::DowngraderCallLimitExceeded {
+                //                 downgrader: function_name.to_owned(),
+                //                 limit,
+                //             },
+                //         ));
+                //     }
+                // }
             }
         }
 
@@ -1171,13 +1173,13 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     .into_iter()
                     .zip(false_cells)
                     .map(|(a, b)| {
-                        Ok(Slot {
+                        Ok(Cell {
                             value: a.value.combine(b.value),
                             tag: self
                                 .policy
                                 .closest_common_descendant(a.tag, b.tag)
                                 .map_err(VerifierError::Flow)?,
-                            counts: a.counts.merge_max(&b.counts),
+                            // counts: a.counts.merge_max(&b.counts),
                         })
                     })
                     .collect::<Result<Vec<_>, VerifierError<P::Tag>>>()?;

@@ -27,7 +27,7 @@ pub(crate) use crate::{
         verifier::{ValueSpan, Verifier, VerifierError},
     },
     make_block,
-    types::{Cell, FunctionDataError, IoBuffer},
+    types::{Value, FunctionDataError, IoBuffer},
 };
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ pub(crate) fn check_verifier_stack(verifier: Verifier, expected: Vec<ValueSpan>)
 }
 
 /// Asserts the executor's final value stack equals `expected`.
-pub(crate) fn check_executor_stack(executor: Executor, expected: Vec<Cell>) {
+pub(crate) fn check_executor_stack(executor: Executor, expected: Vec<Value>) {
     assert_eq!(executor.values(), expected);
 }
 
@@ -105,6 +105,17 @@ macro_rules! verify_expect {
         let expected: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
             ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($e) ),* ];
         $crate::test_catalog::check_verifier_stack(verifier, expected);
+    }};
+    (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {{
+        let verifier = $crate::machine::verifier::Verifier::with_policy($prog, $policy)
+            .expect("verifier construction should succeed")
+            .verify()
+            .expect("verifier should accept program");
+        let expected_values: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
+            ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($v) ),* ];
+        let expected_tags = ::std::vec![ $( $t ),* ];
+        assert_eq!(verifier.values(), expected_values, "verifier values mismatch");
+        assert_eq!(verifier.tags(), expected_tags, "verifier tags mismatch");
     }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::verifier::Verifier::new($prog).verify();
@@ -132,9 +143,20 @@ macro_rules! exec_expect {
         let executor = $crate::machine::executor::Executor::new($prog)
             .exec()
             .expect("executor should run program");
-        let expected: ::std::vec::Vec<$crate::types::Cell> =
-            ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+        let expected: ::std::vec::Vec<$crate::types::Value> =
+            ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
         $crate::test_catalog::check_executor_stack(executor, expected);
+    }};
+    (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {{
+        let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
+            .expect("executor construction should succeed")
+            .exec()
+            .expect("executor should run program");
+        let expected_values: ::std::vec::Vec<$crate::types::Value> =
+            ::std::vec![ $( $crate::types::Value::Integer($v) ),* ];
+        let expected_tags = ::std::vec![ $( $t ),* ];
+        assert_eq!(executor.values(), expected_values, "executor values mismatch");
+        assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
     }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::executor::Executor::new($prog).exec();
@@ -156,8 +178,8 @@ macro_rules! exec_expect {
             .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
             .exec()
             .expect("executor should run program");
-        let expected: ::std::vec::Vec<$crate::types::Cell> =
-            ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+        let expected: ::std::vec::Vec<$crate::types::Value> =
+            ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
         $crate::test_catalog::check_executor_stack(executor, expected);
     }};
     (($prog:expr) input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]) => {{
@@ -173,6 +195,30 @@ macro_rules! exec_expect {
     (($prog:expr) cases { $($cases:tt)* }) => {
         $crate::test_catalog::exec_expect!(@cases ($prog) $($cases)*);
     };
+    (($prog:expr) cases with $policy:expr, { $($cases:tt)* }) => {
+        $crate::test_catalog::exec_expect!(@tagged_cases ($prog) ($policy) $($cases)*);
+    };
+    // Internal `tagged_cases` muncher: each case is `input [..] => tagged_stack [..]`,
+    // separated/terminated by `;`. The program and policy are re-evaluated for each case.
+    (@tagged_cases ($prog:expr) ($policy:expr)) => {};
+    (@tagged_cases ($prog:expr) ($policy:expr)
+        input [ $($in:expr),* $(,)? ] => tagged_stack [ $(($v:expr, $t:expr)),* $(,)? ]
+        $(; $($rest:tt)*)?
+    ) => {
+        {
+            let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
+                .expect("executor construction should succeed")
+                .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+                .exec()
+                .expect("executor should run program");
+            let expected_values: ::std::vec::Vec<$crate::types::Value> =
+                ::std::vec![ $( $crate::types::Value::Integer($v) ),* ];
+            let expected_tags = ::std::vec![ $( $t ),* ];
+            assert_eq!(executor.values(), expected_values, "executor values mismatch");
+            assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
+        }
+        $( $crate::test_catalog::exec_expect!(@tagged_cases ($prog) ($policy) $($rest)*); )?
+    };
     // Internal `cases` muncher: each case is `input [..] => stack [..]` or
     // `input [..] => output [..]`, separated/terminated by `;`. The program
     // expression is re-evaluated for each case.
@@ -186,8 +232,8 @@ macro_rules! exec_expect {
                 .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
                 .exec()
                 .expect("executor should run program");
-            let expected: ::std::vec::Vec<$crate::types::Cell> =
-                ::std::vec![ $( $crate::types::Cell::Integer($e) ),* ];
+            let expected: ::std::vec::Vec<$crate::types::Value> =
+                ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
             $crate::test_catalog::check_executor_stack(executor, expected);
         }
         $( $crate::test_catalog::exec_expect!(@cases ($prog) $($rest)*); )?
