@@ -8,7 +8,7 @@ use crate::{
     },
     machine::{
         CoreError::{self},
-        CoreMachine, DowngradeCounts, Evaluate, PairedStack, Slot,
+        CoreMachine, DowngradeCounts, Evaluate, Slot, StackFrames,
     },
     types::{
         self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
@@ -20,12 +20,10 @@ use log::{debug, error, trace, warn};
 #[derive(Debug, Clone)]
 pub enum VerifierError<Tag: FlowTag = ()> {
     Core(CoreError),
+    StackUnderflow,
     InvalidCell {
         instr: Instruction<Tag>,
         cell_index: CellIndex,
-        cells: Vec<ValueSpan>,
-        prog: Rc<[Instruction<Tag>]>,
-        location: &'static str,
     },
     ArithmeticOverflow,
     DivisionByZero,
@@ -41,7 +39,6 @@ pub enum VerifierError<Tag: FlowTag = ()> {
         required: CellIndex,
         available: usize,
     },
-    StackUnderflow,
     UnsafeCondPlacement,
     DebugError(&'static str),
     CondUnequalStackSizes {
@@ -49,6 +46,7 @@ pub enum VerifierError<Tag: FlowTag = ()> {
         false_branch_cells: usize,
     },
     BlockHasEmptyStack,
+    EmptyBlock,
     NestedFunctionDefinition {
         outer_function: String,
         inner_function: String,
@@ -290,7 +288,7 @@ impl<Tag: FlowTag> Findings<Tag> {
 #[derive(Clone, Debug)]
 pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    stack: PairedStack<ValueSpan, P::Tag>,
+    stack: StackFrames<Slot<ValueSpan, P::Tag>>,
     policy: P,
     pc_tag: P::Tag,
     findings: Findings<P::Tag>,
@@ -306,7 +304,7 @@ impl Verifier<NoFlow> {
         let pc_tag = policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
-            stack: PairedStack::new(),
+            stack: StackFrames::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
@@ -326,7 +324,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
-            stack: PairedStack::new(),
+            stack: StackFrames::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
@@ -398,14 +396,14 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         tag: P::Tag,
     ) -> Result<(), VerifierError<P::Tag>> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(value, effective_tag);
+        self.stack.push(Slot::new(value, effective_tag));
         Ok(())
     }
 
     /// Pushes a value whose tag is already final (e.g. block / function return).
     /// Does NOT combine with pc_tag.
     fn push_existing(&mut self, value: ValueSpan, tag: P::Tag) {
-        self.stack.push(value, tag);
+        self.stack.push(Slot::new(value, tag));
     }
 
     /// Reads the tag corresponding to a value cell.
@@ -420,9 +418,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                     .cloned()
                     .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
                 cell_index: idx,
-                cells: self.stack.values(),
-                prog: self.machine.program_data.get_program(),
-                location: "Verifier::read_tag",
             })
     }
 
@@ -491,7 +486,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         self.machine.program_data = saved_pd;
         let (last, body_size) = self.stack.exit_block(saved_base);
         let (last_value, last_tag) = match last {
-            Some((value, tag)) => (Some(value), Some(tag)),
+            Some(slot) => (Some(slot.value), Some(slot.tag)),
             None => (None, None),
         };
 
@@ -809,8 +804,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<P::Tag>> {
-        // TODO: When entering a block that's been re-based, check that there are enough cells for
-        // operations performed inside. Make a unit test for this.
         if self.stack.len() < usize::from(required) {
             return Err(NotEnoughCells {
                 required,
@@ -825,9 +818,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         self.stack.value_at(reg.into()).ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: reg,
-            cells: self.stack.values(),
-            prog: self.machine.program_data.get_program(),
-            location: "Verifier::read, get()",
         })
     }
 
@@ -991,9 +981,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                         .ok_or(InvalidCell {
                             instr: self.machine.program_data.get_current()?.clone(),
                             cell_index: arg,
-                            cells: self.stack.values(),
-                            prog: self.machine.program_data.get_program(),
-                            location: "Verifier::verify_alu_unary_cell, calculating reverse index",
                         })?;
 
                     let val = self.read(index)?;
@@ -1118,6 +1105,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
     }
 
     fn evaluate_block(&mut self, instrs: Rc<[Instruction<P::Tag>]>) -> Result<(), Self::Error> {
+        if instrs.is_empty() {
+            return Err(EmptyBlock);
+        }
         match self.run_block_scoped(instrs)? {
             (Some(val), Some(tag), _) => self.push_existing(val, tag),
             (Some(val), None, _) => self.push_existing(val, self.policy.default_tag()),
@@ -1194,18 +1184,18 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             // the parent stack in place, so we keep a single copy of the initial
             // cells to re-run the false branch from the same starting point.
             None => {
-                let initial = self.stack.cells().to_vec();
+                let initial = self.stack.slots().to_vec();
 
                 self.run_ifelse_branch(&when_true, condition_tag)?;
-                let true_cells = self.stack.replace_cells(initial);
+                let true_cells = self.stack.replace_slots(initial);
 
                 self.run_ifelse_branch(&when_false, condition_tag)?;
-                let false_cells = self.stack.take_cells();
+                let false_cells = self.stack.take_slots();
 
                 let (true_len, false_len) = (true_cells.len(), false_cells.len());
                 if true_len != false_len {
                     // Restore a valid stack before returning the error.
-                    self.stack.set_cells(true_cells);
+                    self.stack.set_slots(true_cells);
                     return Err(CondUnequalStackSizes {
                         true_branch_cells: true_len,
                         false_branch_cells: false_len,
@@ -1229,7 +1219,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                         })
                     })
                     .collect::<Result<Vec<_>, VerifierError<P::Tag>>>()?;
-                self.stack.set_cells(merged);
+                self.stack.set_slots(merged);
             }
         }
 

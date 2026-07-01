@@ -376,6 +376,87 @@ impl<T: Clone> StackFrames<T> {
     pub fn len(&self) -> usize {
         self.cells.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    pub fn base(&self) -> usize {
+        self.base
+    }
+}
+
+impl<V: Copy, T: Copy> StackFrames<Slot<V, T>> {
+    /// Values only, cloned out for inspection and error reporting.
+    pub fn values(&self) -> Vec<V> {
+        self.cells.iter().map(|slot| slot.value).collect()
+    }
+
+    /// Value of the top cell, if any.
+    pub fn last_value(&self) -> Option<V> {
+        self.cells.last().map(|slot| slot.value)
+    }
+
+    /// Tags only, cloned out for inspection and error reporting.
+    pub fn tags(&self) -> Vec<T> {
+        self.cells.iter().map(|slot| slot.tag).collect()
+    }
+
+    /// Tag of the top cell, if any.
+    pub fn last_tag(&self) -> Option<T> {
+        self.cells.last().map(|slot| slot.tag)
+    }
+
+    /// Per-cell downgrade counters, cloned out for inspection.
+    pub fn counts(&self) -> Vec<DowngradeCounts> {
+        self.cells.iter().map(|slot| slot.counts.clone()).collect()
+    }
+
+    /// Value at `index`, if it exists.
+    pub fn value_at(&self, index: usize) -> Option<V> {
+        self.cells.get(index).map(|slot| slot.value)
+    }
+
+    /// Tag at `index`, if it exists.
+    pub fn tag_at(&self, index: usize) -> Option<T> {
+        self.cells.get(index).map(|slot| slot.tag)
+    }
+
+    /// Increments the per-cell downgrade counter for `downgrader` at `index`,
+    /// returning the new total (0 if `index` is out of range).
+    pub fn bump_count(&mut self, index: usize, downgrader: &str) -> usize {
+        self.cells
+            .get_mut(index)
+            .map(|slot| slot.counts.bump(downgrader))
+            .unwrap_or(0)
+    }
+
+    /// Read-only view of the underlying slots.
+    pub fn slots(&self) -> &[Slot<V, T>] {
+        &self.cells
+    }
+
+    /// Replaces the underlying slots, returning the previous contents.
+    pub fn replace_slots(&mut self, slots: Vec<Slot<V, T>>) -> Vec<Slot<V, T>> {
+        std::mem::replace(&mut self.cells, slots)
+    }
+
+    /// Takes the underlying slots, leaving an empty stack behind.
+    pub fn take_slots(&mut self) -> Vec<Slot<V, T>> {
+        std::mem::take(&mut self.cells)
+    }
+
+    /// Overwrites the underlying slots.
+    pub fn set_slots(&mut self, slots: Vec<Slot<V, T>>) {
+        self.cells = slots;
+    }
+
+    pub fn set_values_for_unmonitored(&mut self, values: Vec<V>, default_tag: T) {
+        self.cells = values
+            .into_iter()
+            .map(|value| Slot::new(value, default_tag))
+            .collect();
+    }
 }
 
 /// A single stack cell bundling a value with its security tag and per-cell
@@ -399,151 +480,3 @@ impl<Value, Tag> Slot<Value, Tag> {
     }
 }
 
-/// A stack of [`Slot`]s providing value/tag/counter views over a single
-/// underlying [`StackFrames`]. Because every cell carries its value, tag, and
-/// downgrade counters together in one record, the three can never drift out of
-/// sync — there is nothing to keep aligned by hand.
-#[derive(Clone, Debug)]
-pub struct PairedStack<Value: Copy, Tag: Copy> {
-    stack: StackFrames<Slot<Value, Tag>>,
-}
-
-impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
-    pub fn new() -> Self {
-        Self {
-            stack: StackFrames::new(),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.stack.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.stack.len() == 0
-    }
-
-    /// Base of the innermost block (start of the current frame's own cells).
-    pub fn base(&self) -> usize {
-        self.stack.base
-    }
-
-    /// Values only, cloned out for inspection and error reporting.
-    pub fn values(&self) -> Vec<Value> {
-        self.stack.cells.iter().map(|slot| slot.value).collect()
-    }
-
-    /// Value of the top cell, if any.
-    pub fn last_value(&self) -> Option<Value> {
-        self.stack.cells.last().map(|slot| slot.value)
-    }
-
-    /// Tags only, cloned out for inspection and error reporting.
-    pub fn tags(&self) -> Vec<Tag> {
-        self.stack.cells.iter().map(|slot| slot.tag).collect()
-    }
-
-    /// Tag of the top cell, if any.
-    pub fn last_tag(&self) -> Option<Tag> {
-        self.stack.cells.last().map(|slot| slot.tag)
-    }
-
-    /// Per-cell downgrade counters, cloned out for inspection.
-    pub fn counts(&self) -> Vec<DowngradeCounts> {
-        self.stack
-            .cells
-            .iter()
-            .map(|slot| slot.counts.clone())
-            .collect()
-    }
-
-    /// Gets the value and tag at the given index, if it exists.
-    pub fn get(&self, index: usize) -> Option<(Value, Tag)> {
-        self.stack.get(index).map(|slot| (slot.value, slot.tag))
-    }
-
-    /// Value at `index`, if it exists.
-    pub fn value_at(&self, index: usize) -> Option<Value> {
-        self.stack.get(index).map(|slot| slot.value)
-    }
-
-    /// Tag at `index`, if it exists.
-    pub fn tag_at(&self, index: usize) -> Option<Tag> {
-        self.stack.get(index).map(|slot| slot.tag)
-    }
-
-    /// Increments the per-cell downgrade counter for `downgrader` at `index`,
-    /// returning the new total (0 if `index` is out of range).
-    pub fn bump_count(&mut self, index: usize, downgrader: &str) -> usize {
-        self.stack
-            .cells
-            .get_mut(index)
-            .map(|slot| slot.counts.bump(downgrader))
-            .unwrap_or(0)
-    }
-
-    /// Pushes a value and tag together (with empty downgrade counters).
-    pub fn push(&mut self, value: Value, tag: Tag) {
-        self.stack.push(Slot::new(value, tag));
-    }
-
-    /// Pops the top cell, returning its value and tag (counters are discarded).
-    pub fn pop(&mut self) -> Option<(Value, Tag)> {
-        self.stack.pop().map(|slot| (slot.value, slot.tag))
-    }
-
-    pub fn enter_block(&mut self) -> usize {
-        self.stack.enter_block()
-    }
-
-    pub fn exit_block(&mut self, saved_base: usize) -> (Option<(Value, Tag)>, usize) {
-        let (slot, size) = self.stack.exit_block(saved_base);
-        (slot.map(|slot| (slot.value, slot.tag)), size)
-    }
-
-    pub fn enter_ifelse_branch(&mut self) {
-        self.stack.enter_ifelse_branch();
-    }
-
-    pub fn exit_ifelse_branch(&mut self) {
-        self.stack.exit_ifelse_branch();
-    }
-
-    pub fn rebase(&mut self) -> Result<(), CoreError> {
-        self.stack.rebase()
-    }
-
-    /// Read-only view of the underlying slots (used by the verifier's if/else
-    /// branch merge, which combines values, tags, and counters cell-by-cell).
-    pub fn cells(&self) -> &[Slot<Value, Tag>] {
-        &self.stack.cells
-    }
-
-    /// Replaces the underlying slots, returning the previous contents.
-    pub fn replace_cells(&mut self, cells: Vec<Slot<Value, Tag>>) -> Vec<Slot<Value, Tag>> {
-        std::mem::replace(&mut self.stack.cells, cells)
-    }
-
-    /// Takes the underlying slots, leaving an empty stack behind.
-    pub fn take_cells(&mut self) -> Vec<Slot<Value, Tag>> {
-        std::mem::take(&mut self.stack.cells)
-    }
-
-    /// Overwrites the underlying slots.
-    pub fn set_cells(&mut self, cells: Vec<Slot<Value, Tag>>) {
-        self.stack.cells = cells;
-    }
-
-    pub fn set_values_for_unmonitored(&mut self, values: Vec<Value>, default_tag: Tag) {
-        self.stack.cells = values
-            .into_iter()
-            .map(|value| Slot::new(value, default_tag))
-            .collect();
-    }
-}
-
-impl<Value: Copy, Tag: Copy> Default for PairedStack<Value, Tag> {
-    fn default() -> Self {
-        Self::new()
-    }
-}

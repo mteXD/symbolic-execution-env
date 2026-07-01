@@ -16,7 +16,6 @@ pub enum UnaryOpCell {
     Read,
     ReadReverse,
     Pop,
-    // Tail, // Tail call not needed right now.
 }
 
 /// An operation that takes one immediate value encoded in the instruction.

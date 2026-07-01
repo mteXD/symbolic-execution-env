@@ -331,17 +331,13 @@ test_program! {
 
 test_program! {
     /// [NEGATIVE] Empty blocks are prohibited.
-    ///
-    /// TODO: Implement empty block prohibition; behavior is undecided for both
-    /// runners. The constructor is still referenced to keep it documented.
-    #[ignore = "Empty block prohibition not yet implemented"]
     blocks_empty_block,
     program: {
         let program: Vec<Instruction> = vec![make_block!()];
         program
     },
-    verifier: { custom |_program| {} },
-    executor: { custom |_program| {} },
+    verifier: { error VerifierError::EmptyBlock },
+    executor: { error ExecutorError::EmptyBlock },
 }
 
 test_program! {
@@ -642,6 +638,7 @@ test_program! {
 
 test_program! {
     /// [NEGATIVE] Nested function definitions are prohibited.
+    /// Note: Executor cannot catch this; nested function will be executed.
     functions_nested_defs,
     program: vec![
         add_instr!(fun FunctionDefine, OUTER),
@@ -657,10 +654,7 @@ test_program! {
         outer_function: o,
         inner_function: i
     } if o == OUTER && i == INNER },
-    executor: {
-        #[ignore = "Decide on executor behavior for this case"]
-        error ExecutorError::Core(CoreError::FunctionDataError(_))
-    },
+    executor: { stack [42] },
 }
 
 test_program! {
@@ -799,7 +793,7 @@ test_program! {
     ///
     /// Ignored: depends on the filesystem (no buffered-I/O equivalent yet). The
     /// constructor is still referenced to keep it documented.
-    #[ignore = "Requires filesystem access; no buffered-I/O equivalent yet"]
+    #[ignore = "Files not yet completely implemented."]
     intrinsics_file_io_example,
     program: {
         let program: Vec<Instruction> = vec![

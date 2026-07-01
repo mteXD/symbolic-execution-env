@@ -12,7 +12,7 @@ use crate::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine, Evaluate, PairedStack},
+    machine::{CoreError, CoreMachine, Evaluate, Slot, StackFrames},
     types::{self, Cell, CellIndex, Immediate, IoBuffer, ProgramData},
 };
 use Cell::*;
@@ -26,11 +26,10 @@ where
     DivisionByZero,
     ArithmeticOverflow,
     StackUnderflow,
-    NoSavedCells,
-    NoRebasedCells,
     InvalidCell,
     TypeError { expected: Cell, found: Cell },
     BlockHasEmptyStack,
+    EmptyBlock,
     Core(CoreError),
     Flow(FlowError<Tag>),
 }
@@ -71,7 +70,7 @@ struct ActiveDowngrader {
 
 pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    stack: PairedStack<Cell, P::Tag>,
+    stack: StackFrames<Slot<Cell, P::Tag>>,
     policy: P,
     pc_tag: P::Tag,
     function_depth: usize,
@@ -103,7 +102,7 @@ impl Executor<NoFlow> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
-            stack: PairedStack::new(),
+            stack: StackFrames::new(),
             policy: NoFlow,
             pc_tag: (),
             function_depth: 0,
@@ -123,7 +122,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
-            stack: PairedStack::new(),
+            stack: StackFrames::new(),
             policy,
             pc_tag,
             function_depth: 0,
@@ -173,7 +172,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     pub fn read(&self, index: CellIndex) -> ExecutorResult<Cell, P> {
         self.stack
             .get(index.into())
-            .map(|(value, _)| value)
+            .map(|s| s.value)
             .ok_or(InvalidCell)
     }
 
@@ -181,7 +180,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     pub fn read_tag(&self, index: CellIndex) -> ExecutorResult<P::Tag, P> {
         self.stack
             .get(index.into())
-            .map(|(_, tag)| tag)
+            .map(|s| s.tag)
             .ok_or(InvalidCell)
     }
 
@@ -206,7 +205,10 @@ impl<P: InformationFlowPolicy> Executor<P> {
     fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Cell, P::Tag), P> {
         let abs = usize::from(index);
         self.note_downgrade_arg(abs)?;
-        self.stack.get(abs).ok_or(InvalidCell)
+        self.stack
+            .get(abs)
+            .map(|s| (s.value, s.tag))
+            .ok_or(InvalidCell)
     }
 
     /// Counts a downgrader argument read against the caller cell at `abs`, once
@@ -251,13 +253,13 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// Pushes a newly-created value, including the current control-flow tag.
     fn push_new_value(&mut self, value: Cell, tag: P::Tag) -> ExecutorResult<(), P> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(value, effective_tag);
+        self.stack.push(Slot::new(value, effective_tag));
         Ok(())
     }
 
     /// Restores a result that already carries its final effective tag.
     fn push_existing_entry(&mut self, entry: (Cell, P::Tag)) {
-        self.stack.push(entry.0, entry.1);
+        self.stack.push(Slot::new(entry.0, entry.1));
     }
 
     fn run(&mut self) -> ExecutorResult<(), P> {
@@ -274,7 +276,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Runs `instrs` as a nested context (block / function body / ifelse branch).
     ///
-    /// Saves and restores `program_data` while [`PairedStack`] scopes the value
+    /// Saves and restores `program_data` while [`StackFrames`] scopes the value
     /// and tag cells together.
     fn run_nested(
         &mut self,
@@ -287,7 +289,8 @@ impl<P: InformationFlowPolicy> Executor<P> {
         let run_result = self.run();
 
         self.machine.program_data = saved_program;
-        let (result, _) = self.stack.exit_block(saved_bases);
+        let (slot, _) = self.stack.exit_block(saved_bases);
+        let result = slot.map(|s| (s.value, s.tag));
 
         run_result?;
         Ok(result)
@@ -395,7 +398,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
                         }
                         .into());
                     }
-                    self.stack.push(value, connection.target);
+                    self.stack.push(Slot::new(value, connection.target));
                 }
                 None => self.push_existing_entry((value, tag)),
             }
@@ -593,6 +596,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
     fn evaluate_block(&mut self, instrs: Rc<[Instruction<P::Tag>]>) -> ExecutorResult<(), P> {
         // Each block must leave at least one value on its local stack so the parent can
         // observe a result. A block that ends with an empty local stack is a "void" error.
+        if instrs.is_empty() {
+            return Err(EmptyBlock);
+        }
         match self.run_nested(instrs)? {
             Some(entry) => self.push_existing_entry(entry),
             None => return Err(BlockHasEmptyStack),
