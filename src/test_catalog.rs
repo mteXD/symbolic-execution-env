@@ -81,12 +81,12 @@ pub(crate) fn integrity_policy() -> SecurityPolicy<Integrity> {
 
 /// Asserts the verifier's final value stack equals `expected`.
 pub(crate) fn check_verifier_stack(verifier: Verifier, expected: Vec<ValueSpan>) {
-    assert_eq!(verifier.stack.cells, expected);
+    assert_eq!(verifier.values(), expected);
 }
 
 /// Asserts the executor's final value stack equals `expected`.
 pub(crate) fn check_executor_stack(executor: Executor, expected: Vec<Cell>) {
-    assert_eq!(executor.cells, expected);
+    assert_eq!(executor.values(), expected);
 }
 
 // ---------------------------------------------------------------------------

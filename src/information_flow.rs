@@ -44,6 +44,23 @@ pub enum FlowError<Tag: FlowTag> {
     AmbiguousClosestCommonDescendant { left: Tag, right: Tag },
     NoCommonDescendant { left: Tag, right: Tag },
     InformationFlowViolation { found: Tag, guard: Tag },
+    ReflexiveAwareConnection(Tag),
+    DuplicateDowngrader(String),
+    /// A downgrader's body returned a value whose tag is not its connection
+    /// `source`, so the implicit retag to `target` is rejected.
+    DowngraderReturnTagMismatch { found: Tag, expected: Tag },
+    /// A downgrader was (directly or transitively) invoked from within another
+    /// downgrader's body. Downgraders are never re-entrant.
+    RecursiveDowngrader { downgrader: String },
+    /// A single value was downgraded more times than the downgrader's per-value
+    /// `max_calls` budget allows.
+    DowngraderCallLimitExceeded { downgrader: String, limit: usize },
+    /// A `Downgrader`/`Downgrade` instruction named something that is not a
+    /// downgrader registered in the policy.
+    NotADowngrader { name: String },
+    /// A `FunctionDefine`/`FunctionCall` instruction named a registered
+    /// downgrader; downgraders must use `Downgrader`/`Downgrade` instead.
+    DowngraderUsedAsFunction { name: String },
 }
 
 /// A tag belonging to one side of a disjoint union of topologies.
@@ -340,6 +357,28 @@ impl<Tag: FlowTag> PolicyGraph<Tag> {
     }
 }
 
+/// An explicit, deliberately-controlled downgrade relation `source ->> target`.
+///
+/// Aware connections are explicit, non-reflexive, and non-transitive. They are
+/// **not** part of the oblivious lattice and never participate in `ccd` or
+/// `can_flow`. A connection is only usable through its trusted [`Downgrader`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AwareConnection<Tag: FlowTag> {
+    pub source: Tag,
+    pub target: Tag,
+}
+
+/// A trusted, per-data-budgeted gate for a single [`AwareConnection`]. Whatever
+/// the downgrader returns is implicitly retagged from `source` to `target`.
+///
+/// `max_calls` bounds how many times any one value may be downgraded through
+/// this gate; `None` means unlimited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Downgrader<Tag: FlowTag> {
+    pub connection: AwareConnection<Tag>,
+    pub max_calls: Option<usize>,
+}
+
 /// Trait for operations on tags from the perspective of policies.
 pub trait InformationFlowPolicy {
     type Tag: FlowTag;
@@ -357,6 +396,13 @@ pub trait InformationFlowPolicy {
     ) -> Result<Self::Tag, FlowError<Self::Tag>>;
     /// Checks whether 'from -> to' holds for given tags.
     fn can_flow(&self, from: Self::Tag, to: Self::Tag) -> Result<bool, FlowError<Self::Tag>>;
+    /// Returns the downgrader registered under `name`, if any.
+    ///
+    /// Defaults to `None` so policies without aware flow (e.g. [`NoFlow`]) need
+    /// no implementation.
+    fn downgrader(&self, _name: &str) -> Option<Downgrader<Self::Tag>> {
+        None
+    }
 }
 
 /// Standard information-flow policy backed by a [`FlowGraph`].
@@ -373,6 +419,8 @@ pub struct SecurityPolicy<Tag: FlowTag> {
     default_tag: Tag,
     input_tag: Tag,
     output_tag: Tag,
+    /// Named aware-flow downgraders, layered on top of the oblivious `graph`.
+    downgraders: HashMap<String, Downgrader<Tag>>,
 }
 
 impl<Tag: FlowTag> SecurityPolicy<Tag> {
@@ -393,12 +441,58 @@ impl<Tag: FlowTag> SecurityPolicy<Tag> {
             default_tag,
             input_tag,
             output_tag,
+            downgraders: HashMap::new(),
         })
     }
 
     /// Returns the underlying validated flow graph.
     pub fn graph(&self) -> &PolicyGraph<Tag> {
         &self.graph
+    }
+
+    /// Registers an aware connection `source ->> target` behind a named
+    /// downgrader, returning the augmented policy for chaining.
+    ///
+    /// Rejects reflexive connections ([`FlowError::ReflexiveAwareConnection`]),
+    /// tags unknown to the graph ([`FlowError::UnknownTag`]), and duplicate
+    /// downgrader names ([`FlowError::DuplicateDowngrader`]).
+    ///
+    /// `max_calls` is the per-value downgrade budget (`None` = unlimited).
+    pub fn with_downgrader(
+        mut self,
+        name: impl Into<String>,
+        source: Tag,
+        target: Tag,
+        max_calls: Option<usize>,
+    ) -> Result<Self, FlowError<Tag>> {
+        if source == target {
+            return Err(FlowError::ReflexiveAwareConnection(source));
+        }
+        for tag in [source, target] {
+            if !self.graph.contains(tag) {
+                return Err(FlowError::UnknownTag(tag));
+            }
+        }
+        let name = name.into();
+        if self.downgraders.contains_key(&name) {
+            return Err(FlowError::DuplicateDowngrader(name));
+        }
+        self.downgraders.insert(
+            name,
+            Downgrader {
+                connection: AwareConnection { source, target },
+                max_calls,
+            },
+        );
+        Ok(self)
+    }
+
+    /// Returns whether an aware connection `source ->> target` was declared
+    /// directly. Never infers transitive chains.
+    pub fn has_aware_connection(&self, source: Tag, target: Tag) -> bool {
+        self.downgraders
+            .values()
+            .any(|d| d.connection.source == source && d.connection.target == target)
     }
 }
 
@@ -427,6 +521,10 @@ impl<Tag: FlowTag> InformationFlowPolicy for SecurityPolicy<Tag> {
 
     fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
         self.graph.can_flow(from, to)
+    }
+
+    fn downgrader(&self, name: &str) -> Option<Downgrader<Tag>> {
+        self.downgraders.get(name).copied()
     }
 }
 
@@ -578,5 +676,33 @@ mod tests {
             SecurityPolicy::new(graph, Public, Private, Separate),
             Err(FlowError::UnknownTag(Separate))
         ));
+    }
+
+    #[test]
+    fn rejects_reflexive_aware_connection() {
+        let graph = PolicyGraph::new([Public, Private], [(Public, Private)]).unwrap();
+        let policy = SecurityPolicy::new(graph, Public, Private, Public).unwrap();
+        assert!(matches!(
+            policy.with_downgrader("identity", Private, Private, Some(1)),
+            Err(FlowError::ReflexiveAwareConnection(Private))
+        ));
+    }
+
+    #[test]
+    fn aware_connections_are_not_transitive() {
+        let graph = Topology::linear([Public, Constrained, Private])
+            .into_graph()
+            .unwrap();
+        let policy = SecurityPolicy::new(graph, Public, Private, Public)
+            .unwrap()
+            .with_downgrader("a_to_b", Private, Constrained, Some(1))
+            .unwrap()
+            .with_downgrader("b_to_c", Constrained, Public, Some(1))
+            .unwrap();
+
+        // Direct connections are present, but no chain is inferred.
+        assert!(policy.has_aware_connection(Private, Constrained));
+        assert!(policy.has_aware_connection(Constrained, Public));
+        assert!(!policy.has_aware_connection(Private, Public));
     }
 }

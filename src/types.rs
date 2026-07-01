@@ -13,7 +13,6 @@ use crate::instruction::Instruction;
 pub type CellIndex = u16;
 pub type Immediate = i64;
 
-// PERF: Copy for Strings can be expensive.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum Cell {
     Integer(Immediate),

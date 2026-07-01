@@ -1,19 +1,14 @@
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    ops::{Add, Deref, DerefMut},
-    rc::Rc,
-};
+use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{FlowError, FlowTag, InformationFlowPolicy, NoFlow},
+    information_flow::{AwareConnection, FlowError, FlowTag, InformationFlowPolicy, NoFlow},
     instruction::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
     machine::{
         CoreError::{self},
-        CoreMachine, Evaluate, StackFrames,
+        CoreMachine, DowngradeCounts, Evaluate, PairedStack, Slot,
     },
     types::{
         self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
@@ -243,6 +238,9 @@ struct FunctionDefiningInfo<Tag: FlowTag = ()> {
     arg_indices: Vec<MemorizedIndex>,
     return_value: Option<ValueSpan>,
     return_tag: Option<Tag>,
+    /// Whether invoking this function (transitively) runs any downgrader. Used
+    /// to forbid recursive downgrades.
+    reaches_downgrader: bool,
 }
 
 impl<Tag: FlowTag> Default for FunctionDefiningInfo<Tag> {
@@ -252,6 +250,7 @@ impl<Tag: FlowTag> Default for FunctionDefiningInfo<Tag> {
             arg_indices: Vec::new(),
             return_value: None,
             return_tag: None,
+            reaches_downgrader: false,
         }
     }
 }
@@ -291,25 +290,14 @@ impl<Tag: FlowTag> Findings<Tag> {
 #[derive(Clone, Debug)]
 pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
-    pub stack: StackFrames<ValueSpan>,
-    tags: StackFrames<P::Tag>,
+    stack: PairedStack<ValueSpan, P::Tag>,
     policy: P,
     pc_tag: P::Tag,
     findings: Findings<P::Tag>,
-}
-
-// Convenience: lets `verifier.cells`, `verifier.base`, and the stack methods
-// resolve directly through the inner `StackFrames`.
-impl<P: InformationFlowPolicy> Deref for Verifier<P> {
-    type Target = StackFrames<ValueSpan>;
-    fn deref(&self) -> &StackFrames<ValueSpan> {
-        &self.stack
-    }
-}
-impl<P: InformationFlowPolicy> DerefMut for Verifier<P> {
-    fn deref_mut(&mut self) -> &mut StackFrames<ValueSpan> {
-        &mut self.stack
-    }
+    /// Active downgrader connection while analyzing its body at definition
+    /// time. No stack is needed: nested definitions are forbidden, so at most
+    /// one downgrader is under analysis at a time.
+    current_downgrader: Option<AwareConnection<P::Tag>>,
 }
 
 impl Verifier<NoFlow> {
@@ -318,11 +306,11 @@ impl Verifier<NoFlow> {
         let pc_tag = policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
-            tags: StackFrames::new(),
+            stack: PairedStack::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
+            current_downgrader: None,
         }
     }
 }
@@ -338,11 +326,11 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
-            stack: StackFrames::new(),
-            tags: StackFrames::new(),
+            stack: PairedStack::new(),
             policy,
             pc_tag,
             findings: Findings::default(),
+            current_downgrader: None,
         })
     }
 
@@ -393,6 +381,16 @@ impl<P: InformationFlowPolicy> Verifier<P> {
             .map_err(VerifierError::Flow)
     }
 
+    /// Tag applied to a function's collected arguments during analysis. Inside
+    /// a downgrader this is the connection's `source`, so the computed result
+    /// matches `source` and passes the implicit-retag source check. Otherwise
+    /// it is the policy default (non-downgrader functions are unaffected).
+    fn arg_tag(&self) -> P::Tag {
+        self.current_downgrader
+            .map(|c| c.source)
+            .unwrap_or_else(|| self.policy.default_tag())
+    }
+
     /// Pushes a newly-created value, including the current control-flow tag.
     fn push_with_tag(
         &mut self,
@@ -400,23 +398,20 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         tag: P::Tag,
     ) -> Result<(), VerifierError<P::Tag>> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
-        self.stack.push(value);
-        self.tags.push(effective_tag);
+        self.stack.push(value, effective_tag);
         Ok(())
     }
 
     /// Pushes a value whose tag is already final (e.g. block / function return).
     /// Does NOT combine with pc_tag.
     fn push_existing(&mut self, value: ValueSpan, tag: P::Tag) {
-        self.stack.push(value);
-        self.tags.push(tag);
+        self.stack.push(value, tag);
     }
 
     /// Reads the tag corresponding to a value cell.
     pub fn read_tag(&self, idx: CellIndex) -> Result<P::Tag, VerifierError<P::Tag>> {
-        self.tags
-            .get(idx.into())
-            .copied()
+        self.stack
+            .tag_at(idx.into())
             .ok_or_else(|| InvalidCell {
                 instr: self
                     .machine
@@ -425,20 +420,30 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                     .cloned()
                     .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
                 cell_index: idx,
-                cells: self.stack.cells.clone(),
+                cells: self.stack.values(),
                 prog: self.machine.program_data.get_program(),
                 location: "Verifier::read_tag",
             })
     }
 
+    /// Returns the value cells, cloned out for inspection.
+    pub fn values(&self) -> Vec<ValueSpan> {
+        self.stack.values()
+    }
+
     /// Returns the parallel tag stack.
-    pub fn tags(&self) -> &[P::Tag] {
-        &self.tags.cells
+    pub fn tags(&self) -> Vec<P::Tag> {
+        self.stack.tags()
+    }
+
+    /// Returns the parallel per-cell downgrade counters.
+    pub fn counts(&self) -> Vec<DowngradeCounts> {
+        self.stack.counts()
     }
 
     /// Returns the tag of the top value cell.
     pub fn last_tag(&self) -> Option<P::Tag> {
-        self.tags.cells.last().copied()
+        self.stack.last_tag()
     }
 
     fn ensure_output_allowed(&self, value_tag: P::Tag) -> Result<(), VerifierError<P::Tag>> {
@@ -479,14 +484,16 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         instrs: Rc<[Instruction<P::Tag>]>,
     ) -> Result<(Option<ValueSpan>, Option<P::Tag>, usize), VerifierError<P::Tag>> {
         let saved_base = self.stack.enter_block();
-        let saved_tag_base = self.tags.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let (last_value, body_size) = self.stack.exit_block(saved_base);
-        let (last_tag, _) = self.tags.exit_block(saved_tag_base);
+        let (last, body_size) = self.stack.exit_block(saved_base);
+        let (last_value, last_tag) = match last {
+            Some((value, tag)) => (Some(value), Some(tag)),
+            None => (None, None),
+        };
 
         exec_result?;
         Ok((last_value, last_tag, body_size))
@@ -496,7 +503,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// cells are mutated in place. `function_data` and `findings` are scoped
     /// (saved on entry, restored on exit) so branches don't leak metadata into
     /// the parent. `Rebase` is forbidden inside the branch via the
-    /// `IfElseBranch` marker frame on the value stack.
+    /// `IfElseBranch` marker frame.
     ///
     /// The `condition_tag` is combined with the current `pc_tag` so that all
     /// values pushed inside the branch carry the condition's taint.
@@ -509,11 +516,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let saved_pc_tag = self.pc_tag;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
 
-        // Only push IfElseBranch on the value stack (for the Rebase guard).
-        // The tags stack is managed manually via cells save/restore in
-        // evaluate_ifelse — this is safe because IfElseBranch frames are
-        // transparent to pop() and the value stack's rebase() guard fires
-        // before the tags stack's rebase() is attempted.
+        // The IfElseBranch frame makes pops transparent to enclosing blocks and
+        // forbids `Rebase` inside a branch. Cells (value, tag, and counters) are
+        // merged across the two branches by evaluate_ifelse.
         self.stack.enter_ifelse_branch();
         let exec_result = self.evaluate_instruction(instr);
         self.stack.exit_ifelse_branch();
@@ -548,13 +553,36 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// Nested function definitions are intentionally unsupported: they clash
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
-    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<P::Tag>> {
+    fn verify_function_definition(
+        &mut self,
+        fun: &str,
+        is_downgrader: bool,
+    ) -> Result<(), VerifierError<P::Tag>> {
         if let Some(ref outer) = self.findings.func_defining {
             return Err(NestedFunctionDefinition {
                 outer_function: outer.function_name.clone(),
                 inner_function: fun.to_owned(),
             });
         }
+
+        // The instruction declares intent; the policy declares the connection.
+        // Cross-check the two so a downgrade gate is never defined as an
+        // ordinary function (and vice versa).
+        let connection = match (is_downgrader, self.policy.downgrader(fun)) {
+            (true, None) => {
+                return Err(VerifierError::Flow(FlowError::NotADowngrader {
+                    name: fun.to_owned(),
+                }));
+            }
+            (false, Some(_)) => {
+                return Err(VerifierError::Flow(FlowError::DowngraderUsedAsFunction {
+                    name: fun.to_owned(),
+                }));
+            }
+            (true, Some(downgrader)) => Some(downgrader.connection),
+            (false, None) => None,
+        };
+
         let aliases = self.machine.common_function_logic(fun)?;
 
         // Shadowing is not permitted; compilers can generate unique function names.
@@ -571,12 +599,18 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         // argument counts) must persist so callers and recursive calls see it.
         let saved_defining = self.findings.func_defining.take();
         let saved_rebase_seen = std::mem::replace(&mut self.findings.rebase_seen, false);
+        // Establish the downgrader context so the body's arguments carry the
+        // connection `source` and, once the body is analyzed, its return value
+        // is implicitly retagged to `target`.
+        let saved_downgrader = self.current_downgrader;
+        self.current_downgrader = connection;
 
         self.findings.func_defining = Some(FunctionDefiningInfo {
             function_name: fun.to_owned(),
             arg_indices: Vec::new(),
             return_value: None,
             return_tag: None,
+            reaches_downgrader: false,
         });
 
         let run_result = self.run_nested(to_check);
@@ -587,6 +621,36 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                 info.return_tag = *return_tag;
             }
         }
+
+        // Definition-time implicit retag: a downgrader's return value must carry
+        // the connection `source`; we then record `target` so call sites publish
+        // the downgraded tag. Invoking a downgrader trivially runs a downgrader,
+        // which the transitive recursion check relies on.
+        let downgrade_check = if let Some(connection) = self.current_downgrader {
+            if let Some(info) = self.findings.func_defining.as_mut() {
+                info.reaches_downgrader = true;
+            }
+            match self
+                .findings
+                .func_defining
+                .as_ref()
+                .and_then(|info| info.return_tag)
+            {
+                Some(tag) if tag == connection.source => {
+                    if let Some(info) = self.findings.func_defining.as_mut() {
+                        info.return_tag = Some(connection.target);
+                    }
+                    Ok(())
+                }
+                Some(tag) => Err(VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
+                    found: tag,
+                    expected: connection.source,
+                })),
+                None => Ok(()),
+            }
+        } else {
+            Ok(())
+        };
 
         self.findings.func_data.insert(
             fun.to_string(),
@@ -600,7 +664,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
         self.findings.func_defining = saved_defining;
         self.findings.rebase_seen = saved_rebase_seen;
+        self.current_downgrader = saved_downgrader;
 
+        downgrade_check?;
         run_result?;
 
         trace!("Finished verifying function definition for '{}'", fun);
@@ -616,13 +682,139 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok(())
     }
 
+    /// Verifies a call site. `is_downgrade` marks a `Downgrade` instruction
+    /// (enforce the per-value budget, treat the callee as a downgrader for the
+    /// recursion check) versus an ordinary `FunctionCall`. The instruction and
+    /// the policy registration must agree: a `Downgrade` of an unregistered
+    /// name, or a `FunctionCall` of a registered downgrader, is rejected.
+    fn verify_function_call(
+        &mut self,
+        function_name: &str,
+        is_downgrade: bool,
+    ) -> Result<(), VerifierError<P::Tag>> {
+        use FunctionDataError::FunctionUndefined;
+
+        // Cross-check the instruction's intent against the policy registration.
+        let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
+            (true, None) => {
+                return Err(VerifierError::Flow(FlowError::NotADowngrader {
+                    name: function_name.to_owned(),
+                }));
+            }
+            (false, Some(_)) => {
+                return Err(VerifierError::Flow(FlowError::DowngraderUsedAsFunction {
+                    name: function_name.to_owned(),
+                }));
+            }
+            (true, Some(downgrader)) => Some(downgrader),
+            (false, None) => None,
+        };
+
+        self.machine.function_get(function_name)?;
+
+        // Forbid recursive downgrades: a downgrader body may not (transitively)
+        // invoke any downgrader. A `Downgrade` is trivially such an invocation.
+        let callee_reaches = is_downgrade
+            || self
+                .findings
+                .func_data
+                .get(function_name)
+                .map_or(false, |info| info.reaches_downgrader);
+        if self.current_downgrader.is_some() && callee_reaches {
+            return Err(VerifierError::Flow(FlowError::RecursiveDowngrader {
+                downgrader: function_name.to_owned(),
+            }));
+        }
+        // Propagate the taint to the function currently being defined.
+        if let Some(defining) = self.findings.func_defining.as_mut() {
+            defining.reaches_downgrader |= callee_reaches;
+        }
+
+        let x = self.findings.func_data.get(function_name);
+
+        trace!(
+            "Tried to get function data for '{}': {:#?}",
+            function_name, x
+        );
+
+        let available = self.stack.len();
+
+        // Every index the function reads as an argument must resolve to an
+        // existing cell in the caller's current stack.
+        let deepest_missing = self
+            .findings
+            .func_data
+            .get(function_name)
+            .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?
+            .arg_indices
+            .iter()
+            .map(|index| index.required_depth())
+            .filter(|depth| *depth > available)
+            .max();
+
+        if let Some(required) = deepest_missing {
+            return Err(NotEnoughArguments {
+                required: required.try_into().unwrap_or(CellIndex::MAX),
+                available,
+            });
+        }
+
+        // Per-data downgrade budget: each distinct caller cell the downgrader
+        // reads is downgraded once per call. The counter rides with that cell
+        // and resets when it is popped/replaced.
+        if let Some(downgrader) = downgrader {
+            let mut positions: Vec<usize> = self
+                .findings
+                .func_data
+                .get(function_name)
+                .map(|info| {
+                    info.arg_indices
+                        .iter()
+                        .filter_map(|index| Self::arg_caller_position(*index, available))
+                        .collect()
+                })
+                .unwrap_or_default();
+            positions.sort_unstable();
+            positions.dedup();
+            for position in positions {
+                let count = self.stack.bump_count(position, function_name);
+                if let Some(limit) = downgrader.max_calls {
+                    if count > limit {
+                        return Err(VerifierError::Flow(
+                            FlowError::DowngraderCallLimitExceeded {
+                                downgrader: function_name.to_owned(),
+                                limit,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        let return_value = self
+            .findings
+            .func_data
+            .get(function_name)
+            .and_then(|info| info.return_value)
+            .unwrap_or_else(ValueSpan::inf);
+        let return_tag = self
+            .findings
+            .func_data
+            .get(function_name)
+            .and_then(|info| info.return_tag)
+            .unwrap_or_else(|| self.policy.default_tag());
+        self.push_existing(return_value, return_tag);
+
+        Ok(())
+    }
+
     pub fn check_len(&self, required: CellIndex) -> Result<(), VerifierError<P::Tag>> {
         // TODO: When entering a block that's been re-based, check that there are enough cells for
         // operations performed inside. Make a unit test for this.
-        if self.cells.len() < usize::from(required) {
+        if self.stack.len() < usize::from(required) {
             return Err(NotEnoughCells {
                 required,
-                available: self.cells.len(),
+                available: self.stack.len(),
             });
         }
 
@@ -630,10 +822,10 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<P::Tag>> {
-        self.stack.get(reg.into()).copied().ok_or(InvalidCell {
+        self.stack.value_at(reg.into()).ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: reg,
-            cells: self.cells.clone(),
+            cells: self.stack.values(),
             prog: self.machine.program_data.get_program(),
             location: "Verifier::read, get()",
         })
@@ -643,7 +835,19 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// own loaded cells (`[base, len)`) and therefore reads a caller-supplied
     /// argument rather than function-local data.
     fn reads_argument_normal(&self, idx: CellIndex) -> bool {
-        !(self.stack.base..self.cells.len()).contains(&usize::from(idx))
+        !(self.stack.base()..self.stack.len()).contains(&usize::from(idx))
+    }
+
+    /// Resolves a recorded argument index to an absolute caller-stack position,
+    /// given the number of cells (`available`) visible at the call site.
+    /// `Normal` indices count from the bottom; `Reverse` from the top.
+    fn arg_caller_position(index: MemorizedIndex, available: usize) -> Option<usize> {
+        match index {
+            MemorizedIndex::Normal(i) => Some(usize::from(i)),
+            MemorizedIndex::Reverse(k) => available
+                .checked_sub(1)
+                .and_then(|top| top.checked_sub(usize::from(k))),
+        }
     }
 
     /// Like [`read`](Self::read), but while collecting a function's arguments
@@ -655,7 +859,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     ) -> Result<(ValueSpan, P::Tag), VerifierError<P::Tag>> {
         if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
             self.findings.record_arg(MemorizedIndex::Normal(idx));
-            return Ok((ValueSpan::inf(), self.policy.default_tag()));
+            return Ok((ValueSpan::inf(), self.arg_tag()));
         }
         let val = self.read(idx)?;
         let tag = self.read_tag(idx)?;
@@ -686,33 +890,6 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok(self)
     }
 
-    // FIXME: This function no longer works as it did before.
-    /// Checks that the current `IfElse` instruction uses the correct condition.
-    fn validate_if_placement(&self) -> Result<(), VerifierError<P::Tag>> {
-        use BinaryOp::*;
-        use Instruction::AluBinary;
-
-        let invalid_placement = || {
-            error!(
-                "Condition instruction not preceded by a comparison instruction. This is unsafe."
-            );
-            Err(VerifierError::UnsafeCondPlacement)
-        };
-
-        match self.previous_instruction()? {
-            AluBinary(
-                SetNotEqual
-                | SetLessThan
-                | SetLessThanOrEqual
-                | SetGreaterThan
-                | SetGreaterThanOrEqual,
-                _,
-                _,
-            ) => Ok(()),
-            _ => invalid_placement(),
-        }
-    }
-
     fn known_truth_value(condition: &ValueSpan) -> Option<bool> {
         if condition.is_single_value() {
             if condition.min == 0 {
@@ -738,9 +915,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             Nop => (),
             Rebase => {
                 self.stack.rebase()?;
-                self.tags
-                    .rebase()
-                    .expect("paired tag stack rejected a value-stack rebase");
                 // Crossing `Rebase` ends argument collection: freeze the count
                 // discovered so far and publish it for callers / recursion.
                 if self.findings.is_collecting_func_args() {
@@ -785,10 +959,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
         match instr {
             Not => {
                 let (val, tag) = self.read_normal(arg)?;
-                let result = match val {
-                    ValueSpan { min, max } if min == max => ValueSpan::new(!min, !max),
-                    _ => ValueSpan::inf(),
-                };
+                let result = ValueSpan::new(!val.max, !val.min);
                 self.push_with_tag(result, tag)?;
             }
             Read => {
@@ -803,24 +974,24 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     // the values already loaded in this phase. Reaching into
                     // the already-loaded region just re-reads function-local
                     // data and is not an argument.
-                    let loaded = self.cells.len().saturating_sub(self.stack.base);
+                    let loaded = self.stack.len().saturating_sub(self.stack.base());
                     if usize::from(arg) >= loaded {
                         self.findings.record_arg(MemorizedIndex::Reverse(arg));
                     }
-                    self.push_with_tag(ValueSpan::inf(), self.policy.default_tag())?;
+                    self.push_with_tag(ValueSpan::inf(), self.arg_tag())?;
                 } else {
                     trace!(
                         "Not collecting function arguments, performing normal read with reverse indexing."
                     );
                     // like python's negative indexing.
-                    let index = u16::try_from(self.cells.len())
+                    let index = u16::try_from(self.stack.len())
                         .ok()
                         .and_then(|len| len.checked_sub(1))
                         .and_then(|len| len.checked_sub(arg))
                         .ok_or(InvalidCell {
                             instr: self.machine.program_data.get_current()?.clone(),
                             cell_index: arg,
-                            cells: self.cells.clone(),
+                            cells: self.stack.values(),
                             prog: self.machine.program_data.get_program(),
                             location: "Verifier::verify_alu_unary_cell, calculating reverse index",
                         })?;
@@ -836,7 +1007,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 }
                 for _ in 0..arg {
                     self.stack.pop().ok_or(StackUnderflow)?;
-                    self.tags.pop().expect("tag stack shorter than value stack");
                 }
             }
         }
@@ -866,6 +1036,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             ValueSpan::new(min, max)
         };
 
+        // FIXME: Make it so that overflows are checked for all not-infinite value spans.
         let valuespan_check = |va: ValueSpan, vb: ValueSpan, vn: ValueSpan| {
             if va.is_single_value() && vb.is_single_value() && vn.is_unbounded() {
                 Err(ArithmeticOverflow)
@@ -905,6 +1076,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     return Err(DivisionByZero);
                 }
                 if a.is_single_value() && b.is_single_value() {
+                    // Division by 0 not possible
                     if let Some(result) = a.min.checked_div(b.min) {
                         ValueSpan::new(result, result)
                     } else {
@@ -912,7 +1084,8 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     }
                 } else {
                     if b.min <= 0 && b.max >= 0 {
-                        // Division by zero is possible, so we return the widest possible range.
+                        // Division by 0 possible, so we return the widest possible range.
+                        warn!("Division by zero possible");
                         ValueSpan::inf()
                     } else {
                         let candidates = [
@@ -958,58 +1131,13 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
         instr: &FunctionOp,
         function_name: &str,
     ) -> Result<(), Self::Error> {
-        use FunctionDataError::FunctionUndefined;
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => self.verify_function_definition(function_name)?,
-            FunctionCall => {
-                self.machine.function_get(function_name)?;
-                let x = self.findings.func_data.get(function_name);
-
-                trace!(
-                    "Tried to get function data for '{}': {:#?}",
-                    function_name, x
-                );
-
-                let available = self.cells.len();
-
-                // Every index the function reads as an argument must resolve to
-                // an existing cell in the caller's current stack.
-                let deepest_missing = self
-                    .findings
-                    .func_data
-                    .get(function_name)
-                    .ok_or_else(|| {
-                        VerifierError::from(FunctionUndefined(function_name.to_owned()))
-                    })?
-                    .arg_indices
-                    .iter()
-                    .map(|index| index.required_depth())
-                    .filter(|depth| *depth > available)
-                    .max();
-
-                if let Some(required) = deepest_missing {
-                    return Err(NotEnoughArguments {
-                        required: required.try_into().unwrap_or(CellIndex::MAX),
-                        available,
-                    });
-                }
-
-                let return_value = self
-                    .findings
-                    .func_data
-                    .get(function_name)
-                    .and_then(|info| info.return_value)
-                    .unwrap_or_else(ValueSpan::inf);
-                let return_tag = self
-                    .findings
-                    .func_data
-                    .get(function_name)
-                    .and_then(|info| info.return_tag)
-                    .unwrap_or_else(|| self.policy.default_tag());
-                self.push_existing(return_value, return_tag);
-            }
+            FunctionDefine => self.verify_function_definition(function_name, false)?,
+            Downgrader => self.verify_function_definition(function_name, true)?,
+            FunctionCall => self.verify_function_call(function_name, false)?,
+            Downgrade => self.verify_function_call(function_name, true)?,
         }
 
         Ok(())
@@ -1066,49 +1194,46 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             // the parent stack in place, so we keep a single copy of the initial
             // cells to re-run the false branch from the same starting point.
             None => {
-                let initial_cells = self.stack.cells.clone();
-                let initial_tags = self.tags.cells.clone();
+                let initial = self.stack.cells().to_vec();
 
                 self.run_ifelse_branch(&when_true, condition_tag)?;
-                let true_cells = std::mem::replace(&mut self.stack.cells, initial_cells);
-                let true_tags = std::mem::replace(&mut self.tags.cells, initial_tags);
+                let true_cells = self.stack.replace_cells(initial);
 
                 self.run_ifelse_branch(&when_false, condition_tag)?;
-                let false_cells = std::mem::take(&mut self.stack.cells);
-                let false_tags = std::mem::take(&mut self.tags.cells);
+                let false_cells = self.stack.take_cells();
 
                 let (true_len, false_len) = (true_cells.len(), false_cells.len());
                 if true_len != false_len {
                     // Restore a valid stack before returning the error.
-                    self.stack.cells = true_cells;
-                    self.tags.cells = true_tags;
+                    self.stack.set_cells(true_cells);
                     return Err(CondUnequalStackSizes {
                         true_branch_cells: true_len,
                         false_branch_cells: false_len,
                     });
                 }
 
-                // Cell-by-cell merge of the two final stacks.
-                self.stack.cells = true_cells
+                // Cell-by-cell merge of the two final stacks: values combine,
+                // tags take their closest common descendant, and counters keep
+                // the larger per-downgrader count.
+                let merged = true_cells
                     .into_iter()
                     .zip(false_cells)
-                    .map(|(a, b)| a.combine(b))
-                    .collect();
-
-                // Tag-by-tag merge using closest common descendant.
-                self.tags.cells = true_tags
-                    .into_iter()
-                    .zip(false_tags)
                     .map(|(a, b)| {
-                        self.policy
-                            .closest_common_descendant(a, b)
-                            .map_err(VerifierError::Flow)
+                        Ok(Slot {
+                            value: a.value.combine(b.value),
+                            tag: self
+                                .policy
+                                .closest_common_descendant(a.tag, b.tag)
+                                .map_err(VerifierError::Flow)?,
+                            counts: a.counts.merge_max(&b.counts),
+                        })
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, VerifierError<P::Tag>>>()?;
+                self.stack.set_cells(merged);
             }
         }
 
-        debug!("Finished verifying ifelse; cells = {:?}", self.cells);
+        debug!("Finished verifying ifelse; cells = {:?}", self.stack.values());
 
         Ok(())
     }

@@ -57,6 +57,13 @@ pub enum BinaryOp {
 pub enum FunctionOp {
     FunctionDefine,
     FunctionCall,
+    /// Defines the body of a trusted downgrader (its connection and budget live
+    /// in the policy, keyed by name). Distinct from `FunctionDefine` so a
+    /// downgrade gate is never confused with an ordinary function.
+    Downgrader,
+    /// Invokes a downgrader, applying its implicit retag and per-value budget.
+    /// Distinct from `FunctionCall` to make every downgrade site explicit.
+    Downgrade,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

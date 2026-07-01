@@ -61,7 +61,7 @@ test_program! {
             .redirect_input(IoBuffer::new(vec![n]).into())
             .exec()
             .unwrap();
-        assert_eq!(executor.cells.last().copied(), Some(Cell::Integer(factorial_helper(n))));
+        assert_eq!(executor.values().last().copied(), Some(Cell::Integer(factorial_helper(n))));
     } },
 }
 
@@ -104,7 +104,7 @@ test_program! {
             .redirect_input(IoBuffer::new(vec![n]).into())
             .exec()
             .unwrap();
-        assert_eq!(executor.cells.last().copied(), Some(Cell::Integer(factorial_helper(n))));
+        assert_eq!(executor.values().last().copied(), Some(Cell::Integer(factorial_helper(n))));
     } },
 }
 
@@ -145,6 +145,6 @@ test_program! {
             .redirect_input(IoBuffer::new(vec![n]).into())
             .exec()
             .unwrap();
-        assert_eq!(executor.cells.last().copied(), Some(Cell::Integer(fibonacci_helper(n))));
+        assert_eq!(executor.values().last().copied(), Some(Cell::Integer(fibonacci_helper(n))));
     } },
 }

@@ -1,6 +1,6 @@
 use std::{
+    collections::HashSet,
     fmt::{Debug, Display},
-    ops::Deref,
     rc::Rc,
 };
 
@@ -12,7 +12,7 @@ use crate::{
         BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
         UnaryOpImm,
     },
-    machine::{CoreError, CoreMachine, Evaluate, PairedStack, StackFrames},
+    machine::{CoreError, CoreMachine, Evaluate, PairedStack},
     types::{self, Cell, CellIndex, Immediate, IoBuffer, ProgramData},
 };
 use Cell::*;
@@ -51,17 +51,37 @@ type ExecutorResult<T, P> = Result<T, ExecutorError<<P as InformationFlowPolicy>
 
 const RECURSION_LIMIT: usize = 50;
 
+/// Per-call state for the downgrader currently executing. Downgraders are never
+/// re-entrant, so at most one is active at a time. Drives the re-entrancy guard
+/// and per-argument-cell budget counting; the implicit retag of the return
+/// value is applied directly in `call_function` from the policy.
+struct ActiveDowngrader {
+    name: String,
+    max_calls: Option<usize>,
+    /// Caller stack length on entry: reads below this index touch arguments.
+    base: usize,
+    /// `function_depth` of the downgrader body; its own `Rebase` (same depth)
+    /// closes the argument-counting window.
+    depth: usize,
+    /// Whether argument reads still count (true until the body rebases).
+    counting: bool,
+    /// Distinct caller cells already counted for this call.
+    counted: HashSet<usize>,
+}
+
 pub struct Executor<P: InformationFlowPolicy = NoFlow> {
     machine: CoreMachine<P::Tag>,
     stack: PairedStack<Cell, P::Tag>,
     policy: P,
     pc_tag: P::Tag,
     function_depth: usize,
+    /// The downgrader whose body is currently executing, if any.
+    active_downgrader: Option<ActiveDowngrader>,
 }
 
 impl Display for Executor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[Executor {:?}]", self.stack.values().cells.last())
+        write!(f, "[Executor {:?}]", self.stack.last_value())
     }
 }
 
@@ -77,15 +97,6 @@ impl Debug for Executor {
     }
 }
 
-// Preserve read-only access to the existing value-stack API (`cells`, `base`,
-// and `get`) without exposing mutations that could desynchronize the tag stack.
-impl<P: InformationFlowPolicy> Deref for Executor<P> {
-    type Target = StackFrames<Cell>;
-    fn deref(&self) -> &StackFrames<Cell> {
-        self.stack.values()
-    }
-}
-
 /// An executor with no IFT
 impl Executor<NoFlow> {
     /// Creates an ordinary executor with information-flow monitoring disabled.
@@ -96,6 +107,7 @@ impl Executor<NoFlow> {
             policy: NoFlow,
             pc_tag: (),
             function_depth: 0,
+            active_downgrader: None,
         }
     }
 }
@@ -115,6 +127,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
             policy,
             pc_tag,
             function_depth: 0,
+            active_downgrader: None,
         })
     }
 
@@ -155,29 +168,77 @@ impl<P: InformationFlowPolicy> Executor<P> {
         self
     }
 
-    /// Reads a value cell without exposing its tag.
+    /// Reads a value cell without exposing its tag. Does not affect downgrade
+    /// accounting (intended for external inspection).
     pub fn read(&self, index: CellIndex) -> ExecutorResult<Cell, P> {
-        self.read_entry(index).map(|(value, _)| value)
+        self.stack
+            .get(index.into())
+            .map(|(value, _)| value)
+            .ok_or(InvalidCell)
     }
 
     /// Reads the tag corresponding to a value cell.
     pub fn read_tag(&self, index: CellIndex) -> ExecutorResult<P::Tag, P> {
-        self.read_entry(index).map(|(_, tag)| tag)
+        self.stack
+            .get(index.into())
+            .map(|(_, tag)| tag)
+            .ok_or(InvalidCell)
+    }
+
+    /// Returns the value cells, cloned out for inspection.
+    pub fn values(&self) -> Vec<Cell> {
+        self.stack.values()
     }
 
     /// Returns the parallel tag stack.
-    pub fn tags(&self) -> &[P::Tag] {
+    pub fn tags(&self) -> Vec<P::Tag> {
         self.stack.tags()
     }
 
     /// Returns the tag of the top value cell.
     pub fn last_tag(&self) -> Option<P::Tag> {
-        self.tags().last().copied()
+        self.stack.last_tag()
     }
 
-    /// Reads value and tag at the given index
-    fn read_entry(&self, index: CellIndex) -> ExecutorResult<(Cell, P::Tag), P> {
-        self.stack.get(index.into()).ok_or(InvalidCell)
+    /// Reads value and tag at the given index. While a downgrader body runs, a
+    /// read of one of its caller's argument cells is counted against that
+    /// cell's per-downgrader budget.
+    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Cell, P::Tag), P> {
+        let abs = usize::from(index);
+        self.note_downgrade_arg(abs)?;
+        self.stack.get(abs).ok_or(InvalidCell)
+    }
+
+    /// Counts a downgrader argument read against the caller cell at `abs`, once
+    /// per call per distinct cell, enforcing the per-value `max_calls` budget.
+    fn note_downgrade_arg(&mut self, abs: usize) -> ExecutorResult<(), P> {
+        let depth = self.function_depth;
+        let Some(active) = self.active_downgrader.as_mut() else {
+            return Ok(());
+        };
+        // Only count reads performed directly by the downgrader body (not by
+        // functions it calls), of caller arguments, before the body rebases,
+        // once per distinct cell.
+        if depth != active.depth
+            || !active.counting
+            || abs >= active.base
+            || !active.counted.insert(abs)
+        {
+            return Ok(());
+        }
+        let name = active.name.clone();
+        let max_calls = active.max_calls;
+        let count = self.stack.bump_count(abs, &name);
+        if let Some(limit) = max_calls {
+            if count > limit {
+                return Err(FlowError::DowngraderCallLimitExceeded {
+                    downgrader: name,
+                    limit,
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     /// Calculates ccd(left, right)
@@ -258,19 +319,86 @@ impl<P: InformationFlowPolicy> Executor<P> {
         run_result
     }
 
-    fn call_function(&mut self, function_name: &str) -> ExecutorResult<(), P> {
+    /// Calls `function_name`. `is_downgrade` distinguishes a `Downgrade`
+    /// instruction (which applies the implicit retag and per-value budget) from
+    /// an ordinary `FunctionCall`. The instruction and the policy registration
+    /// must agree: a `Downgrade` of an unregistered name, or a `FunctionCall` of
+    /// a registered downgrader, is rejected.
+    fn call_function(&mut self, function_name: &str, is_downgrade: bool) -> ExecutorResult<(), P> {
         let body = self.machine.function_get(function_name)?.clone();
+
+        // The instruction declares intent; the policy declares the connection.
+        // Cross-check the two so downgrade sites are unambiguous. `Downgrader`
+        // is `Copy`, so the lookup releases the `&self.policy` borrow at once.
+        let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
+            (true, None) => {
+                return Err(FlowError::NotADowngrader {
+                    name: function_name.to_owned(),
+                }
+                .into());
+            }
+            (false, Some(_)) => {
+                return Err(FlowError::DowngraderUsedAsFunction {
+                    name: function_name.to_owned(),
+                }
+                .into());
+            }
+            (true, Some(downgrader)) => Some(downgrader),
+            (false, None) => None,
+        };
+
+        // Downgraders are never re-entrant: a downgrader body may not invoke any
+        // downgrader while one is already running.
+        if downgrader.is_some() && self.active_downgrader.is_some() {
+            return Err(FlowError::RecursiveDowngrader {
+                downgrader: function_name.to_owned(),
+            }
+            .into());
+        }
 
         self.function_depth += 1;
         if self.function_depth > RECURSION_LIMIT {
             panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{function_name}'");
         }
 
+        // Install the downgrader context (if any) for the duration of the body.
+        // `base` is the caller stack height: reads below it touch arguments.
+        if let Some(downgrader) = downgrader {
+            self.active_downgrader = Some(ActiveDowngrader {
+                name: function_name.to_owned(),
+                max_calls: downgrader.max_calls,
+                base: self.stack.len(),
+                depth: self.function_depth,
+                counting: true,
+                counted: HashSet::new(),
+            });
+        }
+
         let result = self.run_nested(Rc::from(vec![body]));
+
+        if downgrader.is_some() {
+            self.active_downgrader = None;
+        }
         self.function_depth -= 1;
 
-        if let Some(entry) = result? {
-            self.push_existing_entry(entry);
+        if let Some((value, tag)) = result? {
+            match downgrader {
+                // Implicit retag: the body's return value must already carry the
+                // connection `source`; it is then forced to `target`, bypassing
+                // the `pc_tag` join applied to ordinary values.
+                Some(downgrader) => {
+                    let connection = downgrader.connection;
+                    if tag != connection.source {
+                        return Err(FlowError::DowngraderReturnTagMismatch {
+                            found: tag,
+                            expected: connection.source,
+                        }
+                        .into());
+                    }
+                    self.stack.push(value, connection.target);
+                }
+                None => self.push_existing_entry((value, tag)),
+            }
         }
         Ok(())
     }
@@ -343,12 +471,16 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         match instr {
             Nop => (),
             Rebase => {
-                let this = &mut self.stack;
-                this.values.rebase()?;
-                this.tags
-                    .rebase()
-                    .expect("paired tag stack rejected a value-stack rebase");
-                this.debug_assert_synchronized();
+                self.stack.rebase()?;
+                // A downgrader's own rebase closes its argument-counting window:
+                // afterwards the caller cells are gone and low indices are
+                // body-local locals that must not count as downgrades.
+                let depth = self.function_depth;
+                if let Some(active) = self.active_downgrader.as_mut() {
+                    if depth == active.depth {
+                        active.counting = false;
+                    }
+                }
             }
         }
 
@@ -394,7 +526,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 self.push_new_value(val, tag)?;
             }
             ReadReverse => {
-                let index = reverse_index(self.cells.len(), arg).ok_or(InvalidCell)?;
+                let index = reverse_index(self.stack.len(), arg).ok_or(InvalidCell)?;
                 let (val, tag) = self.read_entry(index)?;
                 self.push_new_value(val, tag)?;
             }
@@ -476,8 +608,30 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         use FunctionOp::*;
 
         match instr {
-            FunctionDefine => _ = self.machine.common_function_logic(function_name)?,
-            FunctionCall => self.call_function(function_name)?,
+            // The body is registered identically for both; the downgrade
+            // semantics live entirely at the call site (implicit retag, budget).
+            // The instruction's intent must still agree with the policy so a
+            // downgrade gate is never defined as an ordinary function.
+            FunctionDefine => {
+                if self.policy.downgrader(function_name).is_some() {
+                    return Err(FlowError::DowngraderUsedAsFunction {
+                        name: function_name.to_owned(),
+                    }
+                    .into());
+                }
+                _ = self.machine.common_function_logic(function_name)?
+            }
+            Downgrader => {
+                if self.policy.downgrader(function_name).is_none() {
+                    return Err(FlowError::NotADowngrader {
+                        name: function_name.to_owned(),
+                    }
+                    .into());
+                }
+                _ = self.machine.common_function_logic(function_name)?
+            }
+            FunctionCall => self.call_function(function_name, false)?,
+            Downgrade => self.call_function(function_name, true)?,
         }
 
         Ok(())

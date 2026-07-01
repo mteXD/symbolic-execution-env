@@ -1,5 +1,5 @@
 use log::{debug, error, warn};
-use std::{fmt::Debug, rc::Rc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use crate::{
     instruction::{
@@ -42,10 +42,10 @@ type CoreResult<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone)]
 pub struct CoreMachine<Tag = ()> {
-    pub function_data: FunctionData<Tag>,
-    pub program_data: ProgramData<Tag>,
-    pub output: Output,
-    pub input: Input,
+    function_data: FunctionData<Tag>,
+    program_data: ProgramData<Tag>,
+    output: Output,
+    input: Input,
 }
 
 impl<Tag: Clone + Debug> CoreMachine<Tag> {
@@ -212,6 +212,39 @@ trait Evaluate<Tag: Debug = ()> {
 //                       enclosing block's restore-on-exit remains correct).
 // =============================================================================
 
+/// Per-cell record of how many times each named downgrader has downgraded the
+/// value occupying this cell. Carried as cell metadata so it is saved/restored
+/// together with the value through pops, blocks, and rebases, and discarded for
+/// good when the cell is finally popped.
+#[derive(Clone, Debug, Default)]
+pub struct DowngradeCounts(HashMap<String, usize>);
+
+impl DowngradeCounts {
+    /// Increments the counter for `downgrader` and returns the new total.
+    pub fn bump(&mut self, downgrader: &str) -> usize {
+        let entry = self.0.entry(downgrader.to_owned()).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    /// Current count for `downgrader` (0 if never downgraded).
+    pub fn get(&self, downgrader: &str) -> usize {
+        self.0.get(downgrader).copied().unwrap_or(0)
+    }
+
+    /// Element-wise maximum with `other` (per downgrader). Used by the verifier
+    /// to merge the two arms of an `if`/`else` conservatively: a value's count
+    /// after the branch is the larger of the two possibilities.
+    pub fn merge_max(&self, other: &Self) -> Self {
+        let mut merged = self.0.clone();
+        for (name, &count) in &other.0 {
+            let entry = merged.entry(name.clone()).or_insert(0);
+            *entry = (*entry).max(count);
+        }
+        DowngradeCounts(merged)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Frame<T> {
     Block { start: usize, saved_below: Vec<T> },
@@ -219,13 +252,13 @@ pub enum Frame<T> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct StackFrames<T: Copy> {
-    pub cells: Vec<T>,
-    pub base: usize,
-    pub frames: Vec<Frame<T>>,
+pub struct StackFrames<T: Clone> {
+    cells: Vec<T>,
+    base: usize,
+    frames: Vec<Frame<T>>,
 }
 
-impl<T: Copy> StackFrames<T> {
+impl<T: Clone> StackFrames<T> {
     pub fn new() -> Self {
         Self {
             cells: Vec::new(),
@@ -250,7 +283,7 @@ impl<T: Copy> StackFrames<T> {
             match frame {
                 Frame::Block { start, saved_below } => {
                     if len < *start {
-                        saved_below.push(popped);
+                        saved_below.push(popped.clone());
                         *start -= 1;
                     }
                     break;
@@ -288,9 +321,9 @@ impl<T: Copy> StackFrames<T> {
         match self.frames.pop().expect("exit_block: no frame") {
             Frame::Block { start, saved_below } => {
                 let body_stack_size = self.cells.len().saturating_sub(start);
-                let result = self.cells.last().copied();
+                let result = self.cells.last().cloned();
                 self.cells.truncate(start);
-                self.cells.extend(saved_below.iter().rev().copied());
+                self.cells.extend(saved_below.iter().rev().cloned());
                 (result, body_stack_size)
             }
             Frame::IfElseBranch => {
@@ -319,17 +352,13 @@ impl<T: Copy> StackFrames<T> {
     /// inside ifelse branches).
     pub fn rebase(&mut self) -> Result<(), CoreError> {
         if self.base > self.cells.len() {
-            return Err(RebaseError);
+            panic!("Base {} is greater than stack length {}, this should not happen", self.base, self.cells.len());
         }
 
         match self.frames.last_mut() {
-            Some(Frame::IfElseBranch) => {
-                debug!("Entering ifelse branch");
-                Err(RebaseError)
-            } // Not rebase-able
             Some(Frame::Block { start, saved_below }) => {
                 // Check that we aren't rebasing twice
-                if *start < self.base {
+                if self.base > *start {
                     return Err(RebaseError);
                 }
 
@@ -338,7 +367,9 @@ impl<T: Copy> StackFrames<T> {
                 *start = 0;
                 Ok(())
             }
-            None => Err(RebaseError),
+            Some(Frame::IfElseBranch) | None => {
+                Err(RebaseError) // Not rebase-able in IfElse or outside block
+            }
         }
     }
 
@@ -347,109 +378,167 @@ impl<T: Copy> StackFrames<T> {
     }
 }
 
+/// A single stack cell bundling a value with its security tag and per-cell
+/// downgrade counters. Keeping all per-value metadata in one record means it
+/// travels together automatically through pushes, pops, blocks, and rebases —
+/// there is only ever one stack to keep consistent.
 #[derive(Clone, Debug)]
-pub struct PairedStack<Value: Copy, Tag: Copy> {
-    values: StackFrames<Value>,
-    tags: StackFrames<Tag>,
+pub struct Slot<Value, Tag> {
+    value: Value,
+    tag: Tag,
+    counts: DowngradeCounts,
 }
 
-/// Saved base positions for the value and tag sides of a [`PairedStack`].
-#[derive(Clone, Copy, Debug)]
-pub struct PairedBlockBases {
-    values: usize,
-    tags: usize,
+impl<Value, Tag> Slot<Value, Tag> {
+    pub fn new(value: Value, tag: Tag) -> Self {
+        Self {
+            value,
+            tag,
+            counts: DowngradeCounts::default(),
+        }
+    }
+}
+
+/// A stack of [`Slot`]s providing value/tag/counter views over a single
+/// underlying [`StackFrames`]. Because every cell carries its value, tag, and
+/// downgrade counters together in one record, the three can never drift out of
+/// sync — there is nothing to keep aligned by hand.
+#[derive(Clone, Debug)]
+pub struct PairedStack<Value: Copy, Tag: Copy> {
+    stack: StackFrames<Slot<Value, Tag>>,
 }
 
 impl<Value: Copy, Tag: Copy> PairedStack<Value, Tag> {
     pub fn new() -> Self {
         Self {
-            values: StackFrames::new(),
-            tags: StackFrames::new(),
+            stack: StackFrames::new(),
         }
     }
 
-    /// Debug assertion that checks that value and tag stacks are of the same length.
-    fn debug_assert_synchronized(&self) {
-        debug_assert_eq!(self.values.cells.len(), self.tags.cells.len());
-        debug_assert_eq!(self.values.base, self.tags.base);
-        debug_assert_eq!(self.values.frames.len(), self.tags.frames.len());
+    pub fn len(&self) -> usize {
+        self.stack.len()
     }
 
-    pub fn values(&self) -> &StackFrames<Value> {
-        &self.values
+    pub fn is_empty(&self) -> bool {
+        self.stack.len() == 0
     }
 
-    pub fn tags(&self) -> &[Tag] {
-        &self.tags.cells
+    /// Base of the innermost block (start of the current frame's own cells).
+    pub fn base(&self) -> usize {
+        self.stack.base
+    }
+
+    /// Values only, cloned out for inspection and error reporting.
+    pub fn values(&self) -> Vec<Value> {
+        self.stack.cells.iter().map(|slot| slot.value).collect()
+    }
+
+    /// Value of the top cell, if any.
+    pub fn last_value(&self) -> Option<Value> {
+        self.stack.cells.last().map(|slot| slot.value)
+    }
+
+    /// Tags only, cloned out for inspection and error reporting.
+    pub fn tags(&self) -> Vec<Tag> {
+        self.stack.cells.iter().map(|slot| slot.tag).collect()
+    }
+
+    /// Tag of the top cell, if any.
+    pub fn last_tag(&self) -> Option<Tag> {
+        self.stack.cells.last().map(|slot| slot.tag)
+    }
+
+    /// Per-cell downgrade counters, cloned out for inspection.
+    pub fn counts(&self) -> Vec<DowngradeCounts> {
+        self.stack
+            .cells
+            .iter()
+            .map(|slot| slot.counts.clone())
+            .collect()
     }
 
     /// Gets the value and tag at the given index, if it exists.
     pub fn get(&self, index: usize) -> Option<(Value, Tag)> {
-        self.values
-            .get(index)
-            .copied()
-            .zip(self.tags.get(index).copied())
+        self.stack.get(index).map(|slot| (slot.value, slot.tag))
     }
 
-    /// Pushes a value and tag together.
+    /// Value at `index`, if it exists.
+    pub fn value_at(&self, index: usize) -> Option<Value> {
+        self.stack.get(index).map(|slot| slot.value)
+    }
+
+    /// Tag at `index`, if it exists.
+    pub fn tag_at(&self, index: usize) -> Option<Tag> {
+        self.stack.get(index).map(|slot| slot.tag)
+    }
+
+    /// Increments the per-cell downgrade counter for `downgrader` at `index`,
+    /// returning the new total (0 if `index` is out of range).
+    pub fn bump_count(&mut self, index: usize, downgrader: &str) -> usize {
+        self.stack
+            .cells
+            .get_mut(index)
+            .map(|slot| slot.counts.bump(downgrader))
+            .unwrap_or(0)
+    }
+
+    /// Pushes a value and tag together (with empty downgrade counters).
     pub fn push(&mut self, value: Value, tag: Tag) {
-        self.values.push(value);
-        self.tags.push(tag);
-        self.debug_assert_synchronized();
+        self.stack.push(Slot::new(value, tag));
     }
 
+    /// Pops the top cell, returning its value and tag (counters are discarded).
     pub fn pop(&mut self) -> Option<(Value, Tag)> {
-        let value = self.values.pop()?;
-        let tag = self
-            .tags
-            .pop()
-            .expect("paired tag stack is shorter than value stack");
-        self.debug_assert_synchronized();
-        Some((value, tag))
+        self.stack.pop().map(|slot| (slot.value, slot.tag))
     }
 
-    pub fn enter_block(&mut self) -> PairedBlockBases {
-        let saved_bases = PairedBlockBases {
-            values: self.values.enter_block(),
-            tags: self.tags.enter_block(),
-        };
-        self.debug_assert_synchronized();
-        saved_bases
+    pub fn enter_block(&mut self) -> usize {
+        self.stack.enter_block()
     }
 
-    pub fn exit_block(&mut self, saved_bases: PairedBlockBases) -> (Option<(Value, Tag)>, usize) {
-        let (value, value_size) = self.values.exit_block(saved_bases.values);
-        let (tag, tag_size) = self.tags.exit_block(saved_bases.tags);
-        assert_eq!(value_size, tag_size, "paired block stacks diverged");
-        self.debug_assert_synchronized();
-        (value.zip(tag), value_size)
+    pub fn exit_block(&mut self, saved_base: usize) -> (Option<(Value, Tag)>, usize) {
+        let (slot, size) = self.stack.exit_block(saved_base);
+        (slot.map(|slot| (slot.value, slot.tag)), size)
     }
 
     pub fn enter_ifelse_branch(&mut self) {
-        self.values.enter_ifelse_branch();
-        self.tags.enter_ifelse_branch();
-        self.debug_assert_synchronized();
+        self.stack.enter_ifelse_branch();
     }
 
     pub fn exit_ifelse_branch(&mut self) {
-        self.values.exit_ifelse_branch();
-        self.tags.exit_ifelse_branch();
-        self.debug_assert_synchronized();
+        self.stack.exit_ifelse_branch();
     }
 
     pub fn rebase(&mut self) -> Result<(), CoreError> {
-        self.values.rebase()?;
-        self.tags
-            .rebase()
-            .expect("paired tag stack rejected a value-stack rebase");
-        self.debug_assert_synchronized();
-        Ok(())
+        self.stack.rebase()
+    }
+
+    /// Read-only view of the underlying slots (used by the verifier's if/else
+    /// branch merge, which combines values, tags, and counters cell-by-cell).
+    pub fn cells(&self) -> &[Slot<Value, Tag>] {
+        &self.stack.cells
+    }
+
+    /// Replaces the underlying slots, returning the previous contents.
+    pub fn replace_cells(&mut self, cells: Vec<Slot<Value, Tag>>) -> Vec<Slot<Value, Tag>> {
+        std::mem::replace(&mut self.stack.cells, cells)
+    }
+
+    /// Takes the underlying slots, leaving an empty stack behind.
+    pub fn take_cells(&mut self) -> Vec<Slot<Value, Tag>> {
+        std::mem::take(&mut self.stack.cells)
+    }
+
+    /// Overwrites the underlying slots.
+    pub fn set_cells(&mut self, cells: Vec<Slot<Value, Tag>>) {
+        self.stack.cells = cells;
     }
 
     pub fn set_values_for_unmonitored(&mut self, values: Vec<Value>, default_tag: Tag) {
-        self.values.cells = values;
-        self.tags.cells = vec![default_tag; self.values.cells.len()];
-        self.debug_assert_synchronized();
+        self.stack.cells = values
+            .into_iter()
+            .map(|value| Slot::new(value, default_tag))
+            .collect();
     }
 }
 
