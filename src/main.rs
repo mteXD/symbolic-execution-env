@@ -16,7 +16,7 @@ fn main() {
         add_instr!(io Print, 0), // Should print 123
     ];
 
-    let program = vec![add_instr!(io Input, 0), add_instr!(io Print, 0)];
+    let program = vec![add_instr!(io Input), add_instr!(io Print, 0)];
 
     Executor::new(program)
         .redirect_input(IoBuffer::new(vec![42]).into())

@@ -1136,7 +1136,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 let tag = self.read_tag(*cell_index)?;
                 self.ensure_output_allowed(tag)?;
             }
-            (Input, Cell(_)) => {
+            (Input, IntrinsicArg::None) => {
                 self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
             }
             (FileRead, Str(path)) => {

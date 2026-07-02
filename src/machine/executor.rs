@@ -649,7 +649,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         match (instr, arg) {
             (Print, Cell(cell_index)) => self.print_cell(*cell_index)?,
-            (Input, Cell(_)) => {
+            (Input, IntrinsicArg::None) => {
                 let value = self.read_input_value()?;
                 self.push_new_value(Integer(value), self.policy.input_tag())?;
             }

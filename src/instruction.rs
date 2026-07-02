@@ -75,6 +75,8 @@ pub enum IntrinsicOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicArg {
+    /// For intrinsics that take no argument (e.g. `Input`).
+    None,
     Cell(CellIndex),
     Str(String),
 }
@@ -119,6 +121,12 @@ macro_rules! add_instr {
     };
     (fun $op:ident, $name:expr) => {
         AluFunction(FunctionOp::$op, String::from($name))
+    };
+    (io $op:ident) => {
+        AluIntrinsic(
+            IntrinsicOp::$op,
+            $crate::instruction::IntrinsicArg::None,
+        )
     };
     (io $op:ident, $a:expr) => {
         AluIntrinsic(

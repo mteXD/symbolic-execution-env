@@ -31,6 +31,15 @@ fn limited_policy() -> SecurityPolicy<Confidentiality> {
     SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
 }
 
+/// Like [`confidentiality_policy`], but with a `Public` input perimeter guard:
+/// `Input` yields an unknown value without tainting it.
+fn public_input_policy() -> SecurityPolicy<Confidentiality> {
+    let graph = Topology::linear([Public, Confidential, Secret])
+        .into_graph()
+        .unwrap();
+    SecurityPolicy::new(graph, Public, Public, Public).unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Tag propagation
 // ---------------------------------------------------------------------------
@@ -115,7 +124,7 @@ test_program! {
     /// `Input` receives the policy's configured input perimeter guard's tag.
     input_receives_input_tag,
     program: vec![
-        add_instr!(io Input, 0)
+        add_instr!(io Input)
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
             (ValueSpan::inf(), Secret)
@@ -164,19 +173,15 @@ test_program! {
     // FIXME: The executor should explore both branches; use Input instruction
     ifelse_unknown_condition_merges_tags,
     program: vec![
-        add_instr!(Push, 1),
-        add_instr!(Push, 2),
-        add_instr!(And, 0, 1), // result is inf (unknown), tag = Public
-        add_instr!(ifelse 2,
+        add_instr!(io Input),
+        add_instr!(ifelse 0,
             add_instr!(tag Push, 7, Public),
             add_instr!(tag Push, 9, Confidential)
         ),
     ],
-    verifier_only: { tagged_stack with confidentiality_policy(), [
-            (1, Public),
-            (2, Public),
-            (1 & 2, Public),
-            (9, Confidential)
+    verifier_only: { tagged_stack with public_input_policy(), [
+            (ValueSpan::inf(), Public),
+            (ValueSpan::new(7, 9), Confidential)
         ]
     },
 }
