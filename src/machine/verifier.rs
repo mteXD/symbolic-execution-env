@@ -7,8 +7,9 @@ use crate::{
         UnaryOpImm,
     },
     machine::{
+        Cell,
         CoreError::{self},
-        CoreMachine, Evaluate, Cell, Stack,
+        CoreMachine, Evaluate, Stack,
     },
     types::{
         self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
@@ -407,17 +408,15 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
     /// Reads the tag corresponding to a value cell.
     pub fn read_tag(&self, idx: CellIndex) -> Result<P::Tag, VerifierError<P::Tag>> {
-        self.stack
-            .tag_at(idx.into())
-            .ok_or_else(|| InvalidCell {
-                instr: self
-                    .machine
-                    .program_data
-                    .get_current()
-                    .cloned()
-                    .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
-                cell_index: idx,
-            })
+        self.stack.tag_at(idx.into()).ok_or_else(|| InvalidCell {
+            instr: self
+                .machine
+                .program_data
+                .get_current()
+                .cloned()
+                .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
+            cell_index: idx,
+        })
     }
 
     /// Returns the value cells, cloned out for inspection.
@@ -631,10 +630,12 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                     }
                     Ok(())
                 }
-                Some(tag) => Err(VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
-                    found: tag,
-                    expected: connection.source,
-                })),
+                Some(tag) => Err(VerifierError::Flow(
+                    FlowError::DowngraderReturnTagMismatch {
+                        found: tag,
+                        expected: connection.source,
+                    },
+                )),
                 None => Ok(()),
             }
         } else {
@@ -996,6 +997,15 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             }
         };
 
+        let simple_model = |a: ValueSpan, b: ValueSpan, op: fn(Immediate, Immediate) -> Immediate| {
+            if a.is_single_value() && b.is_single_value() {
+                let result = op(a.min, b.min);
+                ValueSpan::new(result, result)
+            } else {
+                ValueSpan::inf()
+            }
+        };
+
         let (a, tag_a) = self.read_normal(arg1)?;
         let (b, tag_b) = self.read_normal(arg2)?;
         let result_tag = self.combine_tags(tag_a, tag_b)?;
@@ -1052,9 +1062,24 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     }
                 }
             }
-            And | Or | Xor | ShiftLeftLogical | ShiftRightLogical | ShiftRightArithmetic => {
-                ValueSpan::inf()
-            }
+            And => {
+                simple_model(a, b, |x, y| x & y)
+            },
+            Or => {
+                simple_model(a, b, |x, y| x | y)
+            },
+            Xor => {
+                simple_model(a, b, |x, y| x ^ y)
+            },
+            ShiftLeftLogical => {
+                simple_model(a, b, |x, y| x << y)
+            },
+            ShiftRightLogical => {
+                simple_model(a, b, |x, y| (x as u64 >> y as u64) as Immediate)
+            },
+            ShiftRightArithmetic => {
+                simple_model(a, b, |x, y| x >> y)
+            },
             SetEqual => a.chck_eq(&b),
             SetNotEqual => a.chck_neq(&b),
             SetLessThan => a.chck_lt(&b),
@@ -1156,7 +1181,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 self.run_ifelse_branch(&when_false, condition_tag)?;
                 let false_cells = self.stack.take_slots();
 
-                let true_len= true_cells.len();
+                let true_len = true_cells.len();
                 let false_len = false_cells.len();
                 if true_len != false_len {
                     // Restore a valid stack before returning the error.
@@ -1188,7 +1213,10 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             }
         }
 
-        debug!("Finished verifying ifelse; cells = {:?}", self.stack.values());
+        debug!(
+            "Finished verifying ifelse; cells = {:?}",
+            self.stack.values()
+        );
 
         Ok(())
     }

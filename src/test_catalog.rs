@@ -117,6 +117,22 @@ macro_rules! verify_expect {
         assert_eq!(verifier.values(), expected_values, "verifier values mismatch");
         assert_eq!(verifier.tags(), expected_tags, "verifier tags mismatch");
     }};
+    (($prog:expr) error with $policy:expr, $pat:pat $(if $guard:expr)?) => {{
+        let result = $crate::machine::verifier::Verifier::with_policy($prog, $policy)
+            .and_then(|verifier| verifier.verify());
+        match result {
+            Err($pat) $(if $guard)? => {}
+            Err(other) => panic!(
+                "\nEXPECTED verifier Err({})\nACTUAL Err\n{:#?}",
+                stringify!($pat),
+                other
+            ),
+            Ok(_) => panic!(
+                "\nEXPECTED verifier Err({})\nACTUAL Ok(..)",
+                stringify!($pat)
+            ),
+        }
+    }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::verifier::Verifier::new($prog).verify();
         match result {
@@ -157,6 +173,22 @@ macro_rules! exec_expect {
         let expected_tags = ::std::vec![ $( $t ),* ];
         assert_eq!(executor.values(), expected_values, "executor values mismatch");
         assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
+    }};
+    (($prog:expr) error with $policy:expr, $pat:pat $(if $guard:expr)?) => {{
+        let result = $crate::machine::executor::Executor::with_policy($prog, $policy)
+            .and_then(|executor| executor.exec());
+        match result {
+            Err($pat) $(if $guard)? => {}
+            Err(other) => panic!(
+                "\nEXPECTED executor Err({})\nACTUAL Err\n{:#?}",
+                stringify!($pat),
+                other
+            ),
+            Ok(_) => panic!(
+                "\nEXPECTED executor Err({})\nACTUAL Ok(..)",
+                stringify!($pat)
+            ),
+        }
     }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::executor::Executor::new($prog).exec();

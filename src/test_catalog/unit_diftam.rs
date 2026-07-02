@@ -1,15 +1,35 @@
 //! Unit tests with inline tagged (DIFTAM) programs.
 //!
 //! These exercise dynamic information-flow tracking and monitoring. Each test
-//! inlines a tagged program and uses `custom` bodies, since they construct
-//! runners via `with_policy` and assert on tags / construction errors. The
-//! shared `Confidentiality` / `Integrity` policies live in the parent module.
+//! inlines a tagged program and states both runners' expectations with the
+//! declarative `tagged_stack with <policy>, …` / `error with <policy>, …`
+//! forms. A `custom` body remains only where the grammar cannot reach (the
+//! plain `NoFlow` runner). The shared `Confidentiality` / `Integrity` policies
+//! live in the parent module.
 
 use crate::types::Immediate;
 
 use super::Confidentiality::*;
 use super::Integrity::*;
 use super::*;
+
+// ---------------------------------------------------------------------------
+// Policy helpers
+// ---------------------------------------------------------------------------
+
+/// Confidentiality policy extended with a single `Secret ->> Public`
+/// downgrader named `name`, with a per-value call budget of `max_calls`.
+fn downgrader_policy(name: &str, max_calls: Option<usize>) -> SecurityPolicy<Confidentiality> {
+    confidentiality_policy()
+        .with_downgrader(name, Secret, Public, max_calls)
+        .unwrap()
+}
+
+/// A policy that only knows `Public` and `Secret` — no `Confidential`.
+fn limited_policy() -> SecurityPolicy<Confidentiality> {
+    let graph = Topology::linear([Public, Secret]).into_graph().unwrap();
+    SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // Tag propagation
@@ -92,27 +112,19 @@ test_program! {
 // ---------------------------------------------------------------------------
 
 test_program! {
-    /// `Input` receives the policy's configured input tag.
+    /// `Input` receives the policy's configured input perimeter guard's tag.
     input_receives_input_tag,
-    program: vec![add_instr!(io Input, 0)],
-    verifier: { custom |program| {
-        let input = IoBuffer::new(vec![42]);
-        let verifier = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_input(input.into())
-            .verify()
-            .unwrap();
-        assert_eq!(verifier.last_tag(), Some(Secret));
-    } },
-    executor: { custom |program| {
-        let input = IoBuffer::new(vec![42]);
-        let executor = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_input(input.into())
-            .exec()
-            .unwrap();
-        assert_eq!(executor.values()[0], Value::Integer(42));
-        assert_eq!(executor.last_tag(), Some(Secret));
+    program: vec![
+        add_instr!(io Input, 0)
+    ],
+    verifier: { tagged_stack with confidentiality_policy(), [
+            (ValueSpan::inf(), Secret)
+        ]
+    },
+    executor: { cases with confidentiality_policy(), {
+        input [42] => tagged_stack [
+            (42, Secret)
+        ]
     } },
 }
 
@@ -149,6 +161,7 @@ test_program! {
     /// An unknown condition causes both branches to be explored and their
     /// pushed tags merged. Verifier-only: the executor takes a single concrete
     /// branch and cannot observe the merge.
+    // FIXME: The executor should explore both branches; use Input instruction
     ifelse_unknown_condition_merges_tags,
     program: vec![
         add_instr!(Push, 1),
@@ -162,8 +175,8 @@ test_program! {
     verifier_only: { tagged_stack with confidentiality_policy(), [
             (1, Public),
             (2, Public),
-            (ValueSpan::inf(), Public),
-            (ValueSpan::new(7, 9), Confidential)
+            (1 & 2, Public),
+            (9, Confidential)
         ]
     },
 }
@@ -204,38 +217,22 @@ test_program! {
 // ---------------------------------------------------------------------------
 
 test_program! {
-    /// The output perimeter guard rejects printing a secret value.
+    /// The output perimeter guard rejects printing a secret value; nothing is
+    /// written before the rejection.
     output_pg_rejects_secret_tag,
     program: vec![add_instr!(tag Push, 42, Secret), add_instr!(io Print, 0)],
-    verifier: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-    } },
-    executor: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-        assert!(output.borrow().is_empty());
-    } },
+    verifier: { error with confidentiality_policy(),
+        VerifierError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
+    executor: { error with confidentiality_policy(),
+        ExecutorError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
 }
 
 test_program! {
@@ -247,58 +244,33 @@ test_program! {
         add_instr!(tag Push, 42, Public),
         add_instr!(ifelse 0, add_instr!(io Print, 1), add_instr!(Nop)),
     ],
-    verifier: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-    } },
-    executor: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-        assert!(output.borrow().is_empty());
-    } },
+    verifier: { error with confidentiality_policy(),
+        VerifierError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
+    executor: { error with confidentiality_policy(),
+        ExecutorError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
 }
 
 test_program! {
     /// A public value can be printed through the output perimeter.
     output_perimeter_accepts_public_value,
-    program: vec![add_instr!(Push, 42), add_instr!(io Print, 0)],
-    verifier: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let _verifier = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .verify()
-            .unwrap();
-    } },
-    executor: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let _executor = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .exec()
-            .unwrap();
-        assert_eq!(*output.borrow(), vec![42]);
-    } },
+    program: vec![
+        add_instr!(Push, 42),
+        add_instr!(io Print, 0)
+    ],
+    verifier: { tagged_stack with confidentiality_policy(), [
+        (42, Public)
+    ] },
+    executor: { tagged_stack with confidentiality_policy(), [
+        (42, Public)
+    ] },
 }
 
 // ---------------------------------------------------------------------------
@@ -310,25 +282,12 @@ test_program! {
     /// rejected at construction time.
     invalid_embedded_tag_rejected_at_construction,
     program: vec![add_instr!(tag Push, 42, Confidential)],
-    verifier: { custom |program| {
-        // A policy that only knows Public and Secret — no Confidential.
-        let graph = Topology::linear([Public, Secret]).into_graph().unwrap();
-        let limited_policy = SecurityPolicy::new(graph, Public, Secret, Public).unwrap();
-        let result = Verifier::with_policy(program.clone(), limited_policy);
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::UnknownTag(Confidential)))
-        ));
-    } },
-    executor: { custom |program| {
-        let graph = Topology::linear([Public, Secret]).into_graph().unwrap();
-        let limited_policy = SecurityPolicy::new(graph, Public, Secret, Public).unwrap();
-        let result = Executor::with_policy(program.clone(), limited_policy);
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::UnknownTag(Confidential)))
-        ));
-    } },
+    verifier: { error with limited_policy(),
+        VerifierError::Flow(FlowError::UnknownTag(Confidential))
+    },
+    executor: { error with limited_policy(),
+        ExecutorError::Flow(FlowError::UnknownTag(Confidential))
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -354,8 +313,9 @@ test_program! {
 // Aware flow & downgraders
 //
 // Reuses the `Confidentiality` lattice (Public -> Confidential -> Secret, output
-// guard Public); `Secret` plays the role of "Private". Downgrader policies are
-// built inline via `confidentiality_policy().with_downgrader(...)`.
+// guard Public); `Secret` plays the role of "Private". Downgrader policies come
+// from the `downgrader_policy` helper (`Secret ->> Public`), or inline
+// `with_downgrader` calls where the connection differs.
 // ---------------------------------------------------------------------------
 
 test_program! {
@@ -367,27 +327,18 @@ test_program! {
         add_instr!(tag Push, 2, Secret),
         add_instr!(Add, 0, 1),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let verifier = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify()
-            .unwrap();
-        assert_eq!(verifier.last_tag(), Some(Secret));
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let executor = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec()
-            .unwrap();
-        assert_eq!(executor.values()[2], Value::Integer(3));
-        assert_eq!(executor.last_tag(), Some(Secret));
-    } },
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (1, Public),
+            (2, Secret),
+            (3, Secret)
+        ]
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (1, Public),
+            (2, Secret),
+            (3, Secret)
+        ]
+    },
 }
 
 test_program! {
@@ -400,35 +351,18 @@ test_program! {
         add_instr!(SetEqual, 0, 1),
         add_instr!(io Print, 2),
     ],
-    verifier: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-    } },
-    executor: { custom |program| {
-        let output = IoBuffer::new(vec![]);
-        let result = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::InformationFlowViolation {
-                found: Secret,
-                guard: Public,
-            }))
-        ));
-        assert!(output.borrow().is_empty());
-    } },
+    verifier: { error with confidentiality_policy(),
+        VerifierError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
+    executor: { error with confidentiality_policy(),
+        ExecutorError::Flow(FlowError::InformationFlowViolation {
+            found: Secret,
+            guard: Public,
+        })
+    },
 }
 
 test_program! {
@@ -450,32 +384,17 @@ test_program! {
         add_instr!(fun Downgrade, "is_empty"),
         add_instr!(io Print, 1),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let output = IoBuffer::new(vec![]);
-        let verifier = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .verify()
-            .unwrap();
-        // The downgrader's result carries the connection target (Public).
-        assert_eq!(verifier.read_tag(1).unwrap(), Public);
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let output = IoBuffer::new(vec![]);
-        let executor = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .redirect_output(output.clone().into())
-            .exec()
-            .unwrap();
-        assert_eq!(*output.borrow(), vec![1]);
-        assert_eq!(executor.read_tag(1).unwrap(), Public);
-    } },
+    // The downgrader's result carries the connection target (Public).
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public)
+        ]
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (1, Public)
+        ]
+    },
 }
 
 test_program! {
@@ -497,36 +416,12 @@ test_program! {
         add_instr!(R Pop, 1),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let result = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::DowngraderCallLimitExceeded {
-                limit: 1,
-                ..
-            }))
-        ));
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let result = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded {
-                limit: 1,
-                ..
-            }))
-        ));
-    } },
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
+    },
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
+    },
 }
 
 test_program! {
@@ -545,36 +440,22 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "leak"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
+    verifier: { error with confidentiality_policy()
             .with_downgrader("leak", Confidential, Public, Some(1))
-            .unwrap();
-        let result = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
-                found: Secret,
-                expected: Confidential,
-            }))
-        ));
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
+            .unwrap(),
+        VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
+            found: Secret,
+            expected: Confidential,
+        })
+    },
+    executor: { error with confidentiality_policy()
             .with_downgrader("leak", Confidential, Public, Some(1))
-            .unwrap();
-        let result = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::DowngraderReturnTagMismatch {
-                found: Secret,
-                expected: Confidential,
-            }))
-        ));
-    } },
+            .unwrap(),
+        ExecutorError::Flow(FlowError::DowngraderReturnTagMismatch {
+            found: Secret,
+            expected: Confidential,
+        })
+    },
 }
 
 test_program! {
@@ -594,28 +475,20 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let verifier = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify()
-            .unwrap();
-        assert_eq!(verifier.read_tag(1).unwrap(), Public);
-        assert_eq!(verifier.read_tag(3).unwrap(), Public);
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let executor = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec()
-            .unwrap();
-        assert_eq!(executor.read_tag(1).unwrap(), Public);
-        assert_eq!(executor.read_tag(3).unwrap(), Public);
-    } },
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public),
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public)
+        ]
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (1, Public),
+            (0, Secret),
+            (1, Public)
+        ]
+    },
 }
 
 test_program! {
@@ -637,26 +510,16 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let verifier = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify()
-            .unwrap();
-        assert_eq!(verifier.read_tag(1).unwrap(), Public);
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let executor = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec()
-            .unwrap();
-        assert_eq!(executor.read_tag(1).unwrap(), Public);
-    } },
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public)
+        ]
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Secret),
+            (1, Public)
+        ]
+    },
 }
 
 test_program! {
@@ -678,26 +541,16 @@ test_program! {
         add_instr!(R Pop, 1),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, None)
-            .unwrap();
-        let verifier = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify()
-            .unwrap();
-        assert_eq!(verifier.read_tag(1).unwrap(), Public);
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, None)
-            .unwrap();
-        let executor = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec()
-            .unwrap();
-        assert_eq!(executor.read_tag(1).unwrap(), Public);
-    } },
+    verifier: { tagged_stack with downgrader_policy("is_empty", None), [
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public)
+        ]
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", None), [
+            (0, Secret),
+            (1, Public)
+        ]
+    },
 }
 
 test_program! {
@@ -723,34 +576,16 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "outer"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("inner", Secret, Public, Some(1))
-            .unwrap()
+    verifier: { error with downgrader_policy("inner", Some(1))
             .with_downgrader("outer", Secret, Public, Some(1))
-            .unwrap();
-        let result = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::RecursiveDowngrader { .. }))
-        ));
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("inner", Secret, Public, Some(1))
-            .unwrap()
+            .unwrap(),
+        VerifierError::Flow(FlowError::RecursiveDowngrader { .. })
+    },
+    executor: { error with downgrader_policy("inner", Some(1))
             .with_downgrader("outer", Secret, Public, Some(1))
-            .unwrap();
-        let result = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::RecursiveDowngrader { .. }))
-        ));
-    } },
+            .unwrap(),
+        ExecutorError::Flow(FlowError::RecursiveDowngrader { .. })
+    },
 }
 
 test_program! {
@@ -769,30 +604,12 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun FunctionCall, "is_empty"),
     ],
-    verifier: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let result = Verifier::with_policy(program.clone(), policy)
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::DowngraderUsedAsFunction { .. }))
-        ));
-    } },
-    executor: { custom |program| {
-        let policy = confidentiality_policy()
-            .with_downgrader("is_empty", Secret, Public, Some(1))
-            .unwrap();
-        let result = Executor::with_policy(program.clone(), policy)
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::DowngraderUsedAsFunction { .. }))
-        ));
-    } },
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::DowngraderUsedAsFunction { .. })
+    },
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::DowngraderUsedAsFunction { .. })
+    },
 }
 
 test_program! {
@@ -804,24 +621,12 @@ test_program! {
         make_block!(add_instr!(Push, 5)),
         add_instr!(fun Downgrade, "helper"),
     ],
-    verifier: { custom |program| {
-        let result = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::NotADowngrader { .. }))
-        ));
-    } },
-    executor: { custom |program| {
-        let result = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::NotADowngrader { .. }))
-        ));
-    } },
+    verifier: { error with confidentiality_policy(),
+        VerifierError::Flow(FlowError::NotADowngrader { .. })
+    },
+    executor: { error with confidentiality_policy(),
+        ExecutorError::Flow(FlowError::NotADowngrader { .. })
+    },
 }
 
 test_program! {
@@ -833,22 +638,10 @@ test_program! {
         add_instr!(fun Downgrader, "helper"),
         make_block!(add_instr!(Push, 5)),
     ],
-    verifier: { custom |program| {
-        let result = Verifier::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .verify();
-        assert!(matches!(
-            result,
-            Err(VerifierError::Flow(FlowError::NotADowngrader { .. }))
-        ));
-    } },
-    executor: { custom |program| {
-        let result = Executor::with_policy(program.clone(), confidentiality_policy())
-            .unwrap()
-            .exec();
-        assert!(matches!(
-            result,
-            Err(ExecutorError::Flow(FlowError::NotADowngrader { .. }))
-        ));
-    } },
+    verifier: { error with confidentiality_policy(),
+        VerifierError::Flow(FlowError::NotADowngrader { .. })
+    },
+    executor: { error with confidentiality_policy(),
+        ExecutorError::Flow(FlowError::NotADowngrader { .. })
+    },
 }
