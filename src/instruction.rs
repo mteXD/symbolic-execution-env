@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::types::{CellIndex, Immediate};
 
+/// Operations with 0 arguments
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NullaryOp {
     Nop,
@@ -11,6 +12,7 @@ pub enum NullaryOp {
     Input,
 }
 
+/// Operations with 1 Cell Index argument
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpCell {
     Not,
@@ -19,22 +21,23 @@ pub enum UnaryOpCell {
     Print,
 }
 
+/// Operations with 1 Cell Amount argument
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpCellAmnt {
     Pop,
 }
 
-/// An operation that takes one immediate value encoded in the instruction.
+/// Operations with 1 Cell Amount argument.
 ///
-/// The tag parameter is only used by [`UnaryOpImm::TaggedPush`]. It defaults
-/// to `()`, so ordinary unmonitored programs keep using the simple
-/// `UnaryOpImm` type.
+/// [`TaggedPush`] also takes a tag argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpImm<Tag = ()> {
     Push,
+    /// TaggedPush pushes a value with the provided tag.
     TaggedPush(Tag),
 }
 
+/// Operations with 1 String argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpString {
     FunctionDefine,
@@ -47,6 +50,7 @@ pub enum UnaryOpString {
     FileWrite,
 }
 
+/// Operations with 2 Cell Index arguments
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic instructions
@@ -70,6 +74,7 @@ pub enum BinaryOp {
     SetGreaterThanOrEqual,
 }
 
+/// Instruction type for the virtual machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<Tag = ()> {
     AluNullary(NullaryOp),
@@ -84,16 +89,17 @@ pub enum Instruction<Tag = ()> {
 
 /// Convenience constructor for a single [`Instruction`].
 ///
-/// The unqualified arms expect the relevant [`Instruction`] variants and op
-/// enums (e.g. `Push`, `NullaryOp`, ...) to be in scope at the call site.
+/// Every arm expands to fully-qualified paths, so the macro is self-contained:
+/// callers need only `use crate::add_instr;` (no [`Instruction`] variant or op
+/// enum imports required).
 #[macro_export]
 macro_rules! add_instr {
     ($op:ident) => {
-        AluNullary(NullaryOp::$op)
+        $crate::instruction::Instruction::AluNullary($crate::instruction::NullaryOp::$op)
     };
     ($op:ident, $a:expr) => {
         // for immediate
-        AluUnaryImm(UnaryOpImm::$op, $a)
+        $crate::instruction::Instruction::AluUnaryImm($crate::instruction::UnaryOpImm::$op, $a)
     };
     (tag Push, $value:expr, $tag:expr) => {
         $crate::instruction::Instruction::AluUnaryImm(
@@ -104,23 +110,32 @@ macro_rules! add_instr {
     (R Pop, $a:expr) => {
         // for a cell amount (e.g. how many cells to pop); must precede the
         // generic `R` arm below since `Pop` also matches `$op:ident`.
-        AluUnaryCellAmnt(UnaryOpCellAmnt::Pop, $a)
+        $crate::instruction::Instruction::AluUnaryCellAmnt(
+            $crate::instruction::UnaryOpCellAmnt::Pop,
+            $a,
+        )
     };
     (R $op:ident, $a:expr) => {
         // for register
-        AluUnaryCell(UnaryOpCell::$op, $a)
+        $crate::instruction::Instruction::AluUnaryCell($crate::instruction::UnaryOpCell::$op, $a)
     };
     (strarg $op:ident, $name:expr) => {
         // for an io-path string (FileRead, FileWrite)
-        AluUnaryString(UnaryOpString::$op, String::from($name))
+        $crate::instruction::Instruction::AluUnaryString(
+            $crate::instruction::UnaryOpString::$op,
+            String::from($name),
+        )
     };
     ($op:ident, $a:expr, $b:expr) => {
-        AluBinary(BinaryOp::$op, $a, $b)
+        $crate::instruction::Instruction::AluBinary($crate::instruction::BinaryOp::$op, $a, $b)
     };
     (fun $op:ident, $name:expr) => {
         // for a function-name string (FunctionDefine, FunctionCall, Downgrader,
         // Downgrade)
-        AluUnaryString(UnaryOpString::$op, String::from($name))
+        $crate::instruction::Instruction::AluUnaryString(
+            $crate::instruction::UnaryOpString::$op,
+            String::from($name),
+        )
     };
     (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
         $crate::instruction::Instruction::IfElse(

@@ -14,13 +14,7 @@
 pub(crate) use crate::{
     add_instr,
     information_flow::{FlowError, SecurityPolicy, Topology},
-    instruction::{
-        BinaryOp,
-        Instruction::{
-            self, AluBinary, AluNullary, AluUnaryCell, AluUnaryCellAmnt, AluUnaryImm, AluUnaryString,
-        },
-        NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
-    },
+    instruction::Instruction,
     machine::{
         CoreError,
         executor::{Executor, ExecutorError},

@@ -1,3 +1,7 @@
+//! This module is the implementation of the executor. Function calls are executed.
+//!
+//! For the "entry point", see [`Executor::exec`].
+
 use std::{
     collections::HashSet,
     fmt::{Debug, Display},
@@ -268,6 +272,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         Ok(())
     }
 
+    /// Executes the program to completion, returning self.
     pub fn exec(mut self) -> ExecutorResult<Self, P> {
         self.run()?;
         Ok(self)

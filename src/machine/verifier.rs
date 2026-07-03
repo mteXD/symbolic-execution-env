@@ -1,3 +1,7 @@
+//! This module is the implementation of the verifier. Function calls do not get executed.
+//!
+//! For the "entry point", see [`Verifier::verify`].
+
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
@@ -839,6 +843,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok((val, tag))
     }
 
+    /// Verifies the program, returning self.
     pub fn verify(mut self) -> Result<Self, VerifierError<P::Tag>> {
         self.run_loop()?;
         Ok(self)

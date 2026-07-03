@@ -1,10 +1,6 @@
 use log::info;
 use virtual_machine::{
-    add_instr,
-    instruction::{Instruction::*, NullaryOp, UnaryOpCell, UnaryOpImm},
-    logging,
-    machine::executor::Executor,
-    types::IoBuffer,
+    add_instr, logging, machine::executor::Executor, types::IoBuffer,
 };
 
 fn main() {
