@@ -15,7 +15,7 @@ use crate::{
         CoreMachine, Evaluate, Stack,
     },
     types::{
-        self, Address, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
+        self, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
     },
 };
 use VerifierError::*;
@@ -304,12 +304,12 @@ pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
 impl Verifier<NoFlow> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         let policy = NoFlow;
-        let pc_tag = policy.default_tag();
+        policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
             stack: Stack::new(),
             policy,
-            pc_tag,
+            pc_tag: (),
             findings: Findings::default(),
             current_downgrader: None,
         }
@@ -606,12 +606,11 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
         let run_result = self.run_nested(to_check);
 
-        if let Ok((Some(return_value), return_tag, _)) = &run_result {
-            if let Some(ref mut info) = self.findings.func_defining {
+        if let Ok((Some(return_value), return_tag, _)) = &run_result
+            && let Some(ref mut info) = self.findings.func_defining {
                 info.return_value = Some(*return_value);
                 info.return_tag = *return_tag;
             }
-        }
 
         // Definition-time implicit retag: a downgrader's return value must carry
         // the connection `source`; we then record `target` so call sites publish
@@ -712,7 +711,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                 .findings
                 .func_data
                 .get(function_name)
-                .map_or(false, |info| info.reaches_downgrader);
+                .is_some_and(|info| info.reaches_downgrader);
         if self.current_downgrader.is_some() && callee_reaches {
             return Err(VerifierError::Flow(FlowError::RecursiveDowngrader {
                 downgrader: function_name.to_owned(),
@@ -755,7 +754,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         // Per-data downgrade budget: each distinct caller cell the downgrader
         // reads is downgraded once per call. The counter rides with that cell
         // and resets when it is popped/replaced.
-        if let Some(downgrader) = downgrader {
+        if let Some(_downgrader) = downgrader {
             let mut positions: Vec<usize> = self
                 .findings
                 .func_data
@@ -769,7 +768,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
                 .unwrap_or_default();
             positions.sort_unstable();
             positions.dedup();
-            for position in positions {
+            for _position in positions {
                 // let count = self.stack.bump_count(position, function_name);
                 // if let Some(limit) = downgrader.max_calls {
                 //     if count > limit {
@@ -1157,7 +1156,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
     ) -> Result<(), Self::Error> {
         let condition = self.read(cond_idx)?;
         let condition_tag = self.read_tag(cond_idx)?;
-        // self.validate_if_placement()?;
         let known_truth_value = Self::known_truth_value(&condition);
 
         match known_truth_value {

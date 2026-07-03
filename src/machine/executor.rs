@@ -231,8 +231,8 @@ impl<P: InformationFlowPolicy> Executor<P> {
         {
             return Ok(());
         }
-        let name = active.name.clone();
-        let max_calls = active.max_calls;
+        let _name = active.name.clone();
+        let _max_calls = active.max_calls;
         // let count = self.stack.bump_count(abs, &name); TODO:
         // if let Some(limit) = max_calls {
         //     if count > limit {
@@ -483,11 +483,10 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 // afterwards the caller cells are gone and low indices are
                 // body-local locals that must not count as downgrades.
                 let depth = self.function_depth;
-                if let Some(active) = self.active_downgrader.as_mut() {
-                    if depth == active.depth {
+                if let Some(active) = self.active_downgrader.as_mut()
+                    && depth == active.depth {
                         active.counting = false;
                     }
-                }
             }
             Input => {
                 let value = self.read_input_value()?;
