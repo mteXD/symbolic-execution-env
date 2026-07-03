@@ -3,8 +3,7 @@ use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 use crate::{
     information_flow::{AwareConnection, FlowError, FlowTag, InformationFlowPolicy, NoFlow},
     instruction::{
-        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
-        UnaryOpImm,
+        BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::{
         Cell,
@@ -884,6 +883,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 }
                 self.findings.rebase_seen = true;
             }
+            Input => {
+                self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
+            }
         }
 
         Ok(())
@@ -953,14 +955,51 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     self.push_with_tag(val, tag)?;
                 }
             }
+            Print => {
+                let tag = self.read_tag(arg)?;
+                self.ensure_output_allowed(tag)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_alu_unary_cell_amnt(
+        &mut self,
+        instr: &UnaryOpCellAmnt,
+        amount: CellIndex,
+    ) -> Result<(), Self::Error> {
+        use UnaryOpCellAmnt::*;
+
+        match instr {
             Pop => {
-                if arg == 0 {
+                if amount == 0 {
                     return Err(InstructionError);
                 }
-                for _ in 0..arg {
+                for _ in 0..amount {
                     self.stack.pop().ok_or(StackUnderflow)?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_alu_unary_string(
+        &mut self,
+        instr: &UnaryOpString,
+        name: &str,
+    ) -> Result<(), Self::Error> {
+        use UnaryOpString::*;
+        use types::{Input, Output};
+
+        match instr {
+            FunctionDefine => self.verify_function_definition(name, false)?,
+            Downgrader => self.verify_function_definition(name, true)?,
+            FunctionCall => self.verify_function_call(name, false)?,
+            Downgrade => self.verify_function_call(name, true)?,
+            FileRead => self.machine.input = Input::from_path(name),
+            FileWrite => self.machine.output = Output::from_path(name),
         }
 
         Ok(())
@@ -1102,52 +1141,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             (Some(val), None, _) => self.push_existing(val, self.policy.default_tag()),
             (None, _, _) => return Err(BlockHasEmptyStack),
         }
-        Ok(())
-    }
-
-    fn evaluate_function(
-        &mut self,
-        instr: &FunctionOp,
-        function_name: &str,
-    ) -> Result<(), Self::Error> {
-        use FunctionOp::*;
-
-        match instr {
-            FunctionDefine => self.verify_function_definition(function_name, false)?,
-            Downgrader => self.verify_function_definition(function_name, true)?,
-            FunctionCall => self.verify_function_call(function_name, false)?,
-            Downgrade => self.verify_function_call(function_name, true)?,
-        }
-
-        Ok(())
-    }
-
-    fn evaluate_intrinsic(
-        &mut self,
-        instr: &IntrinsicOp,
-        arg: &IntrinsicArg,
-    ) -> Result<(), Self::Error> {
-        use IntrinsicArg::*;
-        use IntrinsicOp::*;
-        use types::{Input, Output};
-
-        match (instr, arg) {
-            (Print, Cell(cell_index)) => {
-                let tag = self.read_tag(*cell_index)?;
-                self.ensure_output_allowed(tag)?;
-            }
-            (Input, IntrinsicArg::None) => {
-                self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
-            }
-            (FileRead, Str(path)) => {
-                self.machine.input = Input::from_path(path);
-            }
-            (FileWrite, Str(path)) => {
-                self.machine.output = Output::from_path(path);
-            }
-            _ => return Err(DebugError("Invalid intrinsic argument type")),
-        }
-
         Ok(())
     }
 

@@ -9,8 +9,7 @@ use log::debug;
 use crate::{
     information_flow::{FlowError, FlowTag, InformationFlowPolicy, NoFlow},
     instruction::{
-        BinaryOp, FunctionOp, Instruction, IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell,
-        UnaryOpImm,
+        BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::{CoreError, CoreMachine, Evaluate, Cell, Stack},
     types::{self, Value, CellIndex, Immediate, IoBuffer, ProgramData},
@@ -485,6 +484,10 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                     }
                 }
             }
+            Input => {
+                let value = self.read_input_value()?;
+                self.push_new_value(Integer(value), self.policy.input_tag())?;
+            }
         }
 
         Ok(())
@@ -530,11 +533,65 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 let (val, tag) = self.read_entry(index)?;
                 self.push_new_value(val, tag)?;
             }
+            Print => self.print_cell(arg)?,
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_alu_unary_cell_amnt(
+        &mut self,
+        instr: &UnaryOpCellAmnt,
+        amount: CellIndex,
+    ) -> ExecutorResult<(), P> {
+        use UnaryOpCellAmnt::*;
+
+        match instr {
             Pop => {
-                for _ in 0..arg {
+                for _ in 0..amount {
                     self.stack.pop().ok_or(StackUnderflow)?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn evaluate_alu_unary_string(
+        &mut self,
+        instr: &UnaryOpString,
+        name: &str,
+    ) -> ExecutorResult<(), P> {
+        use UnaryOpString::*;
+        use types::{Input, Output};
+
+        match instr {
+            // The body is registered identically for both; the downgrade
+            // semantics live entirely at the call site (implicit retag, budget).
+            // The instruction's intent must still agree with the policy so a
+            // downgrade gate is never defined as an ordinary function.
+            FunctionDefine => {
+                if self.policy.downgrader(name).is_some() {
+                    return Err(FlowError::DowngraderUsedAsFunction {
+                        name: name.to_owned(),
+                    }
+                    .into());
+                }
+                _ = self.machine.common_function_logic(name)?
+            }
+            Downgrader => {
+                if self.policy.downgrader(name).is_none() {
+                    return Err(FlowError::NotADowngrader {
+                        name: name.to_owned(),
+                    }
+                    .into());
+                }
+                _ = self.machine.common_function_logic(name)?
+            }
+            FunctionCall => self.call_function(name, false)?,
+            Downgrade => self.call_function(name, true)?,
+            FileRead => self.machine.input = Input::from_path(name),
+            FileWrite => self.machine.output = Output::from_path(name),
         }
 
         Ok(())
@@ -598,70 +655,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
             Some(entry) => self.push_existing_entry(entry),
             None => return Err(BlockHasEmptyStack),
         }
-        Ok(())
-    }
-
-    fn evaluate_function(
-        &mut self,
-        instr: &FunctionOp,
-        function_name: &str,
-    ) -> ExecutorResult<(), P> {
-        use FunctionOp::*;
-
-        match instr {
-            // The body is registered identically for both; the downgrade
-            // semantics live entirely at the call site (implicit retag, budget).
-            // The instruction's intent must still agree with the policy so a
-            // downgrade gate is never defined as an ordinary function.
-            FunctionDefine => {
-                if self.policy.downgrader(function_name).is_some() {
-                    return Err(FlowError::DowngraderUsedAsFunction {
-                        name: function_name.to_owned(),
-                    }
-                    .into());
-                }
-                _ = self.machine.common_function_logic(function_name)?
-            }
-            Downgrader => {
-                if self.policy.downgrader(function_name).is_none() {
-                    return Err(FlowError::NotADowngrader {
-                        name: function_name.to_owned(),
-                    }
-                    .into());
-                }
-                _ = self.machine.common_function_logic(function_name)?
-            }
-            FunctionCall => self.call_function(function_name, false)?,
-            Downgrade => self.call_function(function_name, true)?,
-        }
-
-        Ok(())
-    }
-
-    fn evaluate_intrinsic(
-        &mut self,
-        instr: &IntrinsicOp,
-        arg: &IntrinsicArg,
-    ) -> ExecutorResult<(), P> {
-        use IntrinsicArg::*;
-        use IntrinsicOp::*;
-        use types::{Input, Output};
-
-        match (instr, arg) {
-            (Print, Cell(cell_index)) => self.print_cell(*cell_index)?,
-            (Input, IntrinsicArg::None) => {
-                let value = self.read_input_value()?;
-                self.push_new_value(Integer(value), self.policy.input_tag())?;
-            }
-            (FileRead, Str(path)) => {
-                self.machine.input = Input::from_path(path);
-            }
-            (FileWrite, Str(path)) => {
-                self.machine.output = Output::from_path(path);
-            }
-            _ => return Err(InvalidCell),
-        }
-
         Ok(())
     }
 

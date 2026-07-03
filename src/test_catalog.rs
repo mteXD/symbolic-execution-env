@@ -15,11 +15,11 @@ pub(crate) use crate::{
     add_instr,
     information_flow::{FlowError, SecurityPolicy, Topology},
     instruction::{
-        BinaryOp, FunctionOp,
+        BinaryOp,
         Instruction::{
-            self, AluBinary, AluFunction, AluIntrinsic, AluNullary, AluUnaryCell, AluUnaryImm,
+            self, AluBinary, AluNullary, AluUnaryCell, AluUnaryCellAmnt, AluUnaryImm, AluUnaryString,
         },
-        IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::{
         CoreError,

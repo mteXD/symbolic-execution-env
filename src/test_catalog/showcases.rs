@@ -49,7 +49,7 @@ test_program! {
                 add_instr!(Push, 1)
             )
         ),
-        add_instr!(io Input),
+        add_instr!(Input),
         add_instr!(fun FunctionCall, "factorial"),
     ],
     verifier: { custom |program| {
@@ -92,7 +92,7 @@ test_program! {
             )
         ),
         add_instr!(Push, -1),
-        add_instr!(io Input),
+        add_instr!(Input),
         add_instr!(fun FunctionCall, "factorial"),
     ],
     verifier: { custom |program| {
@@ -133,7 +133,7 @@ test_program! {
                 add_instr!(Push, 1)
             )
         ),
-        add_instr!(io Input),
+        add_instr!(Input),
         add_instr!(fun FunctionCall, "fibonacci"),
     ],
     verifier: { custom |program| {

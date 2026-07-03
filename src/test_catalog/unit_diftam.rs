@@ -124,7 +124,7 @@ test_program! {
     /// `Input` receives the policy's configured input perimeter guard's tag.
     input_receives_input_tag,
     program: vec![
-        add_instr!(io Input)
+        add_instr!(Input)
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
             (ValueSpan::inf(), Secret)
@@ -173,7 +173,7 @@ test_program! {
     // FIXME: The executor should explore both branches; use Input instruction
     ifelse_unknown_condition_merges_tags,
     program: vec![
-        add_instr!(io Input),
+        add_instr!(Input),
         add_instr!(ifelse 0,
             add_instr!(tag Push, 7, Public),
             add_instr!(tag Push, 9, Confidential)
@@ -225,7 +225,7 @@ test_program! {
     /// The output perimeter guard rejects printing a secret value; nothing is
     /// written before the rejection.
     output_pg_rejects_secret_tag,
-    program: vec![add_instr!(tag Push, 42, Secret), add_instr!(io Print, 0)],
+    program: vec![add_instr!(tag Push, 42, Secret), add_instr!(R Print, 0)],
     verifier: { error with confidentiality_policy(),
         VerifierError::Flow(FlowError::InformationFlowViolation {
             found: Secret,
@@ -247,7 +247,7 @@ test_program! {
     program: vec![
         add_instr!(tag Push, 1, Secret),
         add_instr!(tag Push, 42, Public),
-        add_instr!(ifelse 0, add_instr!(io Print, 1), add_instr!(Nop)),
+        add_instr!(ifelse 0, add_instr!(R Print, 1), add_instr!(Nop)),
     ],
     verifier: { error with confidentiality_policy(),
         VerifierError::Flow(FlowError::InformationFlowViolation {
@@ -268,7 +268,7 @@ test_program! {
     output_perimeter_accepts_public_value,
     program: vec![
         add_instr!(Push, 42),
-        add_instr!(io Print, 0)
+        add_instr!(R Print, 0)
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
         (42, Public)
@@ -354,7 +354,7 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(Push, 0),
         add_instr!(SetEqual, 0, 1),
-        add_instr!(io Print, 2),
+        add_instr!(R Print, 2),
     ],
     verifier: { error with confidentiality_policy(),
         VerifierError::Flow(FlowError::InformationFlowViolation {
@@ -387,7 +387,7 @@ test_program! {
         ),
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
-        add_instr!(io Print, 1),
+        add_instr!(R Print, 1),
     ],
     // The downgrader's result carries the connection target (Public).
     verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [

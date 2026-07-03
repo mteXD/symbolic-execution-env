@@ -225,7 +225,7 @@ test_program! {
     /// [POSITIVE] An ifelse with an unknown condition but balanced branches.
     cond_ifelse_unknown_balanced,
     program: vec![
-        add_instr!(io Input), // [?]
+        add_instr!(Input), // [?]
         add_instr!(Push, 5),
         add_instr!(SetGreaterThan, 0, 1), // unknown condition
         add_instr!(ifelse 2,
@@ -279,7 +279,7 @@ test_program! {
     /// produces differently-sized stacks depending on the input.
     cond_ifelse_unknown_unbalanced,
     program: vec![
-        add_instr!(io Input), // [?]
+        add_instr!(Input), // [?]
         add_instr!(Push, 5),
         add_instr!(SetGreaterThan, 0, 1), // unknown condition
         add_instr!(ifelse 2,
@@ -780,7 +780,7 @@ test_program! {
 test_program! {
     /// [POSITIVE] Reads an input and prints it back out (buffered I/O).
     intrinsics_input,
-    program: vec![add_instr!(io Input), add_instr!(io Print, 0)],
+    program: vec![add_instr!(Input), add_instr!(R Print, 0)],
     verifier: { stack [ValueSpan::inf()] },
     executor: { cases {
         input [42] => stack [42];
@@ -797,12 +797,12 @@ test_program! {
     intrinsics_file_io_example,
     program: {
         let program: Vec<Instruction> = vec![
-            add_instr!(io_str FileRead, "input.txt"),
-            add_instr!(io Input),
-            add_instr!(io_str FileWrite, "output.txt"),
-            add_instr!(io Print, 0),
-            add_instr!(io_str FileRead, ""),
-            add_instr!(io_str FileWrite, ""),
+            add_instr!(strarg FileRead, "input.txt"),
+            add_instr!(Input),
+            add_instr!(strarg FileWrite, "output.txt"),
+            add_instr!(R Print, 0),
+            add_instr!(strarg FileRead, ""),
+            add_instr!(strarg FileWrite, ""),
         ];
         program
     },

@@ -4,9 +4,9 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 use crate::{
     information_flow::FlowTag,
     instruction::{
-        BinaryOp, FunctionOp,
+        BinaryOp,
         Instruction::{self},
-        IntrinsicArg, IntrinsicOp, NullaryOp, UnaryOpCell, UnaryOpImm,
+        NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::CoreError::RebaseError,
     types::{
@@ -92,9 +92,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
     }
 
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
+        use Instruction::AluUnaryString;
+        use UnaryOpString::FunctionDefine;
+
         let mut aliases = Vec::new();
 
-        while let Some(Instruction::AluFunction(FunctionOp::FunctionDefine, name)) = self.next() {
+        while let Some(AluUnaryString(FunctionDefine, name)) = self.next() {
             debug!("Found consecutive definition: '{}'", name);
             aliases.push(name);
         }
@@ -155,6 +158,14 @@ trait Evaluate<Tag: Debug = ()> {
                 debug!("Evaling: {:?}, cell: {:?}", instr, cell);
                 self.evaluate_alu_unary_cell(instr, *cell)
             }
+            AluUnaryCellAmnt(instr, amount) => {
+                debug!("Evaling: {:?}, amount: {:?}", instr, amount);
+                self.evaluate_alu_unary_cell_amnt(instr, *amount)
+            }
+            AluUnaryString(instr, name) => {
+                debug!("Evaling: {:?}, name: '{}'", instr, name);
+                self.evaluate_alu_unary_string(instr, name)
+            }
             AluBinary(instr, arg1, arg2) => {
                 debug!("Evaling: {:?}; args: {:?}, {:?}", instr, arg1, arg2);
                 self.evaluate_alu_binary(instr, *arg1, *arg2)
@@ -166,14 +177,6 @@ trait Evaluate<Tag: Debug = ()> {
             IfElse(cond_idx, when_true, when_false) => {
                 debug!("Entering if-else block...");
                 self.evaluate_ifelse(*cond_idx, when_true.clone(), when_false.clone()) // Cheap clone
-            }
-            AluFunction(instr, fun) => {
-                debug!("Evaling: {:?}, fun: '{}'", instr, fun);
-                self.evaluate_function(instr, fun)
-            }
-            AluIntrinsic(instr, arg) => {
-                debug!("Evaling: {:?}, arg: {:?}", instr, arg);
-                self.evaluate_intrinsic(instr, arg)
             }
         }?;
 
@@ -191,6 +194,16 @@ trait Evaluate<Tag: Debug = ()> {
         instr: &UnaryOpCell,
         arg: CellIndex,
     ) -> Result<(), Self::Error>;
+    fn evaluate_alu_unary_cell_amnt(
+        &mut self,
+        instr: &UnaryOpCellAmnt,
+        amount: CellIndex,
+    ) -> Result<(), Self::Error>;
+    fn evaluate_alu_unary_string(
+        &mut self,
+        instr: &UnaryOpString,
+        name: &str,
+    ) -> Result<(), Self::Error>;
     fn evaluate_alu_binary(
         &mut self,
         instr: &BinaryOp,
@@ -203,12 +216,6 @@ trait Evaluate<Tag: Debug = ()> {
         cond_idx: CellIndex,
         when_true: Rc<Instruction<Tag>>,
         when_false: Rc<Instruction<Tag>>,
-    ) -> Result<(), Self::Error>;
-    fn evaluate_function(&mut self, instr: &FunctionOp, fun: &str) -> Result<(), Self::Error>;
-    fn evaluate_intrinsic(
-        &mut self,
-        instr: &IntrinsicOp,
-        arg: &IntrinsicArg,
     ) -> Result<(), Self::Error>;
 }
 
@@ -453,9 +460,6 @@ pub struct Cell<V, T> {
 
 impl<V, T> Cell<V, T> {
     pub fn new(value: V, tag: T) -> Self {
-        Self {
-            value,
-            tag,
-        }
+        Self { value, tag }
     }
 }

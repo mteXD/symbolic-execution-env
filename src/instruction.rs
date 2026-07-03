@@ -8,6 +8,7 @@ use crate::types::{CellIndex, Immediate};
 pub enum NullaryOp {
     Nop,
     Rebase,
+    Input,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,11 @@ pub enum UnaryOpCell {
     Not,
     Read,
     ReadReverse,
+    Print,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnaryOpCellAmnt {
     Pop,
 }
 
@@ -27,6 +33,18 @@ pub enum UnaryOpCell {
 pub enum UnaryOpImm<Tag = ()> {
     Push,
     TaggedPush(Tag),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnaryOpString {
+    FunctionDefine,
+    FunctionCall,
+    //// Define a new downgrader
+    Downgrader,
+    /// Invokes a downgrader, applying its implicit retag and per-value budget.
+    Downgrade,
+    FileRead,
+    FileWrite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,44 +71,15 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FunctionOp {
-    FunctionDefine,
-    FunctionCall,
-    /// Defines the body of a trusted downgrader (its connection and budget live
-    /// in the policy, keyed by name). Distinct from `FunctionDefine` so a
-    /// downgrade gate is never confused with an ordinary function.
-    Downgrader,
-    /// Invokes a downgrader, applying its implicit retag and per-value budget.
-    /// Distinct from `FunctionCall` to make every downgrade site explicit.
-    Downgrade,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IntrinsicOp {
-    Print,
-    Input,
-    FileRead,
-    FileWrite,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IntrinsicArg {
-    /// For intrinsics that take no argument (e.g. `Input`).
-    None,
-    Cell(CellIndex),
-    Str(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<Tag = ()> {
     AluNullary(NullaryOp),
     AluUnaryImm(UnaryOpImm<Tag>, Immediate),
     AluUnaryCell(UnaryOpCell, CellIndex),
+    AluUnaryCellAmnt(UnaryOpCellAmnt, CellIndex),
+    AluUnaryString(UnaryOpString, String),
     AluBinary(BinaryOp, CellIndex, CellIndex),
     Block(Rc<[Instruction<Tag>]>),
     IfElse(CellIndex, Rc<Instruction<Tag>>, Rc<Instruction<Tag>>),
-    AluFunction(FunctionOp, String),
-    AluIntrinsic(IntrinsicOp, IntrinsicArg),
 }
 
 /// Convenience constructor for a single [`Instruction`].
@@ -112,33 +101,26 @@ macro_rules! add_instr {
             $value,
         )
     };
+    (R Pop, $a:expr) => {
+        // for a cell amount (e.g. how many cells to pop); must precede the
+        // generic `R` arm below since `Pop` also matches `$op:ident`.
+        AluUnaryCellAmnt(UnaryOpCellAmnt::Pop, $a)
+    };
     (R $op:ident, $a:expr) => {
         // for register
         AluUnaryCell(UnaryOpCell::$op, $a)
+    };
+    (strarg $op:ident, $name:expr) => {
+        // for an io-path string (FileRead, FileWrite)
+        AluUnaryString(UnaryOpString::$op, String::from($name))
     };
     ($op:ident, $a:expr, $b:expr) => {
         AluBinary(BinaryOp::$op, $a, $b)
     };
     (fun $op:ident, $name:expr) => {
-        AluFunction(FunctionOp::$op, String::from($name))
-    };
-    (io $op:ident) => {
-        AluIntrinsic(
-            IntrinsicOp::$op,
-            $crate::instruction::IntrinsicArg::None,
-        )
-    };
-    (io $op:ident, $a:expr) => {
-        AluIntrinsic(
-            IntrinsicOp::$op,
-            $crate::instruction::IntrinsicArg::Cell($a),
-        )
-    };
-    (io_str $op:ident, $a:expr) => {
-        AluIntrinsic(
-            IntrinsicOp::$op,
-            $crate::instruction::IntrinsicArg::Str(String::from($a)),
-        )
+        // for a function-name string (FunctionDefine, FunctionCall, Downgrader,
+        // Downgrade)
+        AluUnaryString(UnaryOpString::$op, String::from($name))
     };
     (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
         $crate::instruction::Instruction::IfElse(
