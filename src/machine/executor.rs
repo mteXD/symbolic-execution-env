@@ -11,7 +11,7 @@ use std::{
 use log::debug;
 
 use crate::{
-    information_flow::{FlowError, FlowTag, InformationFlowPolicy, NoFlow},
+    information_flow::{FlowError, TagTrait, InformationFlowPolicy, NoFlow},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -24,7 +24,7 @@ use ExecutorError::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutorError<Tag = ()>
 where
-    Tag: FlowTag,
+    Tag: TagTrait,
 {
     DivisionByZero,
     ArithmeticOverflow,
@@ -37,13 +37,13 @@ where
     DebugError(&'static str),
 }
 
-impl<Tag: FlowTag> From<CoreError> for ExecutorError<Tag> {
+impl<Tag: TagTrait> From<CoreError> for ExecutorError<Tag> {
     fn from(error: CoreError) -> Self {
         ExecutorError::Core(error)
     }
 }
 
-impl<Tag: FlowTag> From<FlowError<Tag>> for ExecutorError<Tag> {
+impl<Tag: TagTrait> From<FlowError<Tag>> for ExecutorError<Tag> {
     fn from(error: FlowError<Tag>) -> Self {
         ExecutorError::Flow(error)
     }

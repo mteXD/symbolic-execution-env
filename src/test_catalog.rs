@@ -56,17 +56,15 @@ pub(crate) enum Integrity {
 pub(crate) fn confidentiality_policy() -> SecurityPolicy<Confidentiality> {
     use Confidentiality::*;
 
-    let graph = Topology::linear([Public, Confidential, Secret])
-        .into_graph()
-        .unwrap();
-    SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
+    let topology = Topology::linear([Public, Confidential, Secret]);
+    SecurityPolicy::new(topology, Public, Secret, Public).unwrap()
 }
 
 pub(crate) fn integrity_policy() -> SecurityPolicy<Integrity> {
     use Integrity::*;
 
-    let graph = Topology::linear([Low, Medium, High]).into_graph().unwrap();
-    SecurityPolicy::new(graph, Low, Low, High).unwrap()
+    let topology = Topology::linear([Low, Medium, High]);
+    SecurityPolicy::new(topology, Low, Low, High).unwrap()
 }
 
 // ---------------------------------------------------------------------------

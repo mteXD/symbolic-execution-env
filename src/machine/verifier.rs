@@ -5,7 +5,7 @@
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{AwareConnection, FlowError, FlowTag, InformationFlowPolicy, NoFlow},
+    information_flow::{AwareConnection, FlowError, TagTrait, InformationFlowPolicy, NoFlow},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -22,7 +22,7 @@ use VerifierError::*;
 use log::{debug, trace, warn};
 
 #[derive(Debug, Clone)]
-pub enum VerifierError<Tag: FlowTag = ()> {
+pub enum VerifierError<Tag: TagTrait = ()> {
     Core(CoreError),
     StackUnderflow,
     InvalidCell {
@@ -51,25 +51,25 @@ pub enum VerifierError<Tag: FlowTag = ()> {
     Flow(FlowError<Tag>),
 }
 
-impl<Tag: FlowTag> From<CoreError> for VerifierError<Tag> {
+impl<Tag: TagTrait> From<CoreError> for VerifierError<Tag> {
     fn from(e: CoreError) -> Self {
         VerifierError::Core(e)
     }
 }
 
-impl<Tag: FlowTag> From<ProgramDataError> for VerifierError<Tag> {
+impl<Tag: TagTrait> From<ProgramDataError> for VerifierError<Tag> {
     fn from(e: ProgramDataError) -> Self {
         VerifierError::Core(e.into())
     }
 }
 
-impl<Tag: FlowTag> From<FunctionDataError> for VerifierError<Tag> {
+impl<Tag: TagTrait> From<FunctionDataError> for VerifierError<Tag> {
     fn from(e: FunctionDataError) -> Self {
         VerifierError::Core(e.into())
     }
 }
 
-impl<Tag: FlowTag> From<FlowError<Tag>> for VerifierError<Tag> {
+impl<Tag: TagTrait> From<FlowError<Tag>> for VerifierError<Tag> {
     fn from(e: FlowError<Tag>) -> Self {
         VerifierError::Flow(e)
     }
@@ -234,7 +234,7 @@ impl MemorizedIndex {
 }
 
 #[derive(Debug, Clone)]
-struct FunctionDefiningInfo<Tag: FlowTag = ()> {
+struct FunctionDefiningInfo<Tag: TagTrait = ()> {
     function_name: String,
     arg_indices: Vec<MemorizedIndex>,
     return_value: Option<ValueSpan>,
@@ -244,7 +244,7 @@ struct FunctionDefiningInfo<Tag: FlowTag = ()> {
     reaches_downgrader: bool,
 }
 
-impl<Tag: FlowTag> Default for FunctionDefiningInfo<Tag> {
+impl<Tag: TagTrait> Default for FunctionDefiningInfo<Tag> {
     fn default() -> Self {
         Self {
             function_name: String::new(),
@@ -257,13 +257,13 @@ impl<Tag: FlowTag> Default for FunctionDefiningInfo<Tag> {
 }
 
 #[derive(Debug, Clone)]
-struct Findings<Tag: FlowTag = ()> {
+struct Findings<Tag: TagTrait = ()> {
     rebase_seen: bool,
     func_defining: Option<FunctionDefiningInfo<Tag>>,
     func_data: HashMap<String, FunctionDefiningInfo<Tag>>,
 }
 
-impl<Tag: FlowTag> Default for Findings<Tag> {
+impl<Tag: TagTrait> Default for Findings<Tag> {
     fn default() -> Self {
         Self {
             rebase_seen: false,
@@ -273,7 +273,7 @@ impl<Tag: FlowTag> Default for Findings<Tag> {
     }
 }
 
-impl<Tag: FlowTag> Findings<Tag> {
+impl<Tag: TagTrait> Findings<Tag> {
     #[inline]
     fn is_collecting_func_args(&self) -> bool {
         self.func_defining.is_some() && !self.rebase_seen

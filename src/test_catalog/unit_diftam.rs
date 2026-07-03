@@ -27,17 +27,15 @@ fn downgrader_policy(name: &str, max_calls: Option<usize>) -> SecurityPolicy<Con
 
 /// A policy that only knows `Public` and `Secret` — no `Confidential`.
 fn limited_policy() -> SecurityPolicy<Confidentiality> {
-    let graph = Topology::linear([Public, Secret]).into_graph().unwrap();
-    SecurityPolicy::new(graph, Public, Secret, Public).unwrap()
+    let topology = Topology::linear([Public, Secret]);
+    SecurityPolicy::new(topology, Public, Secret, Public).unwrap()
 }
 
 /// Like [`confidentiality_policy`], but with a `Public` input perimeter guard:
 /// `Input` yields an unknown value without tainting it.
 fn public_input_policy() -> SecurityPolicy<Confidentiality> {
-    let graph = Topology::linear([Public, Confidential, Secret])
-        .into_graph()
-        .unwrap();
-    SecurityPolicy::new(graph, Public, Public, Public).unwrap()
+    let topology = Topology::linear([Public, Confidential, Secret]);
+    SecurityPolicy::new(topology, Public, Public, Public).unwrap()
 }
 
 // ---------------------------------------------------------------------------

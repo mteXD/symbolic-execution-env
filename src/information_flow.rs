@@ -31,13 +31,13 @@ type ReachabilityMatrix = Vec<Vec<bool>>;
 ///
 /// This trait has a blanket implementation, so any small enum deriving
 /// `Copy`, `Eq`, `Hash`, and `Debug` can be used directly as a tag.
-pub trait FlowTag: Copy + Eq + Hash + Debug {}
+pub trait TagTrait: Copy + Eq + Hash + Debug {}
 
-impl<T: Copy + Eq + Hash + Debug> FlowTag for T {}
+impl<T: Copy + Eq + Hash + Debug> TagTrait for T {}
 
 /// Errors produced while building a flow graph or enforcing a flow policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FlowError<Tag: FlowTag> {
+pub enum FlowError<Tag: TagTrait> {
     DuplicateTag(Tag),
     UnknownTag(Tag),
     Cycle,
@@ -67,7 +67,7 @@ pub enum FlowError<Tag: FlowTag> {
 ///
 /// The variants keep equal tag values from different topologies distinct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisjointTag<Left: FlowTag, Right: FlowTag> {
+pub enum DisjointTag<Left: TagTrait, Right: TagTrait> {
     Left(Left),
     Right(Right),
 }
@@ -87,12 +87,12 @@ pub enum DisjointTag<Left: FlowTag, Right: FlowTag> {
 /// - [`Topology::cartesian_product`] combines two independent
 ///   dimensions into pairs of tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Topology<Tag: FlowTag> {
+pub struct Topology<Tag: TagTrait> {
     tags: Vec<Tag>,
     edges: Vec<(Tag, Tag)>,
 }
 
-impl<Tag: FlowTag> Topology<Tag> {
+impl<Tag: TagTrait> Topology<Tag> {
     /// Creates a basic topology and infers its tags from the supplied edges.
     ///
     /// Tags retain the order of their first appearance.
@@ -124,7 +124,7 @@ impl<Tag: FlowTag> Topology<Tag> {
     ///
     /// Resulting tags are wrapped in [`DisjointTag`] to preserve which
     /// topology they came from.
-    pub fn disjoint_union<T1: FlowTag, T2: FlowTag>(
+    pub fn disjoint_union<T1: TagTrait, T2: TagTrait>(
         tpl1: Topology<T1>,
         tpl2: Topology<T2>,
     ) -> Topology<DisjointTag<T1, T2>> {
@@ -157,7 +157,7 @@ impl<Tag: FlowTag> Topology<Tag> {
     ///
     /// Each resulting tag is a pair. An edge changes one component while the
     /// other component remains fixed.
-    pub fn cartesian_product<T1: FlowTag, T2: FlowTag>(
+    pub fn cartesian_product<T1: TagTrait, T2: TagTrait>(
         tpl1: Topology<T1>,
         tpl2: Topology<T2>,
     ) -> Topology<(T1, T2)> {
@@ -199,8 +199,16 @@ impl<Tag: FlowTag> Topology<Tag> {
     }
 
     /// Validates and preprocesses this topology as a [`FlowGraph`].
-    pub fn into_graph(self) -> Result<PolicyGraph<Tag>, FlowError<Tag>> {
+    fn into_graph(self) -> Result<PolicyGraph<Tag>, FlowError<Tag>> {
         PolicyGraph::new(self.tags, self.edges)
+    }
+}
+
+impl<Tag: TagTrait> TryInto<PolicyGraph<Tag>> for Topology<Tag> {
+    type Error = FlowError<Tag>;
+
+    fn try_into(self) -> Result<PolicyGraph<Tag>, Self::Error> {
+        self.into_graph()
     }
 }
 
@@ -214,7 +222,7 @@ impl<Tag: FlowTag> Topology<Tag> {
 /// Pairs with no common descendant are allowed, but attempting to combine such
 /// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
-pub struct PolicyGraph<Tag: FlowTag> {
+struct PolicyGraph<Tag: TagTrait> {
     /// Tags in their stable insertion order.
     tags: Vec<Tag>,
     /// Maps tag values to indices used by the graph matrices.
@@ -225,7 +233,7 @@ pub struct PolicyGraph<Tag: FlowTag> {
     ccd: Vec<Vec<Option<Tag>>>,
 }
 
-impl<Tag: FlowTag> PolicyGraph<Tag> {
+impl<Tag: TagTrait> PolicyGraph<Tag> {
     pub fn new(
         tags: impl IntoIterator<Item = Tag>,
         edges: impl IntoIterator<Item = (Tag, Tag)>,
@@ -357,54 +365,6 @@ impl<Tag: FlowTag> PolicyGraph<Tag> {
     }
 }
 
-/// An explicit, deliberately-controlled downgrade relation `source ->> target`.
-///
-/// Aware connections are explicit, non-reflexive, and non-transitive. They are
-/// **not** part of the oblivious lattice and never participate in `ccd` or
-/// `can_flow`. A connection is only usable through its trusted [`Downgrader`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AwareConnection<Tag: FlowTag> {
-    pub source: Tag,
-    pub target: Tag,
-}
-
-/// A trusted, per-data-budgeted gate for a single [`AwareConnection`]. Whatever
-/// the downgrader returns is implicitly retagged from `source` to `target`.
-///
-/// `max_calls` bounds how many times any one value may be downgraded through
-/// this gate; `None` means unlimited.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Downgrader<Tag: FlowTag> {
-    pub connection: AwareConnection<Tag>,
-    pub max_calls: Option<usize>,
-}
-
-/// Trait for operations on tags from the perspective of policies.
-pub trait InformationFlowPolicy {
-    type Tag: FlowTag;
-
-    fn default_tag(&self) -> Self::Tag;
-    fn input_tag(&self) -> Self::Tag;
-    fn output_tag(&self) -> Self::Tag;
-    /// Checks that a tag embedded in a program is known to this policy.
-    fn validate_tag(&self, tag: Self::Tag) -> Result<(), FlowError<Self::Tag>>;
-    /// Computes the closest common descendant of two tags, if it exists.
-    fn closest_common_descendant(
-        &self,
-        left: Self::Tag,
-        right: Self::Tag,
-    ) -> Result<Self::Tag, FlowError<Self::Tag>>;
-    /// Checks whether 'from -> to' holds for given tags.
-    fn can_flow(&self, from: Self::Tag, to: Self::Tag) -> Result<bool, FlowError<Self::Tag>>;
-    /// Returns the downgrader registered under `name`, if any.
-    ///
-    /// Defaults to `None` so policies without aware flow (e.g. [`NoFlow`]) need
-    /// no implementation.
-    fn downgrader(&self, _name: &str) -> Option<Downgrader<Self::Tag>> {
-        None
-    }
-}
-
 /// Standard information-flow policy backed by a [`FlowGraph`].
 ///
 /// Besides the graph, this policy configures the three perimeter/default tags
@@ -414,7 +374,7 @@ pub trait InformationFlowPolicy {
 /// - `input_tag`: tag automatically applied to input values.
 /// - `output_tag`: guard that output values must be allowed to flow to.
 #[derive(Debug, Clone)]
-pub struct SecurityPolicy<Tag: FlowTag> {
+pub struct SecurityPolicy<Tag: TagTrait> {
     graph: PolicyGraph<Tag>,
     default_tag: Tag,
     input_tag: Tag,
@@ -423,14 +383,15 @@ pub struct SecurityPolicy<Tag: FlowTag> {
     downgraders: HashMap<String, Downgrader<Tag>>,
 }
 
-impl<Tag: FlowTag> SecurityPolicy<Tag> {
+impl<Tag: TagTrait> SecurityPolicy<Tag> {
     /// Creates a graph-backed policy and validates all configured policy tags.
     pub fn new(
-        graph: PolicyGraph<Tag>,
+        graph_source: impl TryInto<PolicyGraph<Tag>, Error = FlowError<Tag>>,
         default_tag: Tag,
         input_tag: Tag,
         output_tag: Tag,
     ) -> Result<Self, FlowError<Tag>> {
+        let graph = graph_source.try_into()?;
         for tag in [default_tag, input_tag, output_tag] {
             if !graph.contains(tag) {
                 return Err(FlowError::UnknownTag(tag));
@@ -445,10 +406,10 @@ impl<Tag: FlowTag> SecurityPolicy<Tag> {
         })
     }
 
-    /// Returns the underlying validated flow graph.
-    pub fn graph(&self) -> &PolicyGraph<Tag> {
-        &self.graph
-    }
+    // /// Returns the underlying validated flow graph.
+    // pub fn graph(&self) -> &PolicyGraph<Tag> {
+    //     &self.graph
+    // }
 
     /// Registers an aware connection `source ->> target` behind a named
     /// downgrader, returning the augmented policy for chaining.
@@ -496,7 +457,7 @@ impl<Tag: FlowTag> SecurityPolicy<Tag> {
     }
 }
 
-impl<Tag: FlowTag> InformationFlowPolicy for SecurityPolicy<Tag> {
+impl<Tag: TagTrait> InformationFlowPolicy for SecurityPolicy<Tag> {
     type Tag = Tag;
 
     fn default_tag(&self) -> Tag {
@@ -550,6 +511,54 @@ impl InformationFlowPolicy for NoFlow {
     }
     fn can_flow(&self, _from: (), _to: ()) -> Result<bool, FlowError<()>> {
         Ok(true)
+    }
+}
+
+/// An explicit, deliberately-controlled downgrade relation `source ->> target`.
+///
+/// Aware connections are explicit, non-reflexive, and non-transitive. They are
+/// **not** part of the oblivious lattice and never participate in `ccd` or
+/// `can_flow`. A connection is only usable through its trusted [`Downgrader`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AwareConnection<Tag: TagTrait> {
+    pub source: Tag,
+    pub target: Tag,
+}
+
+/// A trusted, per-data-budgeted gate for a single [`AwareConnection`]. Whatever
+/// the downgrader returns is implicitly retagged from `source` to `target`.
+///
+/// `max_calls` bounds how many times any one value may be downgraded through
+/// this gate; `None` means unlimited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Downgrader<Tag: TagTrait> {
+    pub connection: AwareConnection<Tag>,
+    pub max_calls: Option<usize>,
+}
+
+/// Trait for operations on tags from the perspective of policies.
+pub trait InformationFlowPolicy {
+    type Tag: TagTrait;
+
+    fn default_tag(&self) -> Self::Tag;
+    fn input_tag(&self) -> Self::Tag;
+    fn output_tag(&self) -> Self::Tag;
+    /// Checks that a tag embedded in a program is known to this policy.
+    fn validate_tag(&self, tag: Self::Tag) -> Result<(), FlowError<Self::Tag>>;
+    /// Computes the closest common descendant of two tags, if it exists.
+    fn closest_common_descendant(
+        &self,
+        left: Self::Tag,
+        right: Self::Tag,
+    ) -> Result<Self::Tag, FlowError<Self::Tag>>;
+    /// Checks whether 'from -> to' holds for given tags.
+    fn can_flow(&self, from: Self::Tag, to: Self::Tag) -> Result<bool, FlowError<Self::Tag>>;
+    /// Returns the downgrader registered under `name`, if any.
+    ///
+    /// Defaults to `None` so policies without aware flow (e.g. [`NoFlow`]) need
+    /// no implementation.
+    fn downgrader(&self, _name: &str) -> Option<Downgrader<Self::Tag>> {
+        None
     }
 }
 
@@ -671,17 +680,17 @@ mod tests {
             Err(FlowError::Cycle)
         ));
 
-        let graph = PolicyGraph::new([Public, Private], [(Public, Private)]).unwrap();
+        let topology = Topology::basic([(Public, Private)]);
         assert!(matches!(
-            SecurityPolicy::new(graph, Public, Private, Separate),
+            SecurityPolicy::new(topology, Public, Private, Separate),
             Err(FlowError::UnknownTag(Separate))
         ));
     }
 
     #[test]
     fn rejects_reflexive_aware_connection() {
-        let graph = PolicyGraph::new([Public, Private], [(Public, Private)]).unwrap();
-        let policy = SecurityPolicy::new(graph, Public, Private, Public).unwrap();
+        let topology = Topology::basic([(Public, Private)]);
+        let policy = SecurityPolicy::new(topology, Public, Private, Public).unwrap();
         assert!(matches!(
             policy.with_downgrader("identity", Private, Private, Some(1)),
             Err(FlowError::ReflexiveAwareConnection(Private))
@@ -690,10 +699,8 @@ mod tests {
 
     #[test]
     fn aware_connections_are_not_transitive() {
-        let graph = Topology::linear([Public, Constrained, Private])
-            .into_graph()
-            .unwrap();
-        let policy = SecurityPolicy::new(graph, Public, Private, Public)
+        let topology = Topology::linear([Public, Constrained, Private]);
+        let policy = SecurityPolicy::new(topology, Public, Private, Public)
             .unwrap()
             .with_downgrader("a_to_b", Private, Constrained, Some(1))
             .unwrap()
