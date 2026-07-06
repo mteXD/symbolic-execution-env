@@ -10,13 +10,20 @@
 //! Perimeter guards define how data enters and exits the system, e.g. no data
 //! tagged `Secret` may flow to `Public` outputs.
 //!
+//! Throughout this crate, a generic parameter named `Tag` is the *tag type*:
+//! the set of tags (e.g. `Public`/`Constrained`/`Secret`) that topologies and
+//! policies are built over. A value of that type is one single tag.
+//!
 //! # Usage
 //!
-//! First, define a
+//! Define a [`Topology`] over your tag type, build a [`SecurityPolicy`] from it
+//! (optionally registering downgraders via
+//! [`SecurityPolicy::with_downgrader`]), and hand the policy to a monitored
+//! executor or verifier via their `with_policy` constructors.
 //!
-//! # Eamples
+//! # Examples
 //!
-//! For examples, see the tests module.
+//! See the tests in this module and the DIFTAM tests in the test catalog.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -27,10 +34,10 @@ use std::{
 type TagIndex = usize;
 type ReachabilityMatrix = Vec<Vec<bool>>;
 
-/// Trait bound required for values used as information-flow tags.
+/// Trait bound required of a tag type (the set of tags a policy is built over).
 ///
 /// This trait has a blanket implementation, so any small enum deriving
-/// `Copy`, `Eq`, `Hash`, and `Debug` can be used directly as a tag.
+/// `Copy`, `Eq`, `Hash`, and `Debug` can be used directly as a tag type.
 pub trait TagTrait: Copy + Eq + Hash + Debug {}
 
 impl<T: Copy + Eq + Hash + Debug> TagTrait for T {}
@@ -219,7 +226,7 @@ impl<Tag: TagTrait> Topology<Tag> {
         &self.edges
     }
 
-    /// Validates and preprocesses this topology as a [`FlowGraph`].
+    /// Validates and preprocesses this topology as a [`PolicyGraph`].
     fn into_graph(self) -> Result<PolicyGraph<Tag>, FlowError<Tag>> {
         PolicyGraph::new(self.tags, self.edges)
     }
@@ -235,7 +242,7 @@ impl<Tag: TagTrait> TryInto<PolicyGraph<Tag>> for Topology<Tag> {
 
 /// A validated directed graph of allowed information flows.
 ///
-/// `FlowGraph` stores the edges for a tag collection and precomputes the reflexive transitive
+/// `PolicyGraph` stores the edges for a tag type and precomputes the reflexive transitive
 /// closure and closest common descendants. This speeds up the
 /// [`Executor`](crate::machine::executor::Executor) checks.
 ///
@@ -363,7 +370,7 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
     }
 }
 
-/// Standard information-flow policy backed by a [`FlowGraph`].
+/// Standard information-flow policy backed by a validated flow graph.
 ///
 /// Besides the graph, this policy configures the three perimeter/default tags
 /// needed by the executor:
@@ -403,11 +410,6 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
             downgraders: HashMap::new(),
         })
     }
-
-    // /// Returns the underlying validated flow graph.
-    // pub fn graph(&self) -> &PolicyGraph<Tag> {
-    //     &self.graph
-    // }
 
     /// Registers an aware connection `source ->> target` behind a named
     /// downgrader, returning the augmented policy for chaining.
@@ -582,10 +584,6 @@ mod tests {
 
         assert!(graph.can_flow(Public, Private).unwrap());
         assert_eq!(graph.ccd(Public, Private).unwrap(), Private);
-        // assert_eq!(
-        //     graph.ccd_multiple([Public, Constrained, Private]).unwrap(),
-        //     Some(Private)
-        // );
     }
 
     #[test]
@@ -602,9 +600,6 @@ mod tests {
     fn algebraic_topologies_support_product_and_disjoint_union() {
         use DisjointTag::{Left, Right};
 
-        // let combined = Topology::linear([Public, Private])
-        //     * Topology::linear([Constrained, Separate])
-        //     + Topology::basic([(Public, Private)]);
         let combined = {
             let part1 = Topology::linear([Public, Private]);
             let part2 = Topology::linear([Constrained, Separate]);

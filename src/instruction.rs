@@ -27,9 +27,9 @@ pub enum UnaryOpCellAmnt {
     Pop,
 }
 
-/// Operations with 1 Cell Amount argument.
+/// Operations with 1 immediate argument.
 ///
-/// [`TaggedPush`] also takes a Tag argument.
+/// [`Self::TaggedPush`] also carries a tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpImm<Tag = ()> {
     Push,
@@ -42,7 +42,7 @@ pub enum UnaryOpImm<Tag = ()> {
 pub enum UnaryOpString {
     FunctionDefine,
     FunctionCall,
-    //// Define a new downgrader
+    /// Defines a new downgrader.
     Downgrader,
     /// Invokes a downgrader, applying its implicit retag and per-value budget.
     Downgrade,

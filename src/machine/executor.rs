@@ -280,20 +280,20 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Runs `instrs` as a nested context (block / function body / ifelse branch).
     ///
-    /// Saves and restores `program_data` while [`StackFrames`] scopes the value
-    /// and tag cells together.
+    /// Saves and restores `program_data` while the stack's `Block` frame scopes
+    /// the value and tag cells together.
     fn run_nested(
         &mut self,
         instrs: Rc<[Instruction<P::Tag>]>,
     ) -> ExecutorResult<Option<(Value, P::Tag)>, P> {
-        let saved_bases = self.stack.enter_block();
+        let saved_base = self.stack.enter_block();
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let run_result = self.run();
 
         self.machine.program_data = saved_program;
-        let (slot, _) = self.stack.exit_block(saved_bases);
+        let (slot, _) = self.stack.exit_block(saved_base);
         let result = slot.map(|s| (s.value, s.tag));
 
         run_result?;
@@ -303,7 +303,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// Runs the body of an ifelse branch *inline* on the parent stack: cells
     /// are not isolated, so pops and pushes persist after the branch ends.
     /// `program_data` is still scoped. The marker frame pushed via
-    /// [`StackFrames::enter_ifelse_branch`] makes `Rebase` an error inside the
+    /// [`Stack::enter_ifelse_branch`] makes `Rebase` an error inside the
     /// branch.
     fn run_ifelse_branch(
         &mut self,

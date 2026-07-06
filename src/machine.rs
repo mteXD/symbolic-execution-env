@@ -88,9 +88,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
 
         debug!("Function '{}' will point to {:?}", name, current);
 
-        self.function_insert(name, FdEntry::Inst(current.to_owned())) // PERF: to_owned()
+        self.function_insert(name, FdEntry::Inst(current.to_owned()))
     }
 
+    /// Registers the *current* instruction as the body of `function_name`,
+    /// consuming any immediately following `FunctionDefine`s as aliases of it.
+    /// Returns the alias names. Warns (but continues) if no block follows.
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
         use Instruction::AluUnaryString;
         use UnaryOpString::FunctionDefine;

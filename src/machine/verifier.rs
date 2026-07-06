@@ -462,11 +462,11 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok(())
     }
 
-    /// Low-level nested run: scopes `cells` and `tags` (via [`StackFrames`])
-    /// and `program_data`.
+    /// Low-level nested run: scopes the value/tag cells (via the stack's
+    /// `Block` frame) and `program_data`.
     /// Returns `(last_value, last_tag, body_stack_size)`.
     ///
-    /// Callers needing to also scope `findings` or `function_data` should use
+    /// Callers needing to also scope `findings` should use
     /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
@@ -489,9 +489,10 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     /// Verifies a single ifelse-branch instruction on the parent stack:
-    /// cells are mutated in place. `function_data` and `findings` are scoped
-    /// (saved on entry, restored on exit) so branches don't leak metadata into
-    /// the parent. `Rebase` is forbidden inside the branch via the
+    /// cells are mutated in place. `findings` is scoped (saved on entry,
+    /// restored on exit) so branches don't leak analysis metadata into the
+    /// parent; the machine's global function registry is NOT scoped, matching
+    /// the executor. `Rebase` is forbidden inside the branch via the
     /// `IfElseBranch` marker frame.
     ///
     /// The `condition_tag` is combined with the current `pc_tag` so that all
@@ -506,8 +507,8 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
 
         // The IfElseBranch frame makes pops transparent to enclosing blocks and
-        // forbids `Rebase` inside a branch. Cells (value, tag, and counters) are
-        // merged across the two branches by evaluate_ifelse.
+        // forbids `Rebase` inside a branch. Cells (value and tag) are merged
+        // across the two branches by evaluate_ifelse.
         self.stack.enter_ifelse_branch();
         let exec_result = self.evaluate_instruction(instr);
         self.stack.exit_ifelse_branch();
@@ -518,9 +519,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         exec_result
     }
 
-    /// Runs `instrs` as a fully-scoped block: `cells`, `tags`, `program_data`,
-    /// `findings`, and `function_data` are all saved on entry and restored on
-    /// exit. Used by `evaluate_block` and `evaluate_ifelse`.
+    /// Runs `instrs` as a fully-scoped block: cells, `program_data`, and
+    /// `findings` are saved on entry and restored on exit. Used by
+    /// `evaluate_block`.
     fn run_block_scoped(
         &mut self,
         instrs: Rc<[Instruction<P::Tag>]>,
@@ -1177,8 +1178,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                 }
 
                 // Cell-by-cell merge of the two final stacks: values combine,
-                // tags take their closest common descendant, and counters keep
-                // the larger per-downgrader count.
+                // tags take their closest common descendant.
                 let merged = true_cells
                     .into_iter()
                     .zip(false_cells)
@@ -1189,7 +1189,6 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                                 .policy
                                 .closest_common_descendant(a.tag, b.tag)
                                 .map_err(VerifierError::Flow)?,
-                            // counts: a.counts.merge_max(&b.counts),
                         })
                     })
                     .collect::<Result<Vec<_>, VerifierError<P::Tag>>>()?;
