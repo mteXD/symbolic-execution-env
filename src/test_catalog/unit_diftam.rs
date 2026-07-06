@@ -4,8 +4,8 @@
 //! inlines a tagged program and states both runners' expectations with the
 //! declarative `tagged_stack with <policy>, …` / `error with <policy>, …`
 //! forms. A `custom` body remains only where the grammar cannot reach (the
-//! plain `NoFlow` runner). The shared `Confidentiality` / `Integrity` policies
-//! live in the parent module.
+//! plain unmonitored runner). The shared `Confidentiality` / `Integrity`
+//! policies live in the parent module.
 
 use crate::types::Immediate;
 
@@ -298,7 +298,7 @@ test_program! {
 // ---------------------------------------------------------------------------
 
 test_program! {
-    /// The plain (NoFlow) verifier still works: tags are all `()`.
+    /// The plain (unmonitored) verifier still works: tags are all `()`.
     no_flow_verifier_works_as_before,
     program: vec![
         add_instr!(Push, 10),

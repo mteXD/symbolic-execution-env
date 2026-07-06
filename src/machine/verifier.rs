@@ -5,7 +5,7 @@
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{AwareConnection, FlowError, InformationFlowPolicy, NoFlow, TagTrait},
+    information_flow::{AwareConnection, FlowError, SecurityPolicy, TagTrait},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -275,21 +275,22 @@ impl<Tag: TagTrait> Findings<Tag> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
-    machine: CoreMachine<P::Tag>,
-    stack: Stack<ValueSpan, P::Tag>,
-    policy: P,
-    pc_tag: P::Tag,
-    findings: Findings<P::Tag>,
+pub struct Verifier<Tag: TagTrait = ()> {
+    machine: CoreMachine<Tag>,
+    stack: Stack<ValueSpan, Tag>,
+    policy: SecurityPolicy<Tag>,
+    pc_tag: Tag,
+    findings: Findings<Tag>,
     /// Active downgrader connection while analyzing its body at definition
     /// time. No stack is needed: nested definitions are forbidden, so at most
     /// one downgrader is under analysis at a time.
-    current_downgrader: Option<AwareConnection<P::Tag>>,
+    current_downgrader: Option<AwareConnection<Tag>>,
 }
 
-impl Verifier<NoFlow> {
+impl Verifier<()> {
+    /// Creates an ordinary verifier with information-flow monitoring disabled.
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
-        let policy = NoFlow;
+        let policy = SecurityPolicy::no_flow();
         Self {
             machine: CoreMachine::new(program),
             stack: Stack::new(),
@@ -301,12 +302,12 @@ impl Verifier<NoFlow> {
     }
 }
 
-impl<P: InformationFlowPolicy> Verifier<P> {
+impl<Tag: TagTrait> Verifier<Tag> {
     /// Creates a monitored verifier and validates every tag embedded in the program.
     pub fn with_policy(
-        program: impl Into<Rc<[Instruction<P::Tag>]>>,
-        policy: P,
-    ) -> Result<Self, VerifierError<P::Tag>> {
+        program: impl Into<Rc<[Instruction<Tag>]>>,
+        policy: SecurityPolicy<Tag>,
+    ) -> Result<Self, VerifierError<Tag>> {
         let program = program.into();
         Self::validate_program(&program, &policy)?;
         let pc_tag = policy.default_tag();
@@ -321,9 +322,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     fn validate_program(
-        program: &[Instruction<P::Tag>],
-        policy: &P,
-    ) -> Result<(), VerifierError<P::Tag>> {
+        program: &[Instruction<Tag>],
+        policy: &SecurityPolicy<Tag>,
+    ) -> Result<(), VerifierError<Tag>> {
         for instruction in program {
             Self::validate_instruction(instruction, policy)?;
         }
@@ -331,9 +332,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     fn validate_instruction(
-        instruction: &Instruction<P::Tag>,
-        policy: &P,
-    ) -> Result<(), VerifierError<P::Tag>> {
+        instruction: &Instruction<Tag>,
+        policy: &SecurityPolicy<Tag>,
+    ) -> Result<(), VerifierError<Tag>> {
         match instruction {
             Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
                 policy.validate_tag(*tag)?;
@@ -361,7 +362,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     // ---- Tag helpers --------------------------------------------------------
 
     /// Calculates ccd(left, right).
-    fn combine_tags(&self, left: P::Tag, right: P::Tag) -> Result<P::Tag, VerifierError<P::Tag>> {
+    fn combine_tags(&self, left: Tag, right: Tag) -> Result<Tag, VerifierError<Tag>> {
         self.policy
             .closest_common_descendant(left, right)
             .map_err(VerifierError::Flow)
@@ -371,18 +372,14 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// a downgrader this is the connection's `source`, so the computed result
     /// matches `source` and passes the implicit-retag source check. Otherwise
     /// it is the policy default (non-downgrader functions are unaffected).
-    fn arg_tag(&self) -> P::Tag {
+    fn arg_tag(&self) -> Tag {
         self.current_downgrader
             .map(|c| c.source)
             .unwrap_or_else(|| self.policy.default_tag())
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.
-    fn push_with_tag(
-        &mut self,
-        value: ValueSpan,
-        tag: P::Tag,
-    ) -> Result<(), VerifierError<P::Tag>> {
+    fn push_with_tag(&mut self, value: ValueSpan, tag: Tag) -> Result<(), VerifierError<Tag>> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
         self.stack.push(Cell::new(value, effective_tag));
         Ok(())
@@ -390,12 +387,12 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
     /// Pushes a value whose tag is already final (e.g. block / function return).
     /// Does NOT combine with pc_tag.
-    fn push_existing(&mut self, value: ValueSpan, tag: P::Tag) {
+    fn push_existing(&mut self, value: ValueSpan, tag: Tag) {
         self.stack.push(Cell::new(value, tag));
     }
 
     /// Reads the tag corresponding to a value cell.
-    pub fn read_tag(&self, idx: CellIndex) -> Result<P::Tag, VerifierError<P::Tag>> {
+    pub fn read_tag(&self, idx: CellIndex) -> Result<Tag, VerifierError<Tag>> {
         self.stack.tag_at(idx.into()).ok_or_else(|| InvalidCell {
             instr: self
                 .machine
@@ -413,16 +410,16 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     /// Returns the parallel tag stack.
-    pub fn tags(&self) -> Vec<P::Tag> {
+    pub fn tags(&self) -> Vec<Tag> {
         self.stack.tags()
     }
 
     /// Returns the tag of the top value cell.
-    pub fn last_tag(&self) -> Option<P::Tag> {
+    pub fn last_tag(&self) -> Option<Tag> {
         self.stack.last_tag()
     }
 
-    fn ensure_output_allowed(&self, value_tag: P::Tag) -> Result<(), VerifierError<P::Tag>> {
+    fn ensure_output_allowed(&self, value_tag: Tag) -> Result<(), VerifierError<Tag>> {
         let effective_tag = self.combine_tags(value_tag, self.pc_tag)?;
         let output_guard = self.policy.output_tag();
 
@@ -442,7 +439,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
 
     // ---- Core execution -----------------------------------------------------
 
-    fn run_loop(&mut self) -> Result<(), VerifierError<P::Tag>> {
+    fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;
         }
@@ -457,8 +454,8 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
-        instrs: Rc<[Instruction<P::Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<P::Tag>, usize), VerifierError<P::Tag>> {
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
         let saved_base = self.stack.enter_block();
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
@@ -486,9 +483,9 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// values pushed inside the branch carry the condition's taint.
     fn run_ifelse_branch(
         &mut self,
-        instr: &Instruction<P::Tag>,
-        condition_tag: P::Tag,
-    ) -> Result<(), VerifierError<P::Tag>> {
+        instr: &Instruction<Tag>,
+        condition_tag: Tag,
+    ) -> Result<(), VerifierError<Tag>> {
         let saved_findings = self.findings.clone();
         let saved_pc_tag = self.pc_tag;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
@@ -511,8 +508,8 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// `evaluate_block`.
     fn run_block_scoped(
         &mut self,
-        instrs: Rc<[Instruction<P::Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<P::Tag>, usize), VerifierError<P::Tag>> {
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
         let saved_findings = self.findings.clone();
         let result = self.run_nested(instrs);
         self.findings = saved_findings;
@@ -534,7 +531,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         &mut self,
         fun: &str,
         is_downgrader: bool,
-    ) -> Result<(), VerifierError<P::Tag>> {
+    ) -> Result<(), VerifierError<Tag>> {
         if let Some(ref outer) = self.findings.func_defining {
             return Err(NestedFunctionDefinition {
                 outer_function: outer.function_name.clone(),
@@ -670,7 +667,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         &mut self,
         function_name: &str,
         is_downgrade: bool,
-    ) -> Result<(), VerifierError<P::Tag>> {
+    ) -> Result<(), VerifierError<Tag>> {
         use FunctionDataError::FunctionUndefined;
 
         // Cross-check the instruction's intent against the policy registration.
@@ -787,7 +784,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         Ok(())
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<P::Tag>> {
+    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
         self.stack.value_at(reg.into()).ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: reg,
@@ -816,10 +813,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     /// Like [`read`](Self::read), but while collecting a function's arguments
     /// an out-of-scope read is recorded as a `Normal` argument index and
     /// yields an unbounded span (with `default_tag`) instead of erroring.
-    fn read_normal(
-        &mut self,
-        idx: CellIndex,
-    ) -> Result<(ValueSpan, P::Tag), VerifierError<P::Tag>> {
+    fn read_normal(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
             self.findings.record_arg(MemorizedIndex::Normal(idx));
             return Ok((ValueSpan::inf(), self.arg_tag()));
@@ -830,7 +824,7 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 
     /// Verifies the program, returning self.
-    pub fn verify(mut self) -> Result<Self, VerifierError<P::Tag>> {
+    pub fn verify(mut self) -> Result<Self, VerifierError<Tag>> {
         self.run_loop()?;
         Ok(self)
     }
@@ -850,8 +844,8 @@ impl<P: InformationFlowPolicy> Verifier<P> {
     }
 }
 
-impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
-    type Error = VerifierError<P::Tag>;
+impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
+    type Error = VerifierError<Tag>;
 
     fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
         use NullaryOp::*;
@@ -884,7 +878,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
 
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm<P::Tag>,
+        instr: &UnaryOpImm<Tag>,
         arg: Immediate,
     ) -> Result<(), Self::Error> {
         use UnaryOpImm::*;
@@ -1112,7 +1106,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<P::Tag>]>) -> Result<(), Self::Error> {
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> Result<(), Self::Error> {
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
@@ -1127,8 +1121,8 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<P::Tag>>,
-        when_false: Rc<Instruction<P::Tag>>,
+        when_true: Rc<Instruction<Tag>>,
+        when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error> {
         let condition = self.read(cond_idx)?;
         let condition_tag = self.read_tag(cond_idx)?;
@@ -1178,7 +1172,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                                 .map_err(VerifierError::Flow)?,
                         })
                     })
-                    .collect::<Result<Vec<_>, VerifierError<P::Tag>>>()?;
+                    .collect::<Result<Vec<_>, VerifierError<Tag>>>()?;
                 self.stack.set_slots(merged);
             }
         }

@@ -455,62 +455,52 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
             .values()
             .any(|d| d.connection.source == source && d.connection.target == target)
     }
-}
 
-impl<Tag: TagTrait> InformationFlowPolicy for SecurityPolicy<Tag> {
-    type Tag = Tag;
-
-    fn default_tag(&self) -> Tag {
+    /// Tag for ordinary constants.
+    pub fn default_tag(&self) -> Tag {
         self.default_tag
     }
 
-    fn input_tag(&self) -> Tag {
+    /// Tag automatically applied to input values.
+    pub fn input_tag(&self) -> Tag {
         self.input_tag
     }
 
-    fn output_tag(&self) -> Tag {
+    /// Guard that output values must be allowed to flow to.
+    pub fn output_tag(&self) -> Tag {
         self.output_tag
     }
 
-    fn validate_tag(&self, tag: Tag) -> Result<(), FlowError<Tag>> {
+    /// Checks that a tag embedded in a program is known to this policy.
+    pub fn validate_tag(&self, tag: Tag) -> Result<(), FlowError<Tag>> {
         self.graph.index_of(tag).map(|_| ())
     }
 
-    fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
+    /// Computes the closest common descendant of two tags, if it exists.
+    pub fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
         self.graph.ccd(left, right)
     }
 
-    fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
+    /// Checks whether 'from -> to' holds for given tags.
+    pub fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
         self.graph.can_flow(from, to)
     }
 
-    fn downgrader(&self, name: &str) -> Option<Downgrader<Tag>> {
+    /// Returns the downgrader registered under `name`, if any.
+    pub fn downgrader(&self, name: &str) -> Option<Downgrader<Tag>> {
         self.downgraders.get(name).copied()
     }
 }
 
-/// Policy used by the ordinary, unmonitored executor.
-///
-/// Its only tag is `()`. All combinations and flows succeed, preserving the
-/// behavior of programs created with
-/// [`Executor::new`](crate::machine::executor::Executor::new).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoFlow;
-
-impl InformationFlowPolicy for NoFlow {
-    type Tag = ();
-
-    fn default_tag(&self) {}
-    fn input_tag(&self) {}
-    fn output_tag(&self) {}
-    fn validate_tag(&self, _tag: ()) -> Result<(), FlowError<()>> {
-        Ok(())
-    }
-    fn closest_common_descendant(&self, _left: (), _right: ()) -> Result<(), FlowError<()>> {
-        Ok(())
-    }
-    fn can_flow(&self, _from: (), _to: ()) -> Result<bool, FlowError<()>> {
-        Ok(true)
+impl SecurityPolicy<()> {
+    /// Policy for unmonitored runs: a single unit tag, everything allowed.
+    ///
+    /// Used by [`Executor::new`](crate::machine::executor::Executor::new) and
+    /// [`Verifier::new`](crate::machine::verifier::Verifier::new); every tag is
+    /// `()`, every flow and combination succeeds, and no downgraders exist.
+    pub fn no_flow() -> Self {
+        Self::new(Topology::linear([()]), (), (), ())
+            .expect("the unit topology is always a valid policy")
     }
 }
 
@@ -534,32 +524,6 @@ pub struct AwareConnection<Tag: TagTrait> {
 pub struct Downgrader<Tag: TagTrait> {
     pub connection: AwareConnection<Tag>,
     pub max_calls: Option<usize>,
-}
-
-/// Trait for operations on tags from the perspective of policies.
-pub trait InformationFlowPolicy {
-    type Tag: TagTrait;
-
-    fn default_tag(&self) -> Self::Tag;
-    fn input_tag(&self) -> Self::Tag;
-    fn output_tag(&self) -> Self::Tag;
-    /// Checks that a tag embedded in a program is known to this policy.
-    fn validate_tag(&self, tag: Self::Tag) -> Result<(), FlowError<Self::Tag>>;
-    /// Computes the closest common descendant of two tags, if it exists.
-    fn closest_common_descendant(
-        &self,
-        left: Self::Tag,
-        right: Self::Tag,
-    ) -> Result<Self::Tag, FlowError<Self::Tag>>;
-    /// Checks whether 'from -> to' holds for given tags.
-    fn can_flow(&self, from: Self::Tag, to: Self::Tag) -> Result<bool, FlowError<Self::Tag>>;
-    /// Returns the downgrader registered under `name`, if any.
-    ///
-    /// Defaults to `None` so policies without aware flow (e.g. [`NoFlow`]) need
-    /// no implementation.
-    fn downgrader(&self, _name: &str) -> Option<Downgrader<Self::Tag>> {
-        None
-    }
 }
 
 #[cfg(test)]

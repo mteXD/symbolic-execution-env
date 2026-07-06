@@ -11,7 +11,7 @@ use std::{
 use log::debug;
 
 use crate::{
-    information_flow::{FlowError, InformationFlowPolicy, NoFlow, TagTrait},
+    information_flow::{FlowError, SecurityPolicy, TagTrait},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -49,7 +49,7 @@ impl<Tag: TagTrait> From<FlowError<Tag>> for ExecutorError<Tag> {
     }
 }
 
-type ExecutorResult<T, P> = Result<T, ExecutorError<<P as InformationFlowPolicy>::Tag>>;
+type ExecutorResult<T, Tag> = Result<T, ExecutorError<Tag>>;
 
 const RECURSION_LIMIT: usize = 50;
 
@@ -71,23 +71,23 @@ struct ActiveDowngrader {
     counted: HashSet<usize>,
 }
 
-pub struct Executor<P: InformationFlowPolicy = NoFlow> {
-    machine: CoreMachine<P::Tag>,
-    stack: Stack<Value, P::Tag>,
-    policy: P,
-    pc_tag: P::Tag,
+pub struct Executor<Tag: TagTrait = ()> {
+    machine: CoreMachine<Tag>,
+    stack: Stack<Value, Tag>,
+    policy: SecurityPolicy<Tag>,
+    pc_tag: Tag,
     function_depth: usize,
     /// The downgrader whose body is currently executing, if any.
     active_downgrader: Option<ActiveDowngrader>,
 }
 
-impl Display for Executor {
+impl<Tag: TagTrait> Display for Executor<Tag> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[Executor {:?}]", self.stack.last_value())
     }
 }
 
-impl Debug for Executor {
+impl<Tag: TagTrait> Debug for Executor<Tag> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Executor")
             .field("machine", &self.machine)
@@ -100,13 +100,13 @@ impl Debug for Executor {
 }
 
 /// An executor with no IFT
-impl Executor<NoFlow> {
+impl Executor<()> {
     /// Creates an ordinary executor with information-flow monitoring disabled.
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         Self {
             machine: CoreMachine::new(program),
             stack: Stack::new(),
-            policy: NoFlow,
+            policy: SecurityPolicy::no_flow(),
             pc_tag: (),
             function_depth: 0,
             active_downgrader: None,
@@ -114,12 +114,12 @@ impl Executor<NoFlow> {
     }
 }
 
-impl<P: InformationFlowPolicy> Executor<P> {
+impl<Tag: TagTrait> Executor<Tag> {
     /// Creates a monitored executor and validates every tag embedded in the program.
     pub fn with_policy(
-        program: impl Into<Rc<[Instruction<P::Tag>]>>,
-        policy: P,
-    ) -> ExecutorResult<Self, P> {
+        program: impl Into<Rc<[Instruction<Tag>]>>,
+        policy: SecurityPolicy<Tag>,
+    ) -> ExecutorResult<Self, Tag> {
         let program = program.into();
         Self::validate_program(&program, &policy)?;
         let pc_tag = policy.default_tag();
@@ -133,7 +133,10 @@ impl<P: InformationFlowPolicy> Executor<P> {
         })
     }
 
-    fn validate_program(program: &[Instruction<P::Tag>], policy: &P) -> ExecutorResult<(), P> {
+    fn validate_program(
+        program: &[Instruction<Tag>],
+        policy: &SecurityPolicy<Tag>,
+    ) -> ExecutorResult<(), Tag> {
         for instruction in program {
             Self::validate_instruction(instruction, policy)?;
         }
@@ -141,9 +144,9 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     fn validate_instruction(
-        instruction: &Instruction<P::Tag>,
-        policy: &P,
-    ) -> ExecutorResult<(), P> {
+        instruction: &Instruction<Tag>,
+        policy: &SecurityPolicy<Tag>,
+    ) -> ExecutorResult<(), Tag> {
         match instruction {
             Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
                 policy.validate_tag(*tag)?
@@ -172,7 +175,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Reads a value cell without exposing its tag. Does not affect downgrade
     /// accounting (intended for external inspection).
-    pub fn read(&self, index: CellIndex) -> ExecutorResult<Value, P> {
+    pub fn read(&self, index: CellIndex) -> ExecutorResult<Value, Tag> {
         self.stack
             .get(index.into())
             .map(|s| s.value)
@@ -180,7 +183,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Reads the tag corresponding to a value cell.
-    pub fn read_tag(&self, index: CellIndex) -> ExecutorResult<P::Tag, P> {
+    pub fn read_tag(&self, index: CellIndex) -> ExecutorResult<Tag, Tag> {
         self.stack
             .get(index.into())
             .map(|s| s.tag)
@@ -193,19 +196,19 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Returns the parallel tag stack.
-    pub fn tags(&self) -> Vec<P::Tag> {
+    pub fn tags(&self) -> Vec<Tag> {
         self.stack.tags()
     }
 
     /// Returns the tag of the top value cell.
-    pub fn last_tag(&self) -> Option<P::Tag> {
+    pub fn last_tag(&self) -> Option<Tag> {
         self.stack.last_tag()
     }
 
     /// Reads value and tag at the given index. While a downgrader body runs, a
     /// read of one of its caller's argument cells is counted against that
     /// cell's per-downgrader budget.
-    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Value, P::Tag), P> {
+    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Value, Tag), Tag> {
         let abs = usize::from(index);
         self.note_downgrade_arg(abs)?;
         self.stack
@@ -216,7 +219,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
 
     /// Counts a downgrader argument read against the caller cell at `abs`, once
     /// per call per distinct cell, enforcing the per-value `max_calls` budget.
-    fn note_downgrade_arg(&mut self, abs: usize) -> ExecutorResult<(), P> {
+    fn note_downgrade_arg(&mut self, abs: usize) -> ExecutorResult<(), Tag> {
         let depth = self.function_depth;
         let Some(active) = self.active_downgrader.as_mut() else {
             return Ok(());
@@ -247,25 +250,25 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Calculates ccd(left, right)
-    fn combine_tags(&self, left: P::Tag, right: P::Tag) -> ExecutorResult<P::Tag, P> {
+    fn combine_tags(&self, left: Tag, right: Tag) -> ExecutorResult<Tag, Tag> {
         self.policy
             .closest_common_descendant(left, right)
             .map_err(Into::into)
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.
-    fn push_new_value(&mut self, value: Value, tag: P::Tag) -> ExecutorResult<(), P> {
+    fn push_new_value(&mut self, value: Value, tag: Tag) -> ExecutorResult<(), Tag> {
         let effective_tag = self.combine_tags(tag, self.pc_tag)?;
         self.stack.push(Cell::new(value, effective_tag));
         Ok(())
     }
 
     /// Restores a result that already carries its final effective tag.
-    fn push_existing_entry(&mut self, entry: (Value, P::Tag)) {
+    fn push_existing_entry(&mut self, entry: (Value, Tag)) {
         self.stack.push(Cell::new(entry.0, entry.1));
     }
 
-    fn run(&mut self) -> ExecutorResult<(), P> {
+    fn run(&mut self) -> ExecutorResult<(), Tag> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;
         }
@@ -273,7 +276,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 
     /// Executes the program to completion, returning self.
-    pub fn exec(mut self) -> ExecutorResult<Self, P> {
+    pub fn exec(mut self) -> ExecutorResult<Self, Tag> {
         self.run()?;
         Ok(self)
     }
@@ -284,8 +287,8 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// the value and tag cells together.
     fn run_nested(
         &mut self,
-        instrs: Rc<[Instruction<P::Tag>]>,
-    ) -> ExecutorResult<Option<(Value, P::Tag)>, P> {
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> ExecutorResult<Option<(Value, Tag)>, Tag> {
         let saved_base = self.stack.enter_block();
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
@@ -307,9 +310,9 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// branch.
     fn run_ifelse_branch(
         &mut self,
-        instrs: Rc<[Instruction<P::Tag>]>,
-        condition_tag: P::Tag,
-    ) -> ExecutorResult<(), P> {
+        instrs: Rc<[Instruction<Tag>]>,
+        condition_tag: Tag,
+    ) -> ExecutorResult<(), Tag> {
         let branch_pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
         self.stack.enter_ifelse_branch();
         let saved_program =
@@ -331,7 +334,11 @@ impl<P: InformationFlowPolicy> Executor<P> {
     /// an ordinary `FunctionCall`. The instruction and the policy registration
     /// must agree: a `Downgrade` of an unregistered name, or a `FunctionCall` of
     /// a registered downgrader, is rejected.
-    fn call_function(&mut self, function_name: &str, is_downgrade: bool) -> ExecutorResult<(), P> {
+    fn call_function(
+        &mut self,
+        function_name: &str,
+        is_downgrade: bool,
+    ) -> ExecutorResult<(), Tag> {
         let body = self.machine.function_get(function_name)?.clone();
 
         // The instruction declares intent; the policy declares the connection.
@@ -410,7 +417,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         Ok(())
     }
 
-    fn print_cell(&mut self, index: CellIndex) -> ExecutorResult<(), P> {
+    fn print_cell(&mut self, index: CellIndex) -> ExecutorResult<(), Tag> {
         let (value, value_tag) = self.read_entry(index)?;
         self.ensure_output_allowed(value_tag)?;
 
@@ -424,7 +431,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         Ok(())
     }
 
-    fn ensure_output_allowed(&self, value_tag: P::Tag) -> ExecutorResult<(), P> {
+    fn ensure_output_allowed(&self, value_tag: Tag) -> ExecutorResult<(), Tag> {
         let effective_tag = self.combine_tags(value_tag, self.pc_tag)?;
         let output_guard = self.policy.output_tag();
 
@@ -439,7 +446,7 @@ impl<P: InformationFlowPolicy> Executor<P> {
         }
     }
 
-    fn read_input_value(&mut self) -> ExecutorResult<Immediate, P> {
+    fn read_input_value(&mut self) -> ExecutorResult<Immediate, Tag> {
         use types::Input;
 
         let value = match &self.machine.input {
@@ -469,10 +476,10 @@ impl<P: InformationFlowPolicy> Executor<P> {
     }
 }
 
-impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
-    type Error = ExecutorError<P::Tag>;
+impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
+    type Error = ExecutorError<Tag>;
 
-    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> ExecutorResult<(), P> {
+    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> ExecutorResult<(), Tag> {
         use NullaryOp::*;
 
         match instr {
@@ -500,9 +507,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
     fn evaluate_alu_unary_imm(
         &mut self,
-        instr: &UnaryOpImm<P::Tag>,
+        instr: &UnaryOpImm<Tag>,
         arg: Immediate,
-    ) -> ExecutorResult<(), P> {
+    ) -> ExecutorResult<(), Tag> {
         use UnaryOpImm::*;
 
         match instr {
@@ -517,7 +524,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         &mut self,
         instr: &UnaryOpCell,
         arg: CellIndex,
-    ) -> ExecutorResult<(), P> {
+    ) -> ExecutorResult<(), Tag> {
         use UnaryOpCell::*;
 
         match instr {
@@ -548,7 +555,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         &mut self,
         instr: &UnaryOpCellAmnt,
         amount: CellIndex,
-    ) -> ExecutorResult<(), P> {
+    ) -> ExecutorResult<(), Tag> {
         use UnaryOpCellAmnt::*;
 
         match instr {
@@ -566,7 +573,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         &mut self,
         instr: &UnaryOpString,
         name: &str,
-    ) -> ExecutorResult<(), P> {
+    ) -> ExecutorResult<(), Tag> {
         use UnaryOpString::*;
         use types::{Input, Output};
 
@@ -607,14 +614,14 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         instr: &BinaryOp,
         arg1: CellIndex,
         arg2: CellIndex,
-    ) -> ExecutorResult<(), P> {
+    ) -> ExecutorResult<(), Tag> {
         let (left, left_tag) = self.read_entry(arg1)?;
         let (right, right_tag) = self.read_entry(arg2)?;
         let result_tag = self.combine_tags(left_tag, right_tag)?;
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        let expect_integer = |cell: Value| -> ExecutorResult<i64, P> {
+        let expect_integer = |cell: Value| -> ExecutorResult<i64, Tag> {
             match cell {
                 Integer(value) => Ok(value),
                 _found => {
@@ -653,7 +660,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<P::Tag>]>) -> ExecutorResult<(), P> {
+    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> ExecutorResult<(), Tag> {
         // Each block must leave at least one value on its local stack so the parent can
         // observe a result. A block that ends with an empty local stack is a "void" error.
         if instrs.is_empty() {
@@ -669,9 +676,9 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<P::Tag>>,
-        when_false: Rc<Instruction<P::Tag>>,
-    ) -> ExecutorResult<(), P> {
+        when_true: Rc<Instruction<Tag>>,
+        when_false: Rc<Instruction<Tag>>,
+    ) -> ExecutorResult<(), Tag> {
         let (condition, condition_tag) = self.read_entry(cond_idx)?;
 
         let branch = match condition {
