@@ -346,13 +346,13 @@ impl<Tag: TagTrait> Executor<Tag> {
         // is `Copy`, so the lookup releases the `&self.policy` borrow at once.
         let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
             (true, None) => {
-                return Err(FlowError::NotADowngrader {
+                return Err(FlowError::DowngraderUndefined {
                     name: function_name.to_owned(),
                 }
                 .into());
             }
             (false, Some(_)) => {
-                return Err(FlowError::DowngraderUsedAsFunction {
+                return Err(FlowError::DowngraderUndefined {
                     name: function_name.to_owned(),
                 }
                 .into());
@@ -584,7 +584,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
             // downgrade gate is never defined as an ordinary function.
             FunctionDefine => {
                 if self.policy.downgrader(name).is_some() {
-                    return Err(FlowError::DowngraderUsedAsFunction {
+                    return Err(FlowError::DowngraderUndefined {
                         name: name.to_owned(),
                     }
                     .into());
@@ -593,7 +593,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
             }
             Downgrader => {
                 if self.policy.downgrader(name).is_none() {
-                    return Err(FlowError::NotADowngrader {
+                    return Err(FlowError::DowngraderUndefined {
                         name: name.to_owned(),
                     }
                     .into());

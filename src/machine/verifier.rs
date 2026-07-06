@@ -544,12 +544,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
         // ordinary function (and vice versa).
         let connection = match (is_downgrader, self.policy.downgrader(fun)) {
             (true, None) => {
-                return Err(VerifierError::Flow(FlowError::NotADowngrader {
+                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                     name: fun.to_owned(),
                 }));
             }
             (false, Some(_)) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUsedAsFunction {
+                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                     name: fun.to_owned(),
                 }));
             }
@@ -673,12 +673,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
         // Cross-check the instruction's intent against the policy registration.
         let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
             (true, None) => {
-                return Err(VerifierError::Flow(FlowError::NotADowngrader {
+                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                     name: function_name.to_owned(),
                 }));
             }
             (false, Some(_)) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUsedAsFunction {
+                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                     name: function_name.to_owned(),
                 }));
             }

@@ -594,7 +594,7 @@ test_program! {
 test_program! {
     /// [#14] A registered downgrader may not be invoked with the ordinary
     /// `FunctionCall`: it must use `Downgrade`. Both runners reject the call as
-    /// `DowngraderUsedAsFunction`.
+    /// `DowngraderUndefined`.
     function_call_on_downgrader_rejected,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
@@ -608,16 +608,16 @@ test_program! {
         add_instr!(fun FunctionCall, "is_empty"),
     ],
     verifier: { error with downgrader_policy("is_empty", Some(1)),
-        VerifierError::Flow(FlowError::DowngraderUsedAsFunction { .. })
+        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
     },
     executor: { error with downgrader_policy("is_empty", Some(1)),
-        ExecutorError::Flow(FlowError::DowngraderUsedAsFunction { .. })
+        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
     },
 }
 
 test_program! {
     /// [#15] `Downgrade` may only name a downgrader registered in the policy.
-    /// Pointing it at an ordinary function is rejected as `NotADowngrader`.
+    /// Pointing it at an ordinary function is rejected as `DowngraderUndefined`.
     downgrade_on_plain_function_rejected,
     program: vec![
         add_instr!(fun FunctionDefine, "helper"),
@@ -625,26 +625,26 @@ test_program! {
         add_instr!(fun Downgrade, "helper"),
     ],
     verifier: { error with confidentiality_policy(),
-        VerifierError::Flow(FlowError::NotADowngrader { .. })
+        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
     },
     executor: { error with confidentiality_policy(),
-        ExecutorError::Flow(FlowError::NotADowngrader { .. })
+        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
     },
 }
 
 test_program! {
     /// [#16] `Downgrader` may only define a downgrader registered in the policy.
     /// Using it for an ordinary function is rejected at definition time as
-    /// `NotADowngrader`.
+    /// `DowngraderUndefined`.
     downgrader_define_on_plain_function_rejected,
     program: vec![
         add_instr!(fun Downgrader, "helper"),
         make_block!(add_instr!(Push, 5)),
     ],
     verifier: { error with confidentiality_policy(),
-        VerifierError::Flow(FlowError::NotADowngrader { .. })
+        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
     },
     executor: { error with confidentiality_policy(),
-        ExecutorError::Flow(FlowError::NotADowngrader { .. })
+        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
     },
 }
