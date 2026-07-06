@@ -5,7 +5,7 @@
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{AwareConnection, FlowError, TagTrait, InformationFlowPolicy, NoFlow},
+    information_flow::{AwareConnection, FlowError, InformationFlowPolicy, NoFlow, TagTrait},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -14,9 +14,7 @@ use crate::{
         CoreError::{self},
         CoreMachine, Evaluate, Stack,
     },
-    types::{
-        self, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
-    },
+    types::{self, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError},
 };
 use VerifierError::*;
 use log::{debug, trace, warn};
@@ -607,10 +605,11 @@ impl<P: InformationFlowPolicy> Verifier<P> {
         let run_result = self.run_nested(to_check);
 
         if let Ok((Some(return_value), return_tag, _)) = &run_result
-            && let Some(ref mut info) = self.findings.func_defining {
-                info.return_value = Some(*return_value);
-                info.return_tag = *return_tag;
-            }
+            && let Some(ref mut info) = self.findings.func_defining
+        {
+            info.return_value = Some(*return_value);
+            info.return_tag = *return_tag;
+        }
 
         // Definition-time implicit retag: a downgrader's return value must carry
         // the connection `source`; we then record `target` so call sites publish
@@ -1040,14 +1039,15 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
             }
         };
 
-        let simple_model = |a: ValueSpan, b: ValueSpan, op: fn(Immediate, Immediate) -> Immediate| {
-            if a.is_single_value() && b.is_single_value() {
-                let result = op(a.min, b.min);
-                ValueSpan::new(result, result)
-            } else {
-                ValueSpan::inf()
-            }
-        };
+        let simple_model =
+            |a: ValueSpan, b: ValueSpan, op: fn(Immediate, Immediate) -> Immediate| {
+                if a.is_single_value() && b.is_single_value() {
+                    let result = op(a.min, b.min);
+                    ValueSpan::new(result, result)
+                } else {
+                    ValueSpan::inf()
+                }
+            };
 
         let (a, tag_a) = self.read_normal(arg1)?;
         let (b, tag_b) = self.read_normal(arg2)?;
@@ -1105,24 +1105,12 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Verifier<P> {
                     }
                 }
             }
-            And => {
-                simple_model(a, b, |x, y| x & y)
-            },
-            Or => {
-                simple_model(a, b, |x, y| x | y)
-            },
-            Xor => {
-                simple_model(a, b, |x, y| x ^ y)
-            },
-            ShiftLeftLogical => {
-                simple_model(a, b, |x, y| x << y)
-            },
-            ShiftRightLogical => {
-                simple_model(a, b, |x, y| (x as u64 >> y as u64) as Immediate)
-            },
-            ShiftRightArithmetic => {
-                simple_model(a, b, |x, y| x >> y)
-            },
+            And => simple_model(a, b, |x, y| x & y),
+            Or => simple_model(a, b, |x, y| x | y),
+            Xor => simple_model(a, b, |x, y| x ^ y),
+            ShiftLeftLogical => simple_model(a, b, |x, y| x << y),
+            ShiftRightLogical => simple_model(a, b, |x, y| (x as u64 >> y as u64) as Immediate),
+            ShiftRightArithmetic => simple_model(a, b, |x, y| x >> y),
             SetEqual => a.chck_eq(&b),
             SetNotEqual => a.chck_neq(&b),
             SetLessThan => a.chck_lt(&b),

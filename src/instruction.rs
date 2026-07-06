@@ -31,7 +31,7 @@ pub enum UnaryOpCellAmnt {
 ///
 /// [`TaggedPush`] also takes a Tag argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnaryOpImm<Tag: = ()> {
+pub enum UnaryOpImm<Tag = ()> {
     Push,
     /// TaggedPush pushes a value with the provided tag.
     TaggedPush(Tag),

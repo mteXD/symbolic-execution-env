@@ -21,7 +21,7 @@ pub(crate) use crate::{
         verifier::{ValueSpan, Verifier, VerifierError},
     },
     make_block,
-    types::{Value, FunctionDataError, IoBuffer},
+    types::{FunctionDataError, IoBuffer, Value},
 };
 
 // ---------------------------------------------------------------------------

@@ -41,26 +41,47 @@ pub enum FlowError<Tag: TagTrait> {
     DuplicateTag(Tag),
     UnknownTag(Tag),
     Cycle,
-    AmbiguousClosestCommonDescendant { left: Tag, right: Tag },
-    NoCommonDescendant { left: Tag, right: Tag },
-    InformationFlowViolation { found: Tag, guard: Tag },
+    AmbiguousClosestCommonDescendant {
+        left: Tag,
+        right: Tag,
+    },
+    NoCommonDescendant {
+        left: Tag,
+        right: Tag,
+    },
+    InformationFlowViolation {
+        found: Tag,
+        guard: Tag,
+    },
     ReflexiveAwareConnection(Tag),
     DuplicateDowngrader(String),
     /// A downgrader's body returned a value whose tag is not its connection
     /// `source`, so the implicit retag to `target` is rejected.
-    DowngraderReturnTagMismatch { found: Tag, expected: Tag },
+    DowngraderReturnTagMismatch {
+        found: Tag,
+        expected: Tag,
+    },
     /// A downgrader was (directly or transitively) invoked from within another
     /// downgrader's body. Downgraders are never re-entrant.
-    RecursiveDowngrader { downgrader: String },
+    RecursiveDowngrader {
+        downgrader: String,
+    },
     /// A single value was downgraded more times than the downgrader's per-value
     /// `max_calls` budget allows.
-    DowngraderCallLimitExceeded { downgrader: String, limit: usize },
+    DowngraderCallLimitExceeded {
+        downgrader: String,
+        limit: usize,
+    },
     /// A `Downgrader`/`Downgrade` instruction named something that is not a
     /// downgrader registered in the policy.
-    NotADowngrader { name: String },
+    NotADowngrader {
+        name: String,
+    },
     /// A `FunctionDefine`/`FunctionCall` instruction named a registered
     /// downgrader; downgraders must use `Downgrader`/`Downgrade` instead.
-    DowngraderUsedAsFunction { name: String },
+    DowngraderUsedAsFunction {
+        name: String,
+    },
 }
 
 /// A tag belonging to one side of a disjoint union of topologies.
@@ -223,8 +244,6 @@ impl<Tag: TagTrait> TryInto<PolicyGraph<Tag>> for Topology<Tag> {
 /// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
 struct PolicyGraph<Tag: TagTrait> {
-    /// Tags in their stable insertion order.
-    tags: Vec<Tag>,
     /// Maps tag values to indices used by the graph matrices.
     indices: HashMap<Tag, TagIndex>,
     /// `reachable[a][b]` == true iff `a` may flow to `b`.
@@ -311,7 +330,6 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
         }
 
         Ok(Self {
-            tags,
             indices,
             reachable,
             ccd,
@@ -321,11 +339,6 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
     /// Returns whether `tag` belongs to this graph.
     pub fn contains(&self, tag: Tag) -> bool {
         self.indices.contains_key(&tag)
-    }
-
-    /// Returns all graph tags in their original insertion order.
-    pub fn tags(&self) -> &[Tag] {
-        &self.tags
     }
 
     /// Returns whether information tagged `from` may flow to `to`.
@@ -340,21 +353,6 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
         let left_index = self.index_of(left)?;
         let right_index = self.index_of(right)?;
         self.ccd[left_index][right_index].ok_or(FlowError::NoCommonDescendant { left, right })
-    }
-
-    /// Returns ccd for multiple tags, i.e. `ccd(a, b, c) = ccd(a, ccd(b, c))`.
-    pub fn ccd_multiple(
-        &self,
-        tags: impl IntoIterator<Item = Tag>,
-    ) -> Result<Option<Tag>, FlowError<Tag>> {
-        let mut tags: Vec<Tag> = tags.into_iter().collect();
-        let Some(mut result) = tags.pop() else {
-            return Ok(None);
-        };
-        while let Some(left) = tags.pop() {
-            result = self.ccd(left, result)?;
-        }
-        Ok(Some(result))
     }
 
     fn index_of(&self, tag: Tag) -> Result<TagIndex, FlowError<Tag>> {
@@ -584,10 +582,10 @@ mod tests {
 
         assert!(graph.can_flow(Public, Private).unwrap());
         assert_eq!(graph.ccd(Public, Private).unwrap(), Private);
-        assert_eq!(
-            graph.ccd_multiple([Public, Constrained, Private]).unwrap(),
-            Some(Private)
-        );
+        // assert_eq!(
+        //     graph.ccd_multiple([Public, Constrained, Private]).unwrap(),
+        //     Some(Private)
+        // );
     }
 
     #[test]
@@ -596,7 +594,6 @@ mod tests {
             .into_graph()
             .unwrap();
 
-        assert_eq!(graph.tags(), &[Public, Private, Separate]);
         assert!(graph.can_flow(Public, Separate).unwrap());
         assert!(!graph.can_flow(Separate, Public).unwrap());
     }
@@ -618,7 +615,6 @@ mod tests {
 
         let graph = combined.into_graph().unwrap();
 
-        assert_eq!(graph.tags().len(), 6);
         assert!(
             graph
                 .can_flow(Left((Public, Constrained)), Left((Private, Separate)))

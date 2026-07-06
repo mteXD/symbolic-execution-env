@@ -11,15 +11,15 @@ use std::{
 use log::debug;
 
 use crate::{
-    information_flow::{FlowError, TagTrait, InformationFlowPolicy, NoFlow},
+    information_flow::{FlowError, InformationFlowPolicy, NoFlow, TagTrait},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
-    machine::{CoreError, CoreMachine, Evaluate, Cell, Stack},
-    types::{self, Value, CellIndex, Immediate, IoBuffer, ProgramData},
+    machine::{Cell, CoreError, CoreMachine, Evaluate, Stack},
+    types::{self, CellIndex, Immediate, IoBuffer, ProgramData, Value},
 };
-use Value::*;
 use ExecutorError::*;
+use Value::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutorError<Tag = ()>
@@ -484,9 +484,10 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
                 // body-local locals that must not count as downgrades.
                 let depth = self.function_depth;
                 if let Some(active) = self.active_downgrader.as_mut()
-                    && depth == active.depth {
-                        active.counting = false;
-                    }
+                    && depth == active.depth
+                {
+                    active.counting = false;
+                }
             }
             Input => {
                 let value = self.read_input_value()?;
@@ -613,11 +614,14 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
 
-        let expect_integer = |cell: Value| -> ExecutorResult<i64, P> {match cell {
-            Integer(value) => Ok(value),
-            _found => todo!("This will eventually be a TypeError, in case types get implemented.")
-
-        }};
+        let expect_integer = |cell: Value| -> ExecutorResult<i64, P> {
+            match cell {
+                Integer(value) => Ok(value),
+                _found => {
+                    todo!("This will eventually be a TypeError, in case types get implemented.")
+                }
+            }
+        };
 
         let left = expect_integer(left)?;
         let right = expect_integer(right)?;
@@ -673,7 +677,7 @@ impl<P: InformationFlowPolicy> Evaluate<P::Tag> for Executor<P> {
         let branch = match condition {
             Integer(0) => when_false,
             Integer(_) => when_true,
-            _other => todo!("This will eventually be a TypeError, in case types get implemented.")
+            _other => todo!("This will eventually be a TypeError, in case types get implemented."),
         };
 
         let branch_program = Rc::from(vec![branch.as_ref().clone()]);

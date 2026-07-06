@@ -1,7 +1,5 @@
 use log::info;
-use virtual_machine::{
-    add_instr, logging, machine::executor::Executor, types::IoBuffer,
-};
+use virtual_machine::{add_instr, logging, machine::executor::Executor, types::IoBuffer};
 
 fn main() {
     logging::init();
