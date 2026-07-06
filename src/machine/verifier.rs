@@ -242,18 +242,6 @@ struct FunctionDefiningInfo<Tag: TagTrait = ()> {
     reaches_downgrader: bool,
 }
 
-impl<Tag: TagTrait> Default for FunctionDefiningInfo<Tag> {
-    fn default() -> Self {
-        Self {
-            function_name: String::new(),
-            arg_indices: Vec::new(),
-            return_value: None,
-            return_tag: None,
-            reaches_downgrader: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct Findings<Tag: TagTrait = ()> {
     rebase_seen: bool,
@@ -302,7 +290,6 @@ pub struct Verifier<P: InformationFlowPolicy = NoFlow> {
 impl Verifier<NoFlow> {
     pub fn new(program: impl Into<Rc<[Instruction]>>) -> Self {
         let policy = NoFlow;
-        policy.default_tag();
         Self {
             machine: CoreMachine::new(program),
             stack: Stack::new(),

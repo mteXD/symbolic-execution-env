@@ -2,7 +2,6 @@ use log::{debug, error, warn};
 use std::{fmt::Debug, rc::Rc};
 
 use crate::{
-    information_flow::TagTrait,
     instruction::{
         BinaryOp,
         Instruction::{self},
@@ -25,21 +24,6 @@ pub enum CoreError {
     RebaseError,
     IoReadError,
     IoWriteError,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommonError<Tag: TagTrait = ()> {
-    StackUnderflow,
-    InvalidCell {
-        instr: Instruction<Tag>,
-        cell_index: CellIndex,
-    },
-    ArithmeticOverflow,
-    DivisionByZero,
-    // TypeError {
-    //     expected: ValueSpan,
-    //     found: ValueSpan,
-    // },
 }
 
 impl From<FunctionDataError> for CoreError {
