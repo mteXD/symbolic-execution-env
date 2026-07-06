@@ -11,30 +11,23 @@ release: clean
     @echo "Building the project in release mode..."
     cargo build --release
     @echo "Release build completed successfully."
-
+    
 [group('dev')]
-bench: check
-    cargo bench
-
-[group('dev')]
-flamegraph test:
-    cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}
+check:
+    cargo check --tests
 
 [group('dev')]
 test arg="":
     cargo test {{arg}} --
 
 [group('dev')]
-test-backtrace arg="" $RUST_BACKTRACE="1":
-    cargo test {{arg}} --
-
-[group('dev')]
 test-list:
     cargo test -- --list
-    
-[group('dev')]
-check:
-    cargo check --tests
+
+[group('destructive')]
+refactor:
+    cargo clippy --fix --lib -p virtual_machine
+    cargo fmt --all -- --check
 
 [group('cleaning')]
 clean:
@@ -42,3 +35,13 @@ clean:
     rm flamegraph.svg
     rm perf.data
     rm perf.data.old
+
+# Benchmarking recipes
+
+[group('benchmarking')]
+bench: check
+    cargo bench
+
+[group('benchmarking')]
+flamegraph test:
+    cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}
