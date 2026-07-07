@@ -231,44 +231,24 @@ impl MemorizedIndex {
     }
 }
 
+/// Argument-collection state for the definition body currently under
+/// analysis. `collecting_args` is true until the body's `Rebase` closes the
+/// collection window.
 #[derive(Debug, Clone)]
-struct FunctionDefiningInfo<Tag: TagTrait = ()> {
-    function_name: String,
-    arg_indices: Vec<MemorizedIndex>,
+struct DefinitionInProgress {
+    name: String,
+    args: Vec<MemorizedIndex>,
+    collecting_args: bool,
+}
+
+/// What the verifier knows about a defined function: the caller-frame indices
+/// its body reads as arguments, and its return span/tag. A downgrader's
+/// return tag is the connection `target` (recorded at definition time).
+#[derive(Debug, Clone)]
+struct FunctionFacts<Tag: TagTrait = ()> {
+    args: Vec<MemorizedIndex>,
     return_value: Option<ValueSpan>,
     return_tag: Option<Tag>,
-}
-
-#[derive(Debug, Clone)]
-struct Findings<Tag: TagTrait = ()> {
-    rebase_seen: bool,
-    func_defining: Option<FunctionDefiningInfo<Tag>>,
-    func_data: HashMap<String, FunctionDefiningInfo<Tag>>,
-}
-
-impl<Tag: TagTrait> Default for Findings<Tag> {
-    fn default() -> Self {
-        Self {
-            rebase_seen: false,
-            func_defining: None,
-            func_data: HashMap::new(),
-        }
-    }
-}
-
-impl<Tag: TagTrait> Findings<Tag> {
-    #[inline]
-    fn is_collecting_func_args(&self) -> bool {
-        self.func_defining.is_some() && !self.rebase_seen
-    }
-
-    /// Records an out-of-scope read performed while collecting a function's
-    /// arguments. No-op when not currently collecting.
-    fn record_arg(&mut self, index: MemorizedIndex) {
-        if let Some(info) = self.func_defining.as_mut() {
-            info.arg_indices.push(index);
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -277,14 +257,20 @@ pub struct Verifier<Tag: TagTrait = ()> {
     stack: Stack<ValueSpan, Tag>,
     policy: SecurityPolicy<Tag>,
     pc_tag: Tag,
-    findings: Findings<Tag>,
+    /// Argument-collection state while a definition body is being analyzed.
+    defining: Option<DefinitionInProgress>,
+    /// Facts discovered about each defined function, by name and alias.
+    /// Deliberately rolled back with blocks and ifelse branches (see
+    /// [`run_block_scoped`](Self::run_block_scoped) and
+    /// [`run_ifelse_branch`](Self::run_ifelse_branch)).
+    functions: HashMap<String, FunctionFacts<Tag>>,
     /// Active downgrader connection while analyzing its body at definition
     /// time. No stack is needed: nested definitions are forbidden, so at most
     /// one downgrader is under analysis at a time.
     current_downgrader: Option<AwareConnection<Tag>>,
-    /// How many times each downgrader is called, counted statically. Lives
-    /// outside [`Findings`] because findings are scoped around branches and
-    /// definitions while the budget spans the whole program.
+    /// How many times each downgrader is called, counted statically. Unlike
+    /// `defining`/`functions` this is never rolled back: the budget spans the
+    /// whole program.
     downgrader_calls: HashMap<String, usize>,
 }
 
@@ -297,7 +283,8 @@ impl Verifier<()> {
             stack: Stack::new(),
             policy,
             pc_tag: (),
-            findings: Findings::default(),
+            defining: None,
+            functions: HashMap::new(),
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
         }
@@ -318,7 +305,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
             stack: Stack::new(),
             policy,
             pc_tag,
-            findings: Findings::default(),
+            defining: None,
+            functions: HashMap::new(),
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
         })
@@ -453,7 +441,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// `Block` frame) and `program_data`.
     /// Returns `(last_value, last_tag, body_stack_size)`.
     ///
-    /// Callers needing to also scope `findings` should use
+    /// Callers needing to also scope `defining`/`functions` should use
     /// [`run_block_scoped`](Self::run_block_scoped) instead.
     fn run_nested(
         &mut self,
@@ -476,11 +464,16 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Verifies a single ifelse-branch instruction on the parent stack:
-    /// cells are mutated in place. `findings` is scoped (saved on entry,
-    /// restored on exit) so branches don't leak analysis metadata into the
-    /// parent; the machine's global function registry is NOT scoped, matching
-    /// the executor. `Rebase` is forbidden inside the branch via the
+    /// cells are mutated in place. `defining` and `functions` are scoped
+    /// (saved on entry, restored on exit): rolling back `functions` is
+    /// intended conservatism — a function defined inside a branch only
+    /// conditionally exists, so calling it afterwards does not verify. The
+    /// machine's global function registry is NOT scoped, matching the
+    /// executor. `Rebase` is forbidden inside the branch via the
     /// `IfElseBranch` marker frame.
+    ///
+    /// Known bug (pinned by an ignored test): argument reads recorded inside
+    /// the branch are rolled back with `defining` and thus forgotten.
     ///
     /// The `condition_tag` is combined with the current `pc_tag` so that all
     /// values pushed inside the branch carry the condition's taint.
@@ -489,7 +482,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
         instr: &Instruction<Tag>,
         condition_tag: Tag,
     ) -> Result<(), VerifierError<Tag>> {
-        let saved_findings = self.findings.clone();
+        let saved_defining = self.defining.clone();
+        let saved_functions = self.functions.clone();
         let saved_pc_tag = self.pc_tag;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
 
@@ -501,22 +495,40 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.stack.exit_ifelse_branch();
 
         self.pc_tag = saved_pc_tag;
-        self.findings = saved_findings;
+        self.defining = saved_defining;
+        self.functions = saved_functions;
 
         exec_result
     }
 
-    /// Runs `instrs` as a fully-scoped block: cells, `program_data`, and
-    /// `findings` are saved on entry and restored on exit. Used by
-    /// `evaluate_block`.
+    /// Runs `instrs` as a fully-scoped block: cells, `program_data`,
+    /// `defining`, and `functions` are saved on entry and restored on exit
+    /// (same conservatism as [`run_ifelse_branch`](Self::run_ifelse_branch)).
+    /// Used by `evaluate_block`.
     fn run_block_scoped(
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
     ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
-        let saved_findings = self.findings.clone();
+        let saved_defining = self.defining.clone();
+        let saved_functions = self.functions.clone();
         let result = self.run_nested(instrs);
-        self.findings = saved_findings;
+        self.defining = saved_defining;
+        self.functions = saved_functions;
         result
+    }
+
+    /// True while a definition body is being analyzed and its `Rebase` has not
+    /// yet closed the argument-collection window.
+    fn is_collecting_args(&self) -> bool {
+        self.defining.as_ref().is_some_and(|d| d.collecting_args)
+    }
+
+    /// Records an out-of-scope read performed while collecting a function's
+    /// arguments. No-op when not currently defining.
+    fn record_arg(&mut self, index: MemorizedIndex) {
+        if let Some(defining) = self.defining.as_mut() {
+            defining.args.push(index);
+        }
     }
 
     /// Verifies the body of a `FunctionDefine`. The function (and any
@@ -582,9 +594,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
     fn ensure_not_nested(&self, inner: &str) -> Result<(), VerifierError<Tag>> {
-        if let Some(ref outer) = self.findings.func_defining {
+        if let Some(ref outer) = self.defining {
             return Err(NestedFunctionDefinition {
-                outer_function: outer.function_name.clone(),
+                outer_function: outer.name.clone(),
                 inner_function: inner.to_owned(),
             });
         }
@@ -600,7 +612,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
     fn analyze_definition_body(
         &mut self,
         fun: &str,
-    ) -> Result<(FunctionDefiningInfo<Tag>, Vec<String>), VerifierError<Tag>> {
+    ) -> Result<(FunctionFacts<Tag>, Vec<String>), VerifierError<Tag>> {
         let aliases = self.machine.common_function_logic(fun)?;
 
         // Shadowing is not permitted; compilers can generate unique function names.
@@ -613,37 +625,36 @@ impl<Tag: TagTrait> Verifier<Tag> {
             }
         };
 
-        // Scope only the argument-collection state. `func_data` (the discovered
-        // argument counts) must persist so callers and recursive calls see it.
-        let saved_defining = self.findings.func_defining.take();
-        let saved_rebase_seen = std::mem::replace(&mut self.findings.rebase_seen, false);
-
-        self.findings.func_defining = Some(FunctionDefiningInfo {
-            function_name: fun.to_owned(),
-            arg_indices: Vec::new(),
-            return_value: None,
-            return_tag: None,
+        // Scope only the argument-collection state. `functions` (the
+        // discovered facts) must persist so callers and recursive calls see it.
+        let saved_defining = self.defining.replace(DefinitionInProgress {
+            name: fun.to_owned(),
+            args: Vec::new(),
+            collecting_args: true,
         });
 
         let run_result = self.run_nested(to_check);
 
-        if let Ok((Some(return_value), return_tag, _)) = &run_result
-            && let Some(ref mut info) = self.findings.func_defining
-        {
-            info.return_value = Some(*return_value);
-            info.return_tag = *return_tag;
-        }
-
-        let info = self
-            .findings
-            .func_defining
+        let in_progress = self
+            .defining
             .take()
             .expect("definition analysis state must still be present");
-        self.findings.func_defining = saved_defining;
-        self.findings.rebase_seen = saved_rebase_seen;
+        self.defining = saved_defining;
+
+        let (return_value, return_tag) = match &run_result {
+            Ok((value, tag, _)) => (*value, *tag),
+            Err(_) => (None, None),
+        };
 
         run_result?;
-        Ok((info, aliases))
+        Ok((
+            FunctionFacts {
+                args: in_progress.args,
+                return_value,
+                return_tag,
+            },
+            aliases,
+        ))
     }
 
     /// Publishes a function's discovered facts under its name and all aliases.
@@ -651,18 +662,18 @@ impl<Tag: TagTrait> Verifier<Tag> {
         &mut self,
         fun: &str,
         aliases: Vec<String>,
-        info: FunctionDefiningInfo<Tag>,
+        facts: FunctionFacts<Tag>,
     ) {
         trace!("Finished verifying function definition for '{}'", fun);
         trace!(
             "Discovered argument indices for '{}': {:?}",
-            fun, info.arg_indices
+            fun, facts.args
         );
 
         for alias in aliases {
-            self.findings.func_data.insert(alias, info.clone());
+            self.functions.insert(alias, facts.clone());
         }
-        self.findings.func_data.insert(fun.to_string(), info);
+        self.functions.insert(fun.to_string(), facts);
     }
 
     /// Verifies an ordinary `FunctionCall` site and pushes the callee's
@@ -694,7 +705,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         // Downgrades must happen at the top level of the program: a `Downgrade`
         // inside a function or downgrader body is rejected at definition time.
-        if self.findings.func_defining.is_some() {
+        if self.defining.is_some() {
             return Err(VerifierError::Flow(FlowError::NestedDowngraderCall {
                 downgrader: function_name.to_owned(),
             }));
@@ -731,19 +742,18 @@ impl<Tag: TagTrait> Verifier<Tag> {
     fn callee_return(&self, function_name: &str) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         use FunctionDataError::FunctionUndefined;
 
-        let info = self
-            .findings
-            .func_data
+        let facts = self
+            .functions
             .get(function_name)
             .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?;
 
-        trace!("Function data for '{}': {:#?}", function_name, info);
+        trace!("Function facts for '{}': {:#?}", function_name, facts);
 
         // Every index the function reads as an argument must resolve to an
         // existing cell in the caller's current stack.
         let available = self.stack.len();
-        let deepest_missing = info
-            .arg_indices
+        let deepest_missing = facts
+            .args
             .iter()
             .map(|index| index.required_depth())
             .filter(|depth| *depth > available)
@@ -755,8 +765,10 @@ impl<Tag: TagTrait> Verifier<Tag> {
             });
         }
 
-        let return_value = info.return_value.unwrap_or_else(ValueSpan::inf);
-        let return_tag = info.return_tag.unwrap_or_else(|| self.policy.default_tag());
+        let return_value = facts.return_value.unwrap_or_else(ValueSpan::inf);
+        let return_tag = facts
+            .return_tag
+            .unwrap_or_else(|| self.policy.default_tag());
         Ok((return_value, return_tag))
     }
 
@@ -778,8 +790,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// an out-of-scope read is recorded as a `Normal` argument index and
     /// yields an unbounded span (with `default_tag`) instead of erroring.
     fn read_normal(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
-        if self.findings.is_collecting_func_args() && self.reads_argument_normal(idx) {
-            self.findings.record_arg(MemorizedIndex::Normal(idx));
+        if self.is_collecting_args() && self.reads_argument_normal(idx) {
+            self.record_arg(MemorizedIndex::Normal(idx));
             return Ok((ValueSpan::inf(), self.arg_tag()));
         }
         let val = self.read(idx)?;
@@ -818,19 +830,21 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             Nop => (),
             Rebase => {
                 self.stack.rebase()?;
-                // Crossing `Rebase` ends argument collection: freeze the count
-                // discovered so far and publish it for callers / recursion.
-                if self.findings.is_collecting_func_args() {
-                    let info = self
-                        .findings
-                        .func_defining
-                        .clone()
-                        .expect("func_defining must be Some while collecting arguments");
-                    self.findings
-                        .func_data
-                        .insert(info.function_name.clone(), info);
+                // Crossing `Rebase` ends argument collection: freeze the
+                // arguments discovered so far and publish partial facts so
+                // recursive calls inside the body resolve.
+                if let Some(defining) = self.defining.as_mut()
+                    && defining.collecting_args
+                {
+                    defining.collecting_args = false;
+                    let partial = FunctionFacts {
+                        args: defining.args.clone(),
+                        return_value: None,
+                        return_tag: None,
+                    };
+                    let name = defining.name.clone();
+                    self.functions.insert(name, partial);
                 }
-                self.findings.rebase_seen = true;
             }
             Input => {
                 self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
@@ -874,7 +888,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             }
             ReadReverse => {
                 debug!("ReadReverse with arg: {}", arg);
-                if self.findings.is_collecting_func_args() {
+                if self.is_collecting_args() {
                     // While collecting a function's arguments, a `ReadReverse`
                     // reads a fresh caller argument only if it reaches *past*
                     // the values already loaded in this phase. Reaching into
@@ -882,7 +896,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                     // data and is not an argument.
                     let loaded = self.stack.len().saturating_sub(self.stack.base());
                     if usize::from(arg) >= loaded {
-                        self.findings.record_arg(MemorizedIndex::Reverse(arg));
+                        self.record_arg(MemorizedIndex::Reverse(arg));
                     }
                     self.push_with_tag(ValueSpan::inf(), self.arg_tag())?;
                 } else {

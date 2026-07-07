@@ -773,6 +773,60 @@ test_program! {
     executor: { error ExecutorError::InvalidCell },
 }
 
+test_program! {
+    /// A function defined inside an ifelse branch only conditionally exists,
+    /// so the verifier deliberately rolls back its analysis with the branch
+    /// and rejects a later call. The executor's global registry keeps the
+    /// definition and runs the call fine.
+    functions_defined_inside_branch,
+    program: vec![
+        add_instr!(Push, 1),
+        add_instr!(ifelse 0,
+            make_block!(
+                add_instr!(fun FunctionDefine, FUNC_NAME),
+                make_block!(add_instr!(Push, 42)),
+                add_instr!(Push, 7)
+            ),
+            add_instr!(Push, 7)
+        ),
+        add_instr!(fun FunctionCall, FUNC_NAME),
+    ],
+    split,
+    verifier: { error VerifierError::Core(CoreError::FunctionDataError(
+        FunctionDataError::FunctionUndefined(_)
+    )) },
+    executor: { stack [1, 7, 42] },
+}
+
+test_program! {
+    /// [NEGATIVE] A caller-argument read inside an ifelse branch of a function
+    /// body must count towards the function's argument requirements, so
+    /// calling the function with an empty stack should fail in both runners
+    /// (verifier: `NotEnoughArguments`; executor: `InvalidCell`).
+    ///
+    /// Ignored for two reasons: the branch rolls back `defining`, forgetting
+    /// the recorded argument (bug), and the program currently panics on the
+    /// leaked `IfElseBranch` frame when the body's block exits (see the
+    /// ignored showcase tests).
+    #[ignore = "In-branch argument reads are forgotten, and the ifelse frame leak panics first"]
+    functions_arg_read_inside_branch,
+    program: vec![
+        add_instr!(fun FunctionDefine, FUNC_NAME),
+        make_block!(
+            add_instr!(Push, 1),
+            add_instr!(ifelse 0,
+                add_instr!(R ReadReverse, 1), // reads a caller argument
+                add_instr!(Nop)
+            ),
+            add_instr!(Rebase)
+        ),
+        // No caller cells provided at all.
+        add_instr!(fun FunctionCall, FUNC_NAME),
+    ],
+    verifier: { error VerifierError::NotEnoughArguments { .. } },
+    executor: { error ExecutorError::InvalidCell },
+}
+
 // ---------------------------------------------------------------------------
 // Intrinsics
 // ---------------------------------------------------------------------------
