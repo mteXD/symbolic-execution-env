@@ -18,7 +18,8 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Confidentiality policy extended with a single `Secret ->> Public`
-/// downgrader named `name`, with a per-value call budget of `max_calls`.
+/// downgrader named `name`, with a total call budget of `max_calls` for the
+/// whole program run.
 fn downgrader_policy(name: &str, max_calls: Option<usize>) -> SecurityPolicy<Confidentiality> {
     confidentiality_policy()
         .with_downgrader(name, Secret, Public, max_calls)
@@ -319,6 +320,11 @@ test_program! {
 // guard Public); `Secret` plays the role of "Private". Downgrader policies come
 // from the `downgrader_policy` helper (`Secret ->> Public`), or inline
 // `with_downgrader` calls where the connection differs.
+//
+// Budget semantics (since 2026-07): `max_calls` is the downgrader's TOTAL
+// number of allowed calls per program run, independent of which values are
+// downgraded and never refunded by pops. (Previously the budget was counted
+// per stack cell and reset when the cell was popped.)
 // ---------------------------------------------------------------------------
 
 test_program! {
@@ -401,11 +407,10 @@ test_program! {
 }
 
 test_program! {
-    /// [#5] The per-data budget is enforced in both runners: downgrading the
-    /// *same* cell twice (the result is popped between calls so the original
-    /// secret is downgraded again) exceeds `max_calls = 1`.
-    #[ignore = "Budget enforcement via bump_count is temporarily disabled"]
-    downgrader_per_data_budget_enforced,
+    /// [#5] The total budget is enforced in both runners: calling the
+    /// downgrader twice (the result is popped between calls) exceeds
+    /// `max_calls = 1`.
+    downgrader_budget_enforced,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -462,9 +467,9 @@ test_program! {
 }
 
 test_program! {
-    /// [#10] The budget is per data: two *distinct* secret cells are each
-    /// downgraded once, so `max_calls = 1` is respected for both.
-    downgrader_per_data_independent,
+    /// [#10a] The budget is global, not per value: downgrading two *distinct*
+    /// secret cells still counts as two calls, exceeding `max_calls = 1`.
+    downgrader_budget_is_global,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -478,14 +483,38 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
+    },
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
+    },
+}
+
+test_program! {
+    /// [#10b] A budget of two covers downgrading two distinct secret cells.
+    downgrader_budget_covers_distinct_values,
+    program: vec![
+        add_instr!(fun Downgrader, "is_empty"),
+        make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Push, 0),
+            add_instr!(SetEqual, 0, 1)
+        ),
+        add_instr!(tag Push, 0, Secret),
+        add_instr!(fun Downgrade, "is_empty"),
+        add_instr!(tag Push, 0, Secret),
+        add_instr!(fun Downgrade, "is_empty"),
+    ],
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
             (0, Secret),
             (ValueSpan::new(0, 1), Public),
             (0, Secret),
             (ValueSpan::new(0, 1), Public)
         ]
     },
-    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
             (0, Secret),
             (1, Public),
             (0, Secret),
@@ -495,10 +524,9 @@ test_program! {
 }
 
 test_program! {
-    /// [#11] A cell's counter is discarded when it is popped: a fresh secret
-    /// pushed into the freed slot starts from zero, so it can be downgraded
-    /// again under `max_calls = 1`.
-    downgrader_budget_resets_on_pop,
+    /// [#11] Popping values does not refund the budget: even with all previous
+    /// values popped, the second call still exceeds `max_calls = 1`.
+    downgrader_budget_not_reset_by_pop,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -513,20 +541,16 @@ test_program! {
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
     ],
-    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
-            (0, Secret),
-            (ValueSpan::new(0, 1), Public)
-        ]
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
     },
-    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
-            (0, Secret),
-            (1, Public)
-        ]
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
     },
 }
 
 test_program! {
-    /// [#12] An unlimited (`None`) budget lets the same cell be downgraded any
+    /// [#12] An unlimited (`None`) budget lets the downgrader be called any
     /// number of times.
     downgrader_unlimited_budget,
     program: vec![
@@ -554,6 +578,56 @@ test_program! {
             (1, Public)
         ]
     },
+}
+
+test_program! {
+    /// Exploring both branches of an unknown condition must not double-charge
+    /// the budget: at runtime only one branch executes, so the verifier merges
+    /// the two branches' call counts with MAX, not their sum. Here each branch
+    /// downgrades once (merged count: 1) and a final top-level downgrade makes
+    /// it 2, exactly within `max_calls = 2` — a sum-merge would reject it.
+    downgrader_budget_ifelse_branches_max,
+    program: vec![
+        add_instr!(fun Downgrader, "is_empty"),
+        make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Push, 0),
+            add_instr!(SetEqual, 0, 1)
+        ),
+        add_instr!(Input), // unknown condition
+        add_instr!(tag Push, 0, Secret),
+        add_instr!(ifelse 0,
+            add_instr!(fun Downgrade, "is_empty"),
+            add_instr!(fun Downgrade, "is_empty")
+        ),
+        add_instr!(tag Push, 0, Secret),
+        add_instr!(fun Downgrade, "is_empty"),
+    ],
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
+            (ValueSpan::inf(), Secret),
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public),
+            (0, Secret),
+            (ValueSpan::new(0, 1), Public)
+        ]
+    },
+    executor: { cases with downgrader_policy("is_empty", Some(2)), {
+        input [1] => tagged_stack [
+            (1, Secret),
+            (0, Secret),
+            (1, Public),
+            (0, Secret),
+            (1, Public)
+        ];
+        input [0] => tagged_stack [
+            (0, Secret),
+            (0, Secret),
+            (1, Public),
+            (0, Secret),
+            (1, Public)
+        ]
+    } },
 }
 
 test_program! {

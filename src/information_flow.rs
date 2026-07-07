@@ -74,8 +74,8 @@ pub enum FlowError<Tag: TagTrait> {
     NestedDowngraderCall {
         downgrader: String,
     },
-    /// A single value was downgraded more times than the downgrader's per-value
-    /// `max_calls` budget allows.
+    /// The downgrader was called more times than its total `max_calls` budget
+    /// for the program run allows.
     DowngraderCallLimitExceeded {
         downgrader: String,
         limit: usize,
@@ -416,7 +416,8 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
     /// tags unknown to the graph ([`FlowError::UnknownTag`]), and duplicate
     /// downgrader names ([`FlowError::DuplicateDowngrader`]).
     ///
-    /// `max_calls` is the per-value downgrade budget (`None` = unlimited).
+    /// `max_calls` is the downgrader's total call budget for a whole program
+    /// run (`None` = unlimited).
     pub fn with_downgrader(
         mut self,
         name: impl Into<String>,
@@ -513,11 +514,11 @@ pub struct AwareConnection<Tag: TagTrait> {
     pub target: Tag,
 }
 
-/// A trusted, per-data-budgeted gate for a single [`AwareConnection`]. Whatever
-/// the downgrader returns is implicitly retagged from `source` to `target`.
+/// A trusted gate for a single [`AwareConnection`]. Whatever the downgrader
+/// returns is implicitly retagged from `source` to `target`.
 ///
-/// `max_calls` bounds how many times any one value may be downgraded through
-/// this gate; `None` means unlimited.
+/// `max_calls` bounds how many times this gate may be called in a whole
+/// program run; `None` means unlimited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Downgrader<Tag: TagTrait> {
     pub connection: AwareConnection<Tag>,

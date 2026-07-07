@@ -282,6 +282,10 @@ pub struct Verifier<Tag: TagTrait = ()> {
     /// time. No stack is needed: nested definitions are forbidden, so at most
     /// one downgrader is under analysis at a time.
     current_downgrader: Option<AwareConnection<Tag>>,
+    /// How many times each downgrader is called, counted statically. Lives
+    /// outside [`Findings`] because findings are scoped around branches and
+    /// definitions while the budget spans the whole program.
+    downgrader_calls: HashMap<String, usize>,
 }
 
 impl Verifier<()> {
@@ -295,6 +299,7 @@ impl Verifier<()> {
             pc_tag: (),
             findings: Findings::default(),
             current_downgrader: None,
+            downgrader_calls: HashMap::new(),
         }
     }
 }
@@ -315,6 +320,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             pc_tag,
             findings: Findings::default(),
             current_downgrader: None,
+            downgrader_calls: HashMap::new(),
         })
     }
 
@@ -680,11 +686,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// span/tag (the tag already carries the connection `target`, recorded at
     /// definition time). Rejects names not registered as downgraders.
     fn verify_downgrader_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
-        if self.policy.downgrader(function_name).is_none() {
+        let Some(downgrader) = self.policy.downgrader(function_name) else {
             return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                 name: function_name.to_owned(),
             }));
-        }
+        };
 
         // Downgrades must happen at the top level of the program: a `Downgrade`
         // inside a function or downgrader body is rejected at definition time.
@@ -692,6 +698,24 @@ impl<Tag: TagTrait> Verifier<Tag> {
             return Err(VerifierError::Flow(FlowError::NestedDowngraderCall {
                 downgrader: function_name.to_owned(),
             }));
+        }
+
+        // Charge the call against the downgrader's total budget (mirrors the
+        // executor: the charge precedes everything the call would do).
+        let calls = self
+            .downgrader_calls
+            .entry(function_name.to_owned())
+            .or_insert(0);
+        *calls += 1;
+        if let Some(limit) = downgrader.max_calls
+            && *calls > limit
+        {
+            return Err(VerifierError::Flow(
+                FlowError::DowngraderCallLimitExceeded {
+                    downgrader: function_name.to_owned(),
+                    limit,
+                },
+            ));
         }
 
         self.machine.function_get(function_name)?;
@@ -1078,14 +1102,24 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a single copy of the initial
             // cells to re-run the false branch from the same starting point.
+            // Downgrader budgets are also re-run per branch and merged with the
+            // per-downgrader MAX: at runtime only one branch executes, so
+            // exploring both must not double-charge.
             None => {
                 let initial = self.stack.slots().to_vec();
+                let initial_calls = self.downgrader_calls.clone();
 
                 self.run_ifelse_branch(&when_true, condition_tag)?;
                 let true_cells = self.stack.replace_slots(initial);
+                let true_calls = std::mem::replace(&mut self.downgrader_calls, initial_calls);
 
                 self.run_ifelse_branch(&when_false, condition_tag)?;
                 let false_cells = self.stack.take_slots();
+
+                for (name, count) in true_calls {
+                    let entry = self.downgrader_calls.entry(name).or_insert(0);
+                    *entry = (*entry).max(count);
+                }
 
                 let true_len = true_cells.len();
                 let false_len = false_cells.len();

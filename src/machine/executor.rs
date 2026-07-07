@@ -3,7 +3,7 @@
 //! For the "entry point", see [`Executor::exec`].
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     fmt::{Debug, Display},
     rc::Rc,
 };
@@ -53,32 +53,14 @@ type ExecutorResult<T, Tag> = Result<T, ExecutorError<Tag>>;
 
 const RECURSION_LIMIT: usize = 50;
 
-/// Per-call state for the downgrader currently executing. Downgraders are never
-/// re-entrant, so at most one is active at a time. Drives the re-entrancy guard
-/// and per-argument-cell budget counting; the implicit retag of the return
-/// value is applied directly in `call_downgrader` from the policy.
-struct ActiveDowngrader {
-    name: String,
-    max_calls: Option<usize>,
-    /// Caller stack length on entry: reads below this index touch arguments.
-    base: usize,
-    /// `function_depth` of the downgrader body; its own `Rebase` (same depth)
-    /// closes the argument-counting window.
-    depth: usize,
-    /// Whether argument reads still count (true until the body rebases).
-    counting: bool,
-    /// Distinct caller cells already counted for this call.
-    counted: HashSet<usize>,
-}
-
 pub struct Executor<Tag: TagTrait = ()> {
     machine: CoreMachine<Tag>,
     stack: Stack<Value, Tag>,
     policy: SecurityPolicy<Tag>,
     pc_tag: Tag,
     function_depth: usize,
-    /// The downgrader whose body is currently executing, if any.
-    active_downgrader: Option<ActiveDowngrader>,
+    /// How many times each downgrader has been called during this run.
+    downgrader_calls: HashMap<String, usize>,
 }
 
 impl<Tag: TagTrait> Display for Executor<Tag> {
@@ -109,7 +91,7 @@ impl Executor<()> {
             policy: SecurityPolicy::no_flow(),
             pc_tag: (),
             function_depth: 0,
-            active_downgrader: None,
+            downgrader_calls: HashMap::new(),
         }
     }
 }
@@ -129,7 +111,7 @@ impl<Tag: TagTrait> Executor<Tag> {
             policy,
             pc_tag,
             function_depth: 0,
-            active_downgrader: None,
+            downgrader_calls: HashMap::new(),
         })
     }
 
@@ -205,48 +187,12 @@ impl<Tag: TagTrait> Executor<Tag> {
         self.stack.last_tag()
     }
 
-    /// Reads value and tag at the given index. While a downgrader body runs, a
-    /// read of one of its caller's argument cells is counted against that
-    /// cell's per-downgrader budget.
-    fn read_entry(&mut self, index: CellIndex) -> ExecutorResult<(Value, Tag), Tag> {
-        let abs = usize::from(index);
-        self.note_downgrade_arg(abs)?;
+    /// Reads value and tag at the given index.
+    fn read_entry(&self, index: CellIndex) -> ExecutorResult<(Value, Tag), Tag> {
         self.stack
-            .get(abs)
+            .get(usize::from(index))
             .map(|s| (s.value, s.tag))
             .ok_or(InvalidCell)
-    }
-
-    /// Counts a downgrader argument read against the caller cell at `abs`, once
-    /// per call per distinct cell, enforcing the per-value `max_calls` budget.
-    fn note_downgrade_arg(&mut self, abs: usize) -> ExecutorResult<(), Tag> {
-        let depth = self.function_depth;
-        let Some(active) = self.active_downgrader.as_mut() else {
-            return Ok(());
-        };
-        // Only count reads performed directly by the downgrader body (not by
-        // functions it calls), of caller arguments, before the body rebases,
-        // once per distinct cell.
-        if depth != active.depth
-            || !active.counting
-            || abs >= active.base
-            || !active.counted.insert(abs)
-        {
-            return Ok(());
-        }
-        let _name = active.name.clone();
-        let _max_calls = active.max_calls;
-        // let count = self.stack.bump_count(abs, &name); TODO:
-        // if let Some(limit) = max_calls {
-        //     if count > limit {
-        //         return Err(FlowError::DowngraderCallLimitExceeded {
-        //             downgrader: name,
-        //             limit,
-        //         }
-        //         .into());
-        //     }
-        // }
-        Ok(())
     }
 
     /// Calculates ccd(left, right)
@@ -370,22 +316,24 @@ impl<Tag: TagTrait> Executor<Tag> {
             .into());
         }
 
-        // Install the downgrader context for the duration of the body. `base`
-        // is the caller stack height: reads below it touch arguments. `depth`
-        // is the body's depth (one below the current one).
-        self.active_downgrader = Some(ActiveDowngrader {
-            name: function_name.to_owned(),
-            max_calls: downgrader.max_calls,
-            base: self.stack.len(),
-            depth: self.function_depth + 1,
-            counting: true,
-            counted: HashSet::new(),
-        });
+        // Charge the call against the downgrader's total budget before the
+        // body runs, so an over-budget call fails without side effects.
+        let calls = self
+            .downgrader_calls
+            .entry(function_name.to_owned())
+            .or_insert(0);
+        *calls += 1;
+        if let Some(limit) = downgrader.max_calls
+            && *calls > limit
+        {
+            return Err(FlowError::DowngraderCallLimitExceeded {
+                downgrader: function_name.to_owned(),
+                limit,
+            }
+            .into());
+        }
 
-        let result = self.run_function_body(function_name);
-        self.active_downgrader = None;
-
-        if let Some((value, tag)) = result? {
+        if let Some((value, tag)) = self.run_function_body(function_name)? {
             let connection = downgrader.connection;
             if tag != connection.source {
                 return Err(FlowError::DowngraderReturnTagMismatch {
@@ -484,18 +432,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
         match instr {
             Nop => (),
-            Rebase => {
-                self.stack.rebase()?;
-                // A downgrader's own rebase closes its argument-counting window:
-                // afterwards the caller cells are gone and low indices are
-                // body-local locals that must not count as downgrades.
-                let depth = self.function_depth;
-                if let Some(active) = self.active_downgrader.as_mut()
-                    && depth == active.depth
-                {
-                    active.counting = false;
-                }
-            }
+            Rebase => self.stack.rebase()?,
             Input => {
                 let value = self.read_input_value()?;
                 self.push_new_value(Integer(value), self.policy.input_tag())?;
