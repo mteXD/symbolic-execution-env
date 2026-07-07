@@ -14,7 +14,7 @@ use crate::{
     machine::{
         Cell,
         CoreError::{self},
-        CoreMachine, Evaluate, Stack,
+        CoreMachine, Evaluate, Stack, reverse_index,
     },
     types::{self, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError},
 };
@@ -856,15 +856,10 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                     trace!(
                         "Not collecting function arguments, performing normal read with reverse indexing."
                     );
-                    // like python's negative indexing.
-                    let index = u16::try_from(self.stack.len())
-                        .ok()
-                        .and_then(|len| len.checked_sub(1))
-                        .and_then(|len| len.checked_sub(arg))
-                        .ok_or(InvalidCell {
-                            instr: self.machine.program_data.get_current()?.clone(),
-                            cell_index: arg,
-                        })?;
+                    let index = reverse_index(self.stack.len(), arg).ok_or(InvalidCell {
+                        instr: self.machine.program_data.get_current()?.clone(),
+                        cell_index: arg,
+                    })?;
 
                     let val = self.read(index)?;
                     let tag = self.read_tag(index)?;

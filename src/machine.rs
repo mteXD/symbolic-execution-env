@@ -432,6 +432,14 @@ impl<V: Copy, T: Copy> Stack<V, T> {
     }
 }
 
+/// Converts a `ReadReverse` offset into a normal cell index, like Python's
+/// negative indexing: offset 0 is the top cell. Returns `None` if the offset
+/// reaches below the bottom of the stack. Used by both runners.
+fn reverse_index(stack_len: usize, reverse_offset: CellIndex) -> Option<CellIndex> {
+    let last_index = CellIndex::try_from(stack_len).ok()?.checked_sub(1)?;
+    last_index.checked_sub(reverse_offset)
+}
+
 /// A single stack cell, containing a value and a tag.
 #[derive(Clone, Debug)]
 pub struct Cell<V, T> {

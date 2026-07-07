@@ -15,7 +15,7 @@ use crate::{
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
-    machine::{Cell, CoreError, CoreMachine, Evaluate, Stack},
+    machine::{Cell, CoreError, CoreMachine, Evaluate, Stack, reverse_index},
     types::{self, CellIndex, Immediate, IoBuffer, ProgramData, Value},
 };
 use ExecutorError::*;
@@ -596,11 +596,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         let branch_program = Rc::from(vec![branch.as_ref().clone()]);
         self.run_ifelse_branch(branch_program, condition_tag)
     }
-}
-
-fn reverse_index(stack_len: usize, reverse_offset: CellIndex) -> Option<CellIndex> {
-    let last_index = CellIndex::try_from(stack_len).ok()?.checked_sub(1)?;
-    last_index.checked_sub(reverse_offset)
 }
 
 impl From<Vec<Value>> for Executor {
