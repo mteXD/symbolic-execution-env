@@ -132,6 +132,95 @@ impl ValueSpan {
         }
     }
 
+    /// Interval model of `Add`: saturating on the raw bounds. `None` means
+    /// two exact operands overflowed.
+    fn add_span(self, other: Self) -> Option<Self> {
+        let result = ValueSpan::new(
+            self.min.saturating_add(other.min),
+            self.max.saturating_add(other.max),
+        );
+        Self::check_overflow(self, other, result)
+    }
+
+    /// Interval model of `Mul`: the span covering all four corner products.
+    /// `None` means two exact operands overflowed.
+    fn mul_span(self, other: Self) -> Option<Self> {
+        let candidates = [
+            self.min.checked_mul(other.min),
+            self.min.checked_mul(other.max),
+            self.max.checked_mul(other.min),
+            self.max.checked_mul(other.max),
+        ];
+        Self::check_overflow(self, other, Self::from_candidates(candidates))
+    }
+
+    /// Interval model of `Div`, assuming `other` is not exactly zero (the
+    /// caller rejects that as a division by zero). If zero is merely
+    /// *possible* in `other`, the result is the unbounded span (with a
+    /// warning). `None` means two exact operands overflowed
+    /// (`Immediate::MIN / -1`).
+    fn div_span(self, other: Self) -> Option<Self> {
+        if self.is_single_value() && other.is_single_value() {
+            // Division by 0 not possible
+            let result = self.min.checked_div(other.min)?;
+            Some(ValueSpan::new(result, result))
+        } else if other.min <= 0 && other.max >= 0 {
+            // Division by 0 possible, so we return the widest possible range.
+            warn!("Division by zero possible");
+            Some(Self::inf())
+        } else {
+            let candidates = [
+                self.min.checked_div(other.min),
+                self.min.checked_div(other.max),
+                self.max.checked_div(other.min),
+                self.max.checked_div(other.max),
+            ];
+            Self::check_overflow(self, other, Self::from_candidates(candidates))
+        }
+    }
+
+    /// Interval model shared by the bit and shift ops: exact when both
+    /// operands are exact, unbounded otherwise (bitwise results do not
+    /// interpolate between interval bounds).
+    fn bitop_span(self, other: Self, op: fn(Immediate, Immediate) -> Immediate) -> Self {
+        if self.is_single_value() && other.is_single_value() {
+            let result = op(self.min, other.min);
+            ValueSpan::new(result, result)
+        } else {
+            Self::inf()
+        }
+    }
+
+    /// Builds the span covering all four candidate corner results; a `None`
+    /// candidate (its checked arithmetic overflowed) widens that side to the
+    /// corresponding limit.
+    fn from_candidates(candidates: [Option<Immediate>; 4]) -> Self {
+        let min = candidates
+            .iter()
+            .map(|&x| x.unwrap_or(Immediate::MIN))
+            .min()
+            .expect("Array cannot be empty");
+        let max = candidates
+            .iter()
+            .map(|&x| x.unwrap_or(Immediate::MAX))
+            .max()
+            .expect("Array cannot be empty");
+        ValueSpan::new(min, max)
+    }
+
+    /// Rejects a result that degenerated to unbounded even though both
+    /// operands were exact values — the only overflow detectable today.
+    ///
+    /// FIXME: Make it so that overflows are checked for all not-infinite
+    /// value spans.
+    fn check_overflow(a: Self, b: Self, result: Self) -> Option<Self> {
+        if a.is_single_value() && b.is_single_value() && result.is_unbounded() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
     fn chck_eq(&self, other: &Self) -> Self {
         if self.is_single_value() && other.is_single_value() {
             if self.min == other.min {
@@ -924,101 +1013,26 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
     ) -> Result<(), Self::Error> {
         use BinaryOp::*;
 
-        let get_min_max = |array: [Option<Immediate>; 4]| {
-            let min = array
-                .iter()
-                .map(|&x| x.unwrap_or(Immediate::MIN))
-                .min()
-                .expect("Array cannot be empty");
-            let max = array
-                .iter()
-                .map(|&x| x.unwrap_or(Immediate::MAX))
-                .max()
-                .expect("Array cannot be empty");
-            ValueSpan::new(min, max)
-        };
-
-        // FIXME: Make it so that overflows are checked for all not-infinite value spans.
-        let valuespan_check = |va: ValueSpan, vb: ValueSpan, vn: ValueSpan| {
-            if va.is_single_value() && vb.is_single_value() && vn.is_unbounded() {
-                Err(ArithmeticOverflow)
-            } else {
-                Ok(vn)
-            }
-        };
-
-        let simple_model =
-            |a: ValueSpan, b: ValueSpan, op: fn(Immediate, Immediate) -> Immediate| {
-                if a.is_single_value() && b.is_single_value() {
-                    let result = op(a.min, b.min);
-                    ValueSpan::new(result, result)
-                } else {
-                    ValueSpan::inf()
-                }
-            };
-
         let (a, tag_a) = self.read_normal(arg1)?;
         let (b, tag_b) = self.read_normal(arg2)?;
         let result_tag = self.combine_tags(tag_a, tag_b)?;
 
         // TODO: Write tests for arithmetic overflow checks
         let calculated_value = match instr {
-            Add => {
-                let min = a.min.saturating_add(b.min);
-                let max = a.max.saturating_add(b.max);
-
-                let vs_new = ValueSpan::new(min, max);
-
-                valuespan_check(a, b, vs_new)?
-            }
-            Mul => {
-                let candidates = [
-                    a.min.checked_mul(b.min),
-                    a.min.checked_mul(b.max),
-                    a.max.checked_mul(b.min),
-                    a.max.checked_mul(b.max),
-                ];
-
-                let vs_new = get_min_max(candidates);
-
-                valuespan_check(a, b, vs_new)?
-            }
+            Add => a.add_span(b).ok_or(ArithmeticOverflow)?,
+            Mul => a.mul_span(b).ok_or(ArithmeticOverflow)?,
             Div => {
                 if b == ValueSpan::new(0, 0) {
                     return Err(DivisionByZero);
                 }
-                if a.is_single_value() && b.is_single_value() {
-                    // Division by 0 not possible
-                    if let Some(result) = a.min.checked_div(b.min) {
-                        ValueSpan::new(result, result)
-                    } else {
-                        return Err(ArithmeticOverflow);
-                    }
-                } else {
-                    if b.min <= 0 && b.max >= 0 {
-                        // Division by 0 possible, so we return the widest possible range.
-                        warn!("Division by zero possible");
-                        ValueSpan::inf()
-                    } else {
-                        let candidates = [
-                            a.min.checked_div(b.min),
-                            a.min.checked_div(b.max),
-                            a.max.checked_div(b.min),
-                            a.max.checked_div(b.max),
-                        ];
-
-                        let vs_new = get_min_max(candidates);
-
-                        valuespan_check(a, b, vs_new)?
-                    }
-                }
+                a.div_span(b).ok_or(ArithmeticOverflow)?
             }
-            And => simple_model(a, b, |x, y| x & y),
-            Or => simple_model(a, b, |x, y| x | y),
-            Xor => simple_model(a, b, |x, y| x ^ y),
-            ShiftLeftLogical => simple_model(a, b, |x, y| x << y),
-            ShiftRightLogical => simple_model(a, b, |x, y| (x as u64 >> y as u64) as Immediate),
-            ShiftRightArithmetic => simple_model(a, b, |x, y| x >> y),
+            And => a.bitop_span(b, |x, y| x & y),
+            Or => a.bitop_span(b, |x, y| x | y),
+            Xor => a.bitop_span(b, |x, y| x ^ y),
+            ShiftLeftLogical => a.bitop_span(b, |x, y| x << y),
+            ShiftRightLogical => a.bitop_span(b, |x, y| (x as u64 >> y as u64) as Immediate),
+            ShiftRightArithmetic => a.bitop_span(b, |x, y| x >> y),
             SetEqual => a.chck_eq(&b),
             SetNotEqual => a.chck_neq(&b),
             SetLessThan => a.chck_lt(&b),
