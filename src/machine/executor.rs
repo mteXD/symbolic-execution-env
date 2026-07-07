@@ -11,7 +11,7 @@ use std::{
 use log::debug;
 
 use crate::{
-    information_flow::{FlowError, SecurityPolicy, TagTrait},
+    information_flow::{FlowError, SecurityPolicy, TagTrait, validate_program_tags},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -103,7 +103,7 @@ impl<Tag: TagTrait> Executor<Tag> {
         policy: SecurityPolicy<Tag>,
     ) -> ExecutorResult<Self, Tag> {
         let program = program.into();
-        Self::validate_program(&program, &policy)?;
+        validate_program_tags(&program, &policy)?;
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
@@ -113,34 +113,6 @@ impl<Tag: TagTrait> Executor<Tag> {
             function_depth: 0,
             downgrader_calls: HashMap::new(),
         })
-    }
-
-    fn validate_program(
-        program: &[Instruction<Tag>],
-        policy: &SecurityPolicy<Tag>,
-    ) -> ExecutorResult<(), Tag> {
-        for instruction in program {
-            Self::validate_instruction(instruction, policy)?;
-        }
-        Ok(())
-    }
-
-    fn validate_instruction(
-        instruction: &Instruction<Tag>,
-        policy: &SecurityPolicy<Tag>,
-    ) -> ExecutorResult<(), Tag> {
-        match instruction {
-            Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
-                policy.validate_tag(*tag)?
-            }
-            Instruction::Block(body) => Self::validate_program(body, policy)?,
-            Instruction::IfElse(_, when_true, when_false) => {
-                Self::validate_instruction(when_true, policy)?;
-                Self::validate_instruction(when_false, policy)?;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     /// Redirects the source used by input instructions.

@@ -5,7 +5,9 @@
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{AwareConnection, FlowError, SecurityPolicy, TagTrait},
+    information_flow::{
+        AwareConnection, FlowError, SecurityPolicy, TagTrait, validate_program_tags,
+    },
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -297,7 +299,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         policy: SecurityPolicy<Tag>,
     ) -> Result<Self, VerifierError<Tag>> {
         let program = program.into();
-        Self::validate_program(&program, &policy)?;
+        validate_program_tags(&program, &policy)?;
         let pc_tag = policy.default_tag();
         Ok(Self {
             machine: CoreMachine::new(program),
@@ -309,34 +311,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
         })
-    }
-
-    fn validate_program(
-        program: &[Instruction<Tag>],
-        policy: &SecurityPolicy<Tag>,
-    ) -> Result<(), VerifierError<Tag>> {
-        for instruction in program {
-            Self::validate_instruction(instruction, policy)?;
-        }
-        Ok(())
-    }
-
-    fn validate_instruction(
-        instruction: &Instruction<Tag>,
-        policy: &SecurityPolicy<Tag>,
-    ) -> Result<(), VerifierError<Tag>> {
-        match instruction {
-            Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
-                policy.validate_tag(*tag)?;
-            }
-            Instruction::Block(body) => Self::validate_program(body, policy)?,
-            Instruction::IfElse(_, when_true, when_false) => {
-                Self::validate_instruction(when_true, policy)?;
-                Self::validate_instruction(when_false, policy)?;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     pub fn redirect_input(mut self, new_input: types::Input) -> Self {

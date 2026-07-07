@@ -31,6 +31,8 @@ use std::{
     hash::Hash,
 };
 
+use crate::instruction::{Instruction, UnaryOpImm};
+
 type TagIndex = usize;
 type ReachabilityMatrix = Vec<Vec<bool>>;
 
@@ -501,6 +503,39 @@ impl SecurityPolicy<()> {
         Self::new(Topology::linear([()]), (), (), ())
             .expect("the unit topology is always a valid policy")
     }
+}
+
+/// Checks that every tag embedded in `program` (in `TaggedPush` instructions,
+/// recursively through blocks and ifelse branches) is known to `policy`.
+///
+/// Used by both runners' `with_policy` constructors; their error types convert
+/// the returned [`FlowError`] at the call site.
+pub(crate) fn validate_program_tags<Tag: TagTrait>(
+    program: &[Instruction<Tag>],
+    policy: &SecurityPolicy<Tag>,
+) -> Result<(), FlowError<Tag>> {
+    for instruction in program {
+        validate_instruction_tags(instruction, policy)?;
+    }
+    Ok(())
+}
+
+fn validate_instruction_tags<Tag: TagTrait>(
+    instruction: &Instruction<Tag>,
+    policy: &SecurityPolicy<Tag>,
+) -> Result<(), FlowError<Tag>> {
+    match instruction {
+        Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
+            policy.validate_tag(*tag)?;
+        }
+        Instruction::Block(body) => validate_program_tags(body, policy)?,
+        Instruction::IfElse(_, when_true, when_false) => {
+            validate_instruction_tags(when_true, policy)?;
+            validate_instruction_tags(when_false, policy)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// An explicit, deliberately-controlled downgrade relation `source ->> target`.
