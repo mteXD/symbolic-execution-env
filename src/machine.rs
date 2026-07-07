@@ -67,14 +67,6 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         Ok(())
     }
 
-    pub fn function_insert_current(&mut self, name: String) -> CoreResult<()> {
-        let current = self.program_data.get_current()?;
-
-        debug!("Function '{}' will point to {:?}", name, current);
-
-        self.function_insert(name, FdEntry::Inst(current.to_owned()))
-    }
-
     /// Registers the *current* instruction as the body of `function_name`,
     /// consuming any immediately following `FunctionDefine`s as aliases of it.
     /// Returns the alias names. Warns (but continues) if no block follows.
@@ -106,7 +98,9 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         }
 
         let function_name = function_name.to_owned();
-        self.function_insert_current(function_name.clone())?;
+        let current = self.program_data.get_current()?;
+        debug!("Function '{}' will point to {:?}", function_name, current);
+        self.function_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
 
         for alias in &aliases {
             self.function_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;

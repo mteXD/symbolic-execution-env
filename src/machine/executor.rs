@@ -365,20 +365,6 @@ impl<Tag: TagTrait> Executor<Tag> {
         result
     }
 
-    fn print_cell(&mut self, index: CellIndex) -> ExecutorResult<(), Tag> {
-        let (value, value_tag) = self.read_entry(index)?;
-        self.ensure_output_allowed(value_tag)?;
-
-        match &mut self.machine.output {
-            types::Output::Stdout => print!("{value}"),
-            types::Output::File(_) | types::Output::Buffer(_) => {
-                let immediate = value.into_immediate().map_err(|_| InvalidCell)?;
-                self.machine.output.write(&[immediate]);
-            }
-        }
-        Ok(())
-    }
-
     fn ensure_output_allowed(&self, value_tag: Tag) -> ExecutorResult<(), Tag> {
         let effective_tag = self.combine_tags(value_tag, self.pc_tag)?;
         let output_guard = self.policy.output_tag();
@@ -482,7 +468,18 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                 let (val, tag) = self.read_entry(index)?;
                 self.push_new_value(val, tag)?;
             }
-            Print => self.print_cell(arg)?,
+            Print => {
+                let (value, value_tag) = self.read_entry(arg)?;
+                self.ensure_output_allowed(value_tag)?;
+
+                match &mut self.machine.output {
+                    types::Output::Stdout => print!("{value}"),
+                    types::Output::File(_) | types::Output::Buffer(_) => {
+                        let immediate = value.into_immediate().map_err(|_| InvalidCell)?;
+                        self.machine.output.write(&[immediate]);
+                    }
+                }
+            }
         }
 
         Ok(())

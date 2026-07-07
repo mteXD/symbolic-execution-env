@@ -261,8 +261,7 @@ pub struct Verifier<Tag: TagTrait = ()> {
     defining: Option<DefinitionInProgress>,
     /// Facts discovered about each defined function, by name and alias.
     /// Deliberately rolled back with blocks and ifelse branches (see
-    /// [`run_block_scoped`](Self::run_block_scoped) and
-    /// [`run_ifelse_branch`](Self::run_ifelse_branch)).
+    /// `evaluate_block` and [`run_ifelse_branch`](Self::run_ifelse_branch)).
     functions: HashMap<String, FunctionFacts<Tag>>,
     /// Active downgrader connection while analyzing its body at definition
     /// time. No stack is needed: nested definitions are forbidden, so at most
@@ -441,8 +440,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// `Block` frame) and `program_data`.
     /// Returns `(last_value, last_tag, body_stack_size)`.
     ///
-    /// Callers needing to also scope `defining`/`functions` should use
-    /// [`run_block_scoped`](Self::run_block_scoped) instead.
+    /// `defining` and `functions` are NOT scoped here; callers that need that
+    /// (e.g. `evaluate_block`) save and restore them around the call.
     fn run_nested(
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
@@ -499,22 +498,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.functions = saved_functions;
 
         exec_result
-    }
-
-    /// Runs `instrs` as a fully-scoped block: cells, `program_data`,
-    /// `defining`, and `functions` are saved on entry and restored on exit
-    /// (same conservatism as [`run_ifelse_branch`](Self::run_ifelse_branch)).
-    /// Used by `evaluate_block`.
-    fn run_block_scoped(
-        &mut self,
-        instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
-        let saved_defining = self.defining.clone();
-        let saved_functions = self.functions.clone();
-        let result = self.run_nested(instrs);
-        self.defining = saved_defining;
-        self.functions = saved_functions;
-        result
     }
 
     /// True while a definition body is being analyzed and its `Rebase` has not
@@ -779,18 +762,14 @@ impl<Tag: TagTrait> Verifier<Tag> {
         })
     }
 
-    /// True if a `Normal`-indexed read of `idx` falls outside the function's
-    /// own loaded cells (`[base, len)`) and therefore reads a caller-supplied
-    /// argument rather than function-local data.
-    fn reads_argument_normal(&self, idx: CellIndex) -> bool {
-        !(self.stack.base()..self.stack.len()).contains(&usize::from(idx))
-    }
-
     /// Like [`read`](Self::read), but while collecting a function's arguments
     /// an out-of-scope read is recorded as a `Normal` argument index and
     /// yields an unbounded span (with `default_tag`) instead of erroring.
     fn read_normal(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
-        if self.is_collecting_args() && self.reads_argument_normal(idx) {
+        // A read outside the function's own loaded cells (`[base, len)`) reads
+        // a caller-supplied argument rather than function-local data.
+        let reads_argument = !(self.stack.base()..self.stack.len()).contains(&usize::from(idx));
+        if self.is_collecting_args() && reads_argument {
             self.record_arg(MemorizedIndex::Normal(idx));
             return Ok((ValueSpan::inf(), self.arg_tag()));
         }
@@ -1088,7 +1067,16 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
-        match self.run_block_scoped(instrs)? {
+        // `defining` and `functions` are scoped to the block; rolling back
+        // `functions` is the same intended conservatism as in
+        // `run_ifelse_branch`.
+        let saved_defining = self.defining.clone();
+        let saved_functions = self.functions.clone();
+        let result = self.run_nested(instrs);
+        self.defining = saved_defining;
+        self.functions = saved_functions;
+
+        match result? {
             (Some(val), Some(tag), _) => self.push_existing(val, tag),
             (Some(val), None, _) => self.push_existing(val, self.policy.default_tag()),
             (None, _, _) => return Err(BlockHasEmptyStack),
