@@ -56,7 +56,7 @@ const RECURSION_LIMIT: usize = 50;
 /// Per-call state for the downgrader currently executing. Downgraders are never
 /// re-entrant, so at most one is active at a time. Drives the re-entrancy guard
 /// and per-argument-cell budget counting; the implicit retag of the return
-/// value is applied directly in `call_function` from the policy.
+/// value is applied directly in `call_downgrader` from the policy.
 struct ActiveDowngrader {
     name: String,
     max_calls: Option<usize>,
@@ -329,92 +329,92 @@ impl<Tag: TagTrait> Executor<Tag> {
         run_result
     }
 
-    /// Calls `function_name`. `is_downgrade` distinguishes a `Downgrade`
-    /// instruction (which applies the implicit retag and per-value budget) from
-    /// an ordinary `FunctionCall`. The instruction and the policy registration
-    /// must agree: a `Downgrade` of an unregistered name, or a `FunctionCall` of
-    /// a registered downgrader, is rejected.
-    fn call_function(
-        &mut self,
-        function_name: &str,
-        is_downgrade: bool,
-    ) -> ExecutorResult<(), Tag> {
-        let body = self.machine.function_get(function_name)?.clone();
+    /// Calls the ordinary function `function_name` and pushes its return value
+    /// (if any). Rejects names registered as downgraders in the policy (those
+    /// must use `Downgrade`).
+    fn call_function(&mut self, function_name: &str) -> ExecutorResult<(), Tag> {
+        if self.policy.downgrader(function_name).is_some() {
+            return Err(FlowError::DowngraderUndefined {
+                name: function_name.to_owned(),
+            }
+            .into());
+        }
 
-        // The instruction declares intent; the policy declares the connection.
-        // Cross-check the two so downgrade sites are unambiguous. `Downgrader`
-        // is `Copy`, so the lookup releases the `&self.policy` borrow at once.
-        let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
-            (true, None) => {
-                return Err(FlowError::DowngraderUndefined {
-                    name: function_name.to_owned(),
-                }
-                .into());
+        if let Some(entry) = self.run_function_body(function_name)? {
+            self.push_existing_entry(entry);
+        }
+        Ok(())
+    }
+
+    /// Invokes the downgrader `function_name`: runs its body like a function
+    /// call, then applies the implicit retag — the return value must carry the
+    /// connection `source` and is forced to `target`, bypassing the `pc_tag`
+    /// join applied to ordinary values. Rejects names not registered as
+    /// downgraders.
+    fn call_downgrader(&mut self, function_name: &str) -> ExecutorResult<(), Tag> {
+        // `Downgrader` is `Copy`, so the lookup releases the `&self.policy`
+        // borrow at once.
+        let Some(downgrader) = self.policy.downgrader(function_name) else {
+            return Err(FlowError::DowngraderUndefined {
+                name: function_name.to_owned(),
             }
-            (false, Some(_)) => {
-                return Err(FlowError::DowngraderUndefined {
-                    name: function_name.to_owned(),
-                }
-                .into());
-            }
-            (true, Some(downgrader)) => Some(downgrader),
-            (false, None) => None,
+            .into());
         };
 
-        // Downgraders are never re-entrant: a downgrader body may not invoke any
-        // downgrader while one is already running.
-        if downgrader.is_some() && self.active_downgrader.is_some() {
-            return Err(FlowError::RecursiveDowngrader {
+        // Downgrades must happen at the top level of the program: a `Downgrade`
+        // inside a function or downgrader body is rejected.
+        if self.function_depth > 0 {
+            return Err(FlowError::NestedDowngraderCall {
                 downgrader: function_name.to_owned(),
             }
             .into());
         }
+
+        // Install the downgrader context for the duration of the body. `base`
+        // is the caller stack height: reads below it touch arguments. `depth`
+        // is the body's depth (one below the current one).
+        self.active_downgrader = Some(ActiveDowngrader {
+            name: function_name.to_owned(),
+            max_calls: downgrader.max_calls,
+            base: self.stack.len(),
+            depth: self.function_depth + 1,
+            counting: true,
+            counted: HashSet::new(),
+        });
+
+        let result = self.run_function_body(function_name);
+        self.active_downgrader = None;
+
+        if let Some((value, tag)) = result? {
+            let connection = downgrader.connection;
+            if tag != connection.source {
+                return Err(FlowError::DowngraderReturnTagMismatch {
+                    found: tag,
+                    expected: connection.source,
+                }
+                .into());
+            }
+            self.stack.push(Cell::new(value, connection.target));
+        }
+        Ok(())
+    }
+
+    /// Shared call mechanics: resolves the body, guards the recursion depth,
+    /// and runs it in a nested context. Returns the body's return value/tag.
+    fn run_function_body(
+        &mut self,
+        function_name: &str,
+    ) -> ExecutorResult<Option<(Value, Tag)>, Tag> {
+        let body = self.machine.function_get(function_name)?.clone();
 
         self.function_depth += 1;
         if self.function_depth > RECURSION_LIMIT {
             panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{function_name}'");
         }
 
-        // Install the downgrader context (if any) for the duration of the body.
-        // `base` is the caller stack height: reads below it touch arguments.
-        if let Some(downgrader) = downgrader {
-            self.active_downgrader = Some(ActiveDowngrader {
-                name: function_name.to_owned(),
-                max_calls: downgrader.max_calls,
-                base: self.stack.len(),
-                depth: self.function_depth,
-                counting: true,
-                counted: HashSet::new(),
-            });
-        }
-
         let result = self.run_nested(Rc::from(vec![body]));
-
-        if downgrader.is_some() {
-            self.active_downgrader = None;
-        }
         self.function_depth -= 1;
-
-        if let Some((value, tag)) = result? {
-            match downgrader {
-                // Implicit retag: the body's return value must already carry the
-                // connection `source`; it is then forced to `target`, bypassing
-                // the `pc_tag` join applied to ordinary values.
-                Some(downgrader) => {
-                    let connection = downgrader.connection;
-                    if tag != connection.source {
-                        return Err(FlowError::DowngraderReturnTagMismatch {
-                            found: tag,
-                            expected: connection.source,
-                        }
-                        .into());
-                    }
-                    self.stack.push(Cell::new(value, connection.target));
-                }
-                None => self.push_existing_entry((value, tag)),
-            }
-        }
-        Ok(())
+        result
     }
 
     fn print_cell(&mut self, index: CellIndex) -> ExecutorResult<(), Tag> {
@@ -600,8 +600,8 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                 }
                 _ = self.machine.common_function_logic(name)?
             }
-            FunctionCall => self.call_function(name, false)?,
-            Downgrade => self.call_function(name, true)?,
+            FunctionCall => self.call_function(name)?,
+            Downgrade => self.call_downgrader(name)?,
             FileRead => self.machine.input = Input::from_path(name),
             FileWrite => self.machine.output = Output::from_path(name),
         }

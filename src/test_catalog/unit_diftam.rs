@@ -557,9 +557,10 @@ test_program! {
 }
 
 test_program! {
-    /// [#13] Downgraders are never re-entrant: a downgrader (`outer`) whose body
-    /// calls another downgrader (`inner`) is rejected. The verifier catches it
-    /// at `outer`'s definition; the executor when `outer` runs.
+    /// [#13] Downgrader calls must happen at the top level: a downgrader
+    /// (`outer`) whose body calls another downgrader (`inner`) is rejected.
+    /// The verifier catches it at `outer`'s definition; the executor when
+    /// `outer` runs.
     downgrader_cannot_call_downgrader,
     program: vec![
         add_instr!(fun Downgrader, "inner"),
@@ -582,12 +583,12 @@ test_program! {
     verifier: { error with downgrader_policy("inner", Some(1))
             .with_downgrader("outer", Secret, Public, Some(1))
             .unwrap(),
-        VerifierError::Flow(FlowError::RecursiveDowngrader { .. })
+        VerifierError::Flow(FlowError::NestedDowngraderCall { .. })
     },
     executor: { error with downgrader_policy("inner", Some(1))
             .with_downgrader("outer", Secret, Public, Some(1))
             .unwrap(),
-        ExecutorError::Flow(FlowError::RecursiveDowngrader { .. })
+        ExecutorError::Flow(FlowError::NestedDowngraderCall { .. })
     },
 }
 
@@ -646,5 +647,84 @@ test_program! {
     },
     executor: { error with confidentiality_policy(),
         ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
+    },
+}
+
+test_program! {
+    /// A registered downgrader may not be defined with the ordinary
+    /// `FunctionDefine`: it must use `Downgrader`. Both runners reject the
+    /// definition as `DowngraderUndefined`.
+    function_define_on_downgrader_rejected,
+    program: vec![
+        add_instr!(fun FunctionDefine, "is_empty"),
+        make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Push, 0),
+            add_instr!(SetEqual, 0, 1)
+        ),
+    ],
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
+    },
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
+    },
+}
+
+test_program! {
+    /// A downgrader defined inside a function body is a nested definition.
+    /// The verifier rejects it at `outer`'s definition; the executor cannot
+    /// catch this and runs the body when `outer` is called.
+    downgrader_define_inside_function_rejected,
+    program: vec![
+        add_instr!(fun FunctionDefine, OUTER),
+        make_block!(
+            add_instr!(fun Downgrader, "is_empty"),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(Rebase),
+                add_instr!(Push, 0),
+                add_instr!(SetEqual, 0, 1)
+            ),
+            add_instr!(Push, 42)
+        ),
+        add_instr!(fun FunctionCall, OUTER),
+    ],
+    split,
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::NestedFunctionDefinition { .. }
+    },
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+        (42, Public)
+    ] },
+}
+
+test_program! {
+    /// Downgrader calls must happen at the top level of the program: a
+    /// `Downgrade` inside an ordinary function body is rejected. The verifier
+    /// catches it at the function's definition; the executor when the function
+    /// runs.
+    downgrade_inside_function_rejected,
+    program: vec![
+        add_instr!(fun Downgrader, "is_empty"),
+        make_block!(
+            add_instr!(R ReadReverse, 0),
+            add_instr!(Rebase),
+            add_instr!(Push, 0),
+            add_instr!(SetEqual, 0, 1)
+        ),
+        add_instr!(fun FunctionDefine, "wrapper"),
+        make_block!(
+            add_instr!(tag Push, 0, Secret),
+            add_instr!(fun Downgrade, "is_empty")
+        ),
+        add_instr!(fun FunctionCall, "wrapper"),
+    ],
+    verifier: { error with downgrader_policy("is_empty", Some(1)),
+        VerifierError::Flow(FlowError::NestedDowngraderCall { .. })
+    },
+    executor: { error with downgrader_policy("is_empty", Some(1)),
+        ExecutorError::Flow(FlowError::NestedDowngraderCall { .. })
     },
 }

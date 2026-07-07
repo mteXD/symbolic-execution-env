@@ -237,9 +237,6 @@ struct FunctionDefiningInfo<Tag: TagTrait = ()> {
     arg_indices: Vec<MemorizedIndex>,
     return_value: Option<ValueSpan>,
     return_tag: Option<Tag>,
-    /// Whether invoking this function (transitively) runs any downgrader. Used
-    /// to forbid recursive downgrades.
-    reaches_downgrader: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -517,46 +514,87 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Verifies the body of a `FunctionDefine`. The function (and any
-    /// consecutive aliases) is registered globally by `common_function_logic`,
-    /// then its body is verified in a scoped stack while we count how many
-    /// arguments it reads from the caller's frame (see `ReadReverse` and
-    /// `Rebase`). The discovered argument count is published into
-    /// `findings.func_data` at the `Rebase` instruction, so it is visible both
-    /// to recursive calls inside the body and to callers after the definition.
-    ///
+    /// consecutive aliases) is registered globally by `common_function_logic`
+    /// and its body is analyzed by [`analyze_definition_body`](Self::analyze_definition_body).
+    fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
+        self.ensure_not_nested(fun)?;
+
+        // A registered downgrader must be defined with `Downgrader`, not
+        // `FunctionDefine`.
+        if self.policy.downgrader(fun).is_some() {
+            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
+                name: fun.to_owned(),
+            }));
+        }
+
+        let (info, aliases) = self.analyze_definition_body(fun)?;
+        self.publish_function_facts(fun, aliases, info);
+        Ok(())
+    }
+
+    /// Verifies a `Downgrader` definition: analyzes the body with the
+    /// connection `source` applied to its collected arguments, then performs
+    /// the definition-time implicit retag — the return tag must match `source`
+    /// and is recorded as `target`, so call sites publish the downgraded tag.
+    fn verify_downgrader_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
+        self.ensure_not_nested(fun)?;
+
+        let Some(downgrader) = self.policy.downgrader(fun) else {
+            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
+                name: fun.to_owned(),
+            }));
+        };
+        let connection = downgrader.connection;
+
+        // Establish the downgrader context so the body's arguments carry the
+        // connection `source`. No stack is needed: nested definitions are
+        // forbidden, so at most one downgrader is under analysis at a time.
+        let saved_downgrader = self.current_downgrader;
+        self.current_downgrader = Some(connection);
+        let analysis = self.analyze_definition_body(fun);
+        self.current_downgrader = saved_downgrader;
+        let (mut info, aliases) = analysis?;
+
+        match info.return_tag {
+            Some(tag) if tag == connection.source => info.return_tag = Some(connection.target),
+            Some(tag) => {
+                return Err(VerifierError::Flow(
+                    FlowError::DowngraderReturnTagMismatch {
+                        found: tag,
+                        expected: connection.source,
+                    },
+                ));
+            }
+            None => {}
+        }
+
+        self.publish_function_facts(fun, aliases, info);
+        Ok(())
+    }
+
     /// Nested function definitions are intentionally unsupported: they clash
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
-    fn verify_function_definition(
-        &mut self,
-        fun: &str,
-        is_downgrader: bool,
-    ) -> Result<(), VerifierError<Tag>> {
+    fn ensure_not_nested(&self, inner: &str) -> Result<(), VerifierError<Tag>> {
         if let Some(ref outer) = self.findings.func_defining {
             return Err(NestedFunctionDefinition {
                 outer_function: outer.function_name.clone(),
-                inner_function: fun.to_owned(),
+                inner_function: inner.to_owned(),
             });
         }
+        Ok(())
+    }
 
-        // The instruction declares intent; the policy declares the connection.
-        // Cross-check the two so a downgrade gate is never defined as an
-        // ordinary function (and vice versa).
-        let connection = match (is_downgrader, self.policy.downgrader(fun)) {
-            (true, None) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                    name: fun.to_owned(),
-                }));
-            }
-            (false, Some(_)) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                    name: fun.to_owned(),
-                }));
-            }
-            (true, Some(downgrader)) => Some(downgrader.connection),
-            (false, None) => None,
-        };
-
+    /// Analyzes a definition body in a scoped stack, collecting the argument
+    /// indices it reads from the caller's frame (see `ReadReverse` and
+    /// `Rebase`), its return span, and its return tag. Partial facts are
+    /// additionally published at the `Rebase` instruction so recursive calls
+    /// inside the body resolve. Returns the collected facts and any aliases
+    /// registered by consecutive `FunctionDefine`s.
+    fn analyze_definition_body(
+        &mut self,
+        fun: &str,
+    ) -> Result<(FunctionDefiningInfo<Tag>, Vec<String>), VerifierError<Tag>> {
         let aliases = self.machine.common_function_logic(fun)?;
 
         // Shadowing is not permitted; compilers can generate unique function names.
@@ -573,18 +611,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
         // argument counts) must persist so callers and recursive calls see it.
         let saved_defining = self.findings.func_defining.take();
         let saved_rebase_seen = std::mem::replace(&mut self.findings.rebase_seen, false);
-        // Establish the downgrader context so the body's arguments carry the
-        // connection `source` and, once the body is analyzed, its return value
-        // is implicitly retagged to `target`.
-        let saved_downgrader = self.current_downgrader;
-        self.current_downgrader = connection;
 
         self.findings.func_defining = Some(FunctionDefiningInfo {
             function_name: fun.to_owned(),
             arg_indices: Vec::new(),
             return_value: None,
             return_tag: None,
-            reaches_downgrader: false,
         });
 
         let run_result = self.run_nested(to_check);
@@ -596,138 +628,102 @@ impl<Tag: TagTrait> Verifier<Tag> {
             info.return_tag = *return_tag;
         }
 
-        // Definition-time implicit retag: a downgrader's return value must carry
-        // the connection `source`; we then record `target` so call sites publish
-        // the downgraded tag. Invoking a downgrader trivially runs a downgrader,
-        // which the transitive recursion check relies on.
-        let downgrade_check = if let Some(connection) = self.current_downgrader {
-            if let Some(info) = self.findings.func_defining.as_mut() {
-                info.reaches_downgrader = true;
-            }
-            match self
-                .findings
-                .func_defining
-                .as_ref()
-                .and_then(|info| info.return_tag)
-            {
-                Some(tag) if tag == connection.source => {
-                    if let Some(info) = self.findings.func_defining.as_mut() {
-                        info.return_tag = Some(connection.target);
-                    }
-                    Ok(())
-                }
-                Some(tag) => Err(VerifierError::Flow(
-                    FlowError::DowngraderReturnTagMismatch {
-                        found: tag,
-                        expected: connection.source,
-                    },
-                )),
-                None => Ok(()),
-            }
-        } else {
-            Ok(())
-        };
-
-        self.findings.func_data.insert(
-            fun.to_string(),
-            self.findings.func_defining.clone().unwrap(),
-        );
-        for alias in aliases {
-            self.findings
-                .func_data
-                .insert(alias, self.findings.func_defining.clone().unwrap());
-        }
-
+        let info = self
+            .findings
+            .func_defining
+            .take()
+            .expect("definition analysis state must still be present");
         self.findings.func_defining = saved_defining;
         self.findings.rebase_seen = saved_rebase_seen;
-        self.current_downgrader = saved_downgrader;
 
-        downgrade_check?;
         run_result?;
+        Ok((info, aliases))
+    }
 
+    /// Publishes a function's discovered facts under its name and all aliases.
+    fn publish_function_facts(
+        &mut self,
+        fun: &str,
+        aliases: Vec<String>,
+        info: FunctionDefiningInfo<Tag>,
+    ) {
         trace!("Finished verifying function definition for '{}'", fun);
         trace!(
             "Discovered argument indices for '{}': {:?}",
-            fun,
-            self.findings
-                .func_data
-                .get(fun)
-                .map(|info| &info.arg_indices)
+            fun, info.arg_indices
         );
 
-        Ok(())
+        for alias in aliases {
+            self.findings.func_data.insert(alias, info.clone());
+        }
+        self.findings.func_data.insert(fun.to_string(), info);
     }
 
-    /// Verifies a call site. `is_downgrade` marks a `Downgrade` instruction
-    /// (enforce the per-value budget, treat the callee as a downgrader for the
-    /// recursion check) versus an ordinary `FunctionCall`. The instruction and
-    /// the policy registration must agree: a `Downgrade` of an unregistered
-    /// name, or a `FunctionCall` of a registered downgrader, is rejected.
-    fn verify_function_call(
-        &mut self,
-        function_name: &str,
-        is_downgrade: bool,
-    ) -> Result<(), VerifierError<Tag>> {
-        use FunctionDataError::FunctionUndefined;
-
-        // Cross-check the instruction's intent against the policy registration.
-        let downgrader = match (is_downgrade, self.policy.downgrader(function_name)) {
-            (true, None) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                    name: function_name.to_owned(),
-                }));
-            }
-            (false, Some(_)) => {
-                return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                    name: function_name.to_owned(),
-                }));
-            }
-            (true, Some(downgrader)) => Some(downgrader),
-            (false, None) => None,
-        };
+    /// Verifies an ordinary `FunctionCall` site and pushes the callee's
+    /// recorded return span/tag. Rejects names registered as downgraders in
+    /// the policy (those must use `Downgrade`).
+    fn verify_function_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
+        if self.policy.downgrader(function_name).is_some() {
+            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
+                name: function_name.to_owned(),
+            }));
+        }
 
         self.machine.function_get(function_name)?;
 
-        // Forbid recursive downgrades: a downgrader body may not (transitively)
-        // invoke any downgrader. A `Downgrade` is trivially such an invocation.
-        let callee_reaches = is_downgrade
-            || self
-                .findings
-                .func_data
-                .get(function_name)
-                .is_some_and(|info| info.reaches_downgrader);
-        if self.current_downgrader.is_some() && callee_reaches {
-            return Err(VerifierError::Flow(FlowError::RecursiveDowngrader {
+        let (return_value, return_tag) = self.callee_return(function_name)?;
+        self.push_existing(return_value, return_tag);
+        Ok(())
+    }
+
+    /// Verifies a `Downgrade` site and pushes the downgrader's recorded return
+    /// span/tag (the tag already carries the connection `target`, recorded at
+    /// definition time). Rejects names not registered as downgraders.
+    fn verify_downgrader_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
+        if self.policy.downgrader(function_name).is_none() {
+            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
+                name: function_name.to_owned(),
+            }));
+        }
+
+        // Downgrades must happen at the top level of the program: a `Downgrade`
+        // inside a function or downgrader body is rejected at definition time.
+        if self.findings.func_defining.is_some() {
+            return Err(VerifierError::Flow(FlowError::NestedDowngraderCall {
                 downgrader: function_name.to_owned(),
             }));
         }
-        // Propagate the taint to the function currently being defined.
-        if let Some(defining) = self.findings.func_defining.as_mut() {
-            defining.reaches_downgrader |= callee_reaches;
-        }
 
-        let x = self.findings.func_data.get(function_name);
+        self.machine.function_get(function_name)?;
 
-        trace!(
-            "Tried to get function data for '{}': {:#?}",
-            function_name, x
-        );
+        let (return_value, return_tag) = self.callee_return(function_name)?;
+        self.push_existing(return_value, return_tag);
+        Ok(())
+    }
 
-        let available = self.stack.len();
+    /// Looks up the callee's discovered facts, checks that every argument
+    /// index it reads resolves to an existing caller cell, and returns its
+    /// recorded return span/tag (defaults: unbounded span, default tag).
+    fn callee_return(&self, function_name: &str) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
+        use FunctionDataError::FunctionUndefined;
 
-        // Every index the function reads as an argument must resolve to an
-        // existing cell in the caller's current stack.
-        let deepest_missing = self
+        let info = self
             .findings
             .func_data
             .get(function_name)
-            .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?
+            .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?;
+
+        trace!("Function data for '{}': {:#?}", function_name, info);
+
+        // Every index the function reads as an argument must resolve to an
+        // existing cell in the caller's current stack.
+        let available = self.stack.len();
+        let deepest_missing = info
             .arg_indices
             .iter()
             .map(|index| index.required_depth())
             .filter(|depth| *depth > available)
             .max();
-
         if let Some(required) = deepest_missing {
             return Err(NotEnoughArguments {
                 required: required.try_into().unwrap_or(CellIndex::MAX),
@@ -735,53 +731,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
             });
         }
 
-        // Per-data downgrade budget: each distinct caller cell the downgrader
-        // reads is downgraded once per call. The counter rides with that cell
-        // and resets when it is popped/replaced.
-        if let Some(_downgrader) = downgrader {
-            let mut positions: Vec<usize> = self
-                .findings
-                .func_data
-                .get(function_name)
-                .map(|info| {
-                    info.arg_indices
-                        .iter()
-                        .filter_map(|index| Self::arg_caller_position(*index, available))
-                        .collect()
-                })
-                .unwrap_or_default();
-            positions.sort_unstable();
-            positions.dedup();
-            for _position in positions {
-                // let count = self.stack.bump_count(position, function_name);
-                // if let Some(limit) = downgrader.max_calls {
-                //     if count > limit {
-                //         return Err(VerifierError::Flow(
-                //             FlowError::DowngraderCallLimitExceeded {
-                //                 downgrader: function_name.to_owned(),
-                //                 limit,
-                //             },
-                //         ));
-                //     }
-                // }
-            }
-        }
-
-        let return_value = self
-            .findings
-            .func_data
-            .get(function_name)
-            .and_then(|info| info.return_value)
-            .unwrap_or_else(ValueSpan::inf);
-        let return_tag = self
-            .findings
-            .func_data
-            .get(function_name)
-            .and_then(|info| info.return_tag)
-            .unwrap_or_else(|| self.policy.default_tag());
-        self.push_existing(return_value, return_tag);
-
-        Ok(())
+        let return_value = info.return_value.unwrap_or_else(ValueSpan::inf);
+        let return_tag = info.return_tag.unwrap_or_else(|| self.policy.default_tag());
+        Ok((return_value, return_tag))
     }
 
     pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
@@ -796,18 +748,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// argument rather than function-local data.
     fn reads_argument_normal(&self, idx: CellIndex) -> bool {
         !(self.stack.base()..self.stack.len()).contains(&usize::from(idx))
-    }
-
-    /// Resolves a recorded argument index to an absolute caller-stack position,
-    /// given the number of cells (`available`) visible at the call site.
-    /// `Normal` indices count from the bottom; `Reverse` from the top.
-    fn arg_caller_position(index: MemorizedIndex, available: usize) -> Option<usize> {
-        match index {
-            MemorizedIndex::Normal(i) => Some(usize::from(i)),
-            MemorizedIndex::Reverse(k) => available
-                .checked_sub(1)
-                .and_then(|top| top.checked_sub(usize::from(k))),
-        }
     }
 
     /// Like [`read`](Self::read), but while collecting a function's arguments
@@ -979,10 +919,10 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         use types::{Input, Output};
 
         match instr {
-            FunctionDefine => self.verify_function_definition(name, false)?,
-            Downgrader => self.verify_function_definition(name, true)?,
-            FunctionCall => self.verify_function_call(name, false)?,
-            Downgrade => self.verify_function_call(name, true)?,
+            FunctionDefine => self.verify_function_definition(name)?,
+            Downgrader => self.verify_downgrader_definition(name)?,
+            FunctionCall => self.verify_function_call(name)?,
+            Downgrade => self.verify_downgrader_call(name)?,
             FileRead => self.machine.input = Input::from_path(name),
             FileWrite => self.machine.output = Output::from_path(name),
         }

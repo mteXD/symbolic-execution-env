@@ -68,9 +68,10 @@ pub enum FlowError<Tag: TagTrait> {
         found: Tag,
         expected: Tag,
     },
-    /// A downgrader was (directly or transitively) invoked from within another
-    /// downgrader's body. Downgraders are never re-entrant.
-    RecursiveDowngrader {
+    /// A `Downgrade` occurred inside a function or downgrader body. Downgrader
+    /// calls must happen at the top level of the program, so downgrades are
+    /// explicit, non-transitive, and countable.
+    NestedDowngraderCall {
         downgrader: String,
     },
     /// A single value was downgraded more times than the downgrader's per-value
