@@ -120,10 +120,6 @@ impl<Tag> Default for FunctionData<Tag> {
 }
 
 impl<Tag> FunctionData<Tag> {
-    pub fn new() -> Self {
-        FunctionData::default()
-    }
-
     pub fn insert(&mut self, name: String, entry: FdEntry<Tag>) -> Result<(), FunctionDataError> {
         if self.function_table.contains_key(&name) {
             return Err(FunctionRedefinition(name));
@@ -156,10 +152,6 @@ impl<Tag> FunctionData<Tag> {
             }
         }
     }
-
-    pub fn contains_key(&self, name: &str) -> bool {
-        self.function_table.contains_key(name)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,14 +174,6 @@ impl<Tag> ProgramData<Tag> {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.pc = Address::Null;
-    }
-
-    pub fn get_pc(&self) -> Address {
-        self.pc
-    }
-
     pub fn get_at(&self, pc: Address) -> Result<&Instruction<Tag>, ProgramDataError> {
         let index: usize = pc.try_into()?;
         self.program.get(index).ok_or(InvalidPC { pc })
@@ -197,10 +181,6 @@ impl<Tag> ProgramData<Tag> {
 
     pub fn get_current(&self) -> Result<&Instruction<Tag>, ProgramDataError> {
         self.get_at(self.pc)
-    }
-
-    pub fn get_program(&self) -> Rc<[Instruction<Tag>]> {
-        self.program.clone()
     }
 }
 
@@ -224,10 +204,6 @@ impl IoBuffer {
         Self {
             buffer: Rc::new(RefCell::new(list.into_iter().collect())),
         }
-    }
-
-    pub fn get_buffer(&self) -> Rc<RefCell<Vec<Immediate>>> {
-        self.buffer.clone()
     }
 
     pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Immediate>> {

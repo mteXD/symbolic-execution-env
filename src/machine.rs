@@ -423,13 +423,6 @@ impl<V: Copy, T: Copy> Stack<V, T> {
     pub fn set_slots(&mut self, slots: Vec<Cell<V, T>>) {
         self.cells = slots;
     }
-
-    pub fn set_values_for_unmonitored(&mut self, values: Vec<V>, default_tag: T) {
-        self.cells = values
-            .into_iter()
-            .map(|value| Cell::new(value, default_tag))
-            .collect();
-    }
 }
 
 /// Converts a `ReadReverse` offset into a normal cell index, like Python's

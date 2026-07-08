@@ -154,11 +154,6 @@ impl<Tag: TagTrait> Executor<Tag> {
         self.stack.tags()
     }
 
-    /// Returns the tag of the top value cell.
-    pub fn last_tag(&self) -> Option<Tag> {
-        self.stack.last_tag()
-    }
-
     /// Reads value and tag at the given index.
     fn read_entry(&self, index: CellIndex) -> ExecutorResult<(Value, Tag), Tag> {
         self.stack
@@ -595,13 +590,5 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
         let branch_program = Rc::from(vec![branch.as_ref().clone()]);
         self.run_ifelse_branch(branch_program, condition_tag)
-    }
-}
-
-impl From<Vec<Value>> for Executor {
-    fn from(value: Vec<Value>) -> Self {
-        let mut machine = Self::new(Vec::<Instruction>::new());
-        machine.stack.set_values_for_unmonitored(value, ());
-        machine
     }
 }

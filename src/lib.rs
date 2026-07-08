@@ -16,9 +16,26 @@
 
 pub mod information_flow;
 pub mod instruction;
-pub mod logging;
 pub mod machine;
 pub mod types;
+
+/// Logging setup, kept as a module so it can grow if logging ever needs to be
+/// extended for debugging.
+pub mod logging {
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    /// Initializes the global logger at `Trace` level. Safe to call more than
+    /// once; only the first call has an effect.
+    pub fn init() {
+        INIT.call_once(|| {
+            env_logger::builder()
+                .filter_level(log::LevelFilter::Trace)
+                .init();
+        });
+    }
+}
 
 #[cfg(test)]
 mod test_catalog;
