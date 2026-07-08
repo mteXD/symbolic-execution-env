@@ -232,14 +232,6 @@ impl<Tag: TagTrait> Topology<Tag> {
     }
 }
 
-impl<Tag: TagTrait> TryInto<PolicyGraph<Tag>> for Topology<Tag> {
-    type Error = FlowError<Tag>;
-
-    fn try_into(self) -> Result<PolicyGraph<Tag>, Self::Error> {
-        self.into_graph()
-    }
-}
-
 /// A validated directed graph of allowed information flows.
 ///
 /// `PolicyGraph` stores the edges for a tag type and precomputes the reflexive transitive
@@ -260,7 +252,7 @@ struct PolicyGraph<Tag: TagTrait> {
 }
 
 impl<Tag: TagTrait> PolicyGraph<Tag> {
-    pub fn new(
+    fn new(
         tags: impl IntoIterator<Item = Tag>,
         edges: impl IntoIterator<Item = (Tag, Tag)>,
     ) -> Result<Self, FlowError<Tag>> {
@@ -344,19 +336,19 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
     }
 
     /// Returns whether `tag` belongs to this graph.
-    pub fn contains(&self, tag: Tag) -> bool {
+    fn contains(&self, tag: Tag) -> bool {
         self.indices.contains_key(&tag)
     }
 
     /// Returns whether information tagged `from` may flow to `to`.
-    pub fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
+    fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
         let from_index = self.index_of(from)?;
         let to_index = self.index_of(to)?;
         Ok(self.reachable[from_index][to_index])
     }
 
     /// Returns the closest common descendant of `left` and `right`, if it exists.
-    pub fn ccd(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
+    fn ccd(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
         let left_index = self.index_of(left)?;
         let right_index = self.index_of(right)?;
         self.ccd[left_index][right_index].ok_or(FlowError::NoCommonDescendant { left, right })
@@ -389,14 +381,15 @@ pub struct SecurityPolicy<Tag: TagTrait> {
 }
 
 impl<Tag: TagTrait> SecurityPolicy<Tag> {
-    /// Creates a graph-backed policy and validates all configured policy tags.
+    /// Creates a policy over `topology` and validates all configured policy
+    /// tags.
     pub fn new(
-        graph_source: impl TryInto<PolicyGraph<Tag>, Error = FlowError<Tag>>,
+        topology: Topology<Tag>,
         default_tag: Tag,
         input_tag: Tag,
         output_tag: Tag,
     ) -> Result<Self, FlowError<Tag>> {
-        let graph = graph_source.try_into()?;
+        let graph = topology.into_graph()?;
         for tag in [default_tag, input_tag, output_tag] {
             if !graph.contains(tag) {
                 return Err(FlowError::UnknownTag(tag));
