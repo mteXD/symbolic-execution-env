@@ -319,10 +319,11 @@ impl<V: Clone, T: Clone> Stack<V, T> {
         self.frames.push(Frame::IfElseBranch);
     }
 
-    /// End an ifelse branch.
+    /// End an ifelse branch, popping its marker frame.
     pub fn exit_ifelse_branch(&mut self) {
-        if let Some(Frame::Block { .. }) = self.frames.last() {
-            panic!("exit_ifelse_branch called but topmost frame is Block")
+        match self.frames.pop() {
+            Some(Frame::IfElseBranch) => (),
+            _ => panic!("exit_ifelse_branch called but topmost frame is not IfElseBranch"),
         }
     }
 

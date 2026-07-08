@@ -24,13 +24,6 @@ const fn fibonacci_helper(n: i64) -> i64 {
 
 test_program! {
     /// Recursive factorial.
-    ///
-    /// Ignored: both runners currently panic on this program
-    /// (`machine.rs`: `exit_block` hits an `IfElseBranch` frame — a pre-existing
-    /// `CoreMachine` frame-management bug, triggered by an `ifelse` whose branch
-    /// is a block containing a recursive call). The constructor stays referenced
-    /// so the program remains documented; un-ignore once the machine is fixed.
-    #[ignore = "Both runners panic: machine exit_block hits an IfElseBranch frame (pre-existing bug)"]
     factorial,
     program: vec![
         add_instr!(fun FunctionDefine, "factorial"),
@@ -67,9 +60,6 @@ test_program! {
 
 test_program! {
     /// Recursive factorial, alternative argument-passing style.
-    ///
-    /// Ignored: both runners currently panic (see [`factorial`]).
-    #[ignore = "Both runners panic: machine exit_block hits an IfElseBranch frame (pre-existing bug)"]
     factorial_alt,
     program: vec![
         add_instr!(fun FunctionDefine, "factorial"),
@@ -110,9 +100,6 @@ test_program! {
 
 test_program! {
     /// Recursive Fibonacci.
-    ///
-    /// Ignored: both runners currently panic (see [`factorial`]).
-    #[ignore = "Both runners panic: machine exit_block hits an IfElseBranch frame (pre-existing bug)"]
     fibonacci,
     program: vec![
         add_instr!(fun FunctionDefine, "fibonacci"),

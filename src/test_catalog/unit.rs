@@ -325,6 +325,30 @@ test_program! {
     executor: { error ExecutorError::InvalidCell },
 }
 
+test_program! {
+    /// [POSITIVE] An `IfElse` inside a block: the branch's marker frame is
+    /// popped when the branch ends, so the enclosing block can exit normally.
+    ///
+    /// Regression test: the marker frame used to be leaked, and the block's
+    /// later `exit_block` panicked on it in both runners.
+    cond_ifelse_inside_block,
+    program: vec![make_block!(
+        add_instr!(Push, 1),
+        add_instr!(ifelse 0,
+            add_instr!(Push, 2),
+            add_instr!(Push, 3)
+        )
+    )],
+    verifier: { stack [2] },
+    executor: { stack [2] },
+}
+
+// Known limitation, related to the regression test above but not exercised by
+// any test yet: when the verifier explores BOTH branches of an unknown
+// condition, pops inside a branch that reach below an enclosing block's start
+// mutate that `Block` frame's `start`/`saved_below` before the cells are
+// restored for the second branch. To be fixed if a real program ever hits it.
+
 // ---------------------------------------------------------------------------
 // Blocks
 // ---------------------------------------------------------------------------
@@ -562,6 +586,27 @@ test_program! {
     ],
     verifier: { stack [10, 5, 1, 20] },
     executor: { stack [10, 5, 1, 20] },
+}
+
+test_program! {
+    /// [POSITIVE] `Rebase` still works after an `IfElse` earlier in the same
+    /// block: the branch's marker frame must not linger as the innermost
+    /// frame once the branch has ended.
+    rebasing_rebase_after_ifelse,
+    program: vec![
+        add_instr!(Push, 10),
+        make_block!(
+            add_instr!(Push, 1),
+            add_instr!(ifelse 1,
+                add_instr!(Push, 2),
+                add_instr!(Push, 3)
+            ),
+            add_instr!(Rebase),
+            add_instr!(Add, 0, 1) // 1 + 2 = 3
+        ),
+    ],
+    verifier: { stack [10, 3] },
+    executor: { stack [10, 3] },
 }
 
 // ---------------------------------------------------------------------------
@@ -804,11 +849,9 @@ test_program! {
     /// calling the function with an empty stack should fail in both runners
     /// (verifier: `NotEnoughArguments`; executor: `InvalidCell`).
     ///
-    /// Ignored for two reasons: the branch rolls back `defining`, forgetting
-    /// the recorded argument (bug), and the program currently panics on the
-    /// leaked `IfElseBranch` frame when the body's block exits (see the
-    /// ignored showcase tests).
-    #[ignore = "In-branch argument reads are forgotten, and the ifelse frame leak panics first"]
+    /// Ignored: the branch rolls back `defining`, forgetting the recorded
+    /// argument (bug), so the verifier accepts the under-supplied call.
+    #[ignore = "In-branch argument reads are forgotten"]
     functions_arg_read_inside_branch,
     program: vec![
         add_instr!(fun FunctionDefine, FUNC_NAME),
