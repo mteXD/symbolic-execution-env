@@ -82,10 +82,8 @@ pub enum FlowError<Tag: TagTrait> {
         downgrader: String,
         limit: usize,
     },
-    /// The name is not usable as requested: either a `Downgrader`/`Downgrade`
-    /// instruction named something not registered as a downgrader in the
-    /// policy, or a `FunctionDefine`/`FunctionCall` named a registered one
-    /// (downgraders must use `Downgrader`/`Downgrade`).
+    /// A `Downgrader`/`Downgrade` instruction named something not registered
+    /// as a downgrader in the policy.
     DowngraderUndefined {
         name: String,
     },

@@ -921,9 +921,8 @@ test_program! {
 
 test_program! {
     /// A function defined inside an ifelse branch only conditionally exists,
-    /// so the verifier deliberately rolls back its analysis with the branch
-    /// and rejects a later call. The executor's global registry keeps the
-    /// definition and runs the call fine.
+    /// so the verifier rejects the definition directly. The executor runs the
+    /// concrete branch, registers the function, and calls it successfully.
     functions_defined_inside_branch,
     program: vec![
         add_instr!(Push, 1),
@@ -938,9 +937,7 @@ test_program! {
         add_instr!(fun FunctionCall, FUNC_NAME),
     ],
     split,
-    verifier: { error VerifierError::Core(CoreError::FunctionDataError(
-        FunctionDataError::FunctionUndefined(_)
-    )) },
+    verifier: { error VerifierError::ConditionalDefinition { .. } },
     executor: { stack [1, 7, 42] },
 }
 

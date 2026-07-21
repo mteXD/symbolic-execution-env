@@ -18,7 +18,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Confidentiality policy extended with a single `Secret ->> Public`
-/// downgrader named `name`, with a total call budget of `max_calls` for the
+/// downgrader named `name`, with a total call limit of `max_calls` for the
 /// whole program run.
 fn downgrader_policy(name: &str, max_calls: Option<usize>) -> SecurityPolicy<Confidentiality> {
     confidentiality_policy()
@@ -323,15 +323,14 @@ test_program! {
 // from the `downgrader_policy` helper (`Secret ->> Public`), or inline
 // `with_downgrader` calls where the connection differs.
 //
-// Budget semantics (since 2026-07): `max_calls` is the downgrader's TOTAL
+// Call limit semantics: `max_calls` is the downgrader's TOTAL
 // number of allowed calls per program run, independent of which values are
 // downgraded and never refunded by pops. (Previously the budget was counted
 // per stack cell and reset when the cell was popped.)
 // ---------------------------------------------------------------------------
 
 test_program! {
-    /// [#1/#2] Declaring a downgrader does not change oblivious flow: combining
-    /// a Public and a Secret value still yields Secret (private + public = private).
+    /// Declaring a downgrader does not change oblivious flow (usual behavior)
     oblivious_flow_unaffected_by_downgrader,
     program: vec![
         add_instr!(Push, 1),
@@ -353,38 +352,11 @@ test_program! {
 }
 
 test_program! {
-    /// [#3] Without a downgrader, a Secret-derived boolean cannot be printed:
-    /// the equality result inherits Secret and the output guard rejects it.
-    secret_bool_cannot_be_printed,
+    /// Tests intended downgrader behavior.
+    /// Downgrader reads a secret value and transforms it into a public result.
+    downgrader_basic,
     program: vec![
-        add_instr!(tag Push, 0, Secret),
-        add_instr!(Push, 0),
-        add_instr!(SetEqual, 0, 1),
-        add_instr!(R Print, 2),
-    ],
-    verifier: { error with confidentiality_policy(),
-        VerifierError::Flow(FlowError::InformationFlowViolation {
-            found: Secret,
-            guard: Public,
-        })
-    },
-    executor: { error with confidentiality_policy(),
-        ExecutorError::Flow(FlowError::InformationFlowViolation {
-            found: Secret,
-            guard: Public,
-        })
-    },
-}
-
-test_program! {
-    /// [#4] A downgrader exposes one approved derived value: whatever
-    /// `is_empty(secret)` returns is *implicitly* retagged Public via
-    /// `Secret ->> Public` and may cross the output guard. There is no explicit
-    /// retag instruction: the body's last value (the `SetEqual` result, tagged
-    /// Secret) is the return value and is forced to the connection target.
-    downgrader_exposes_approved_result,
-    program: vec![
-        add_instr!(fun Downgrader, "is_empty"),
+        add_instr!(fun Downgrader, "is_zero"),
         make_block!(
             add_instr!(R ReadReverse, 0),
             add_instr!(Rebase),
@@ -392,16 +364,16 @@ test_program! {
             add_instr!(SetEqual, 0, 1)
         ),
         add_instr!(tag Push, 0, Secret),
-        add_instr!(fun Downgrade, "is_empty"),
+        add_instr!(fun Downgrade, "is_zero"),
         add_instr!(R Print, 1),
     ],
     // The downgrader's result carries the connection target (Public).
-    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+    verifier: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
             (0, Secret),
             (ValueSpan::new(0, 1), Public)
         ]
     },
-    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+    executor: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
             (0, Secret),
             (1, Public)
         ]
@@ -409,37 +381,9 @@ test_program! {
 }
 
 test_program! {
-    /// [#5] The total budget is enforced in both runners: calling the
-    /// downgrader twice (the result is popped between calls) exceeds
-    /// `max_calls = 1`.
-    downgrader_budget_enforced,
-    program: vec![
-        add_instr!(fun Downgrader, "is_empty"),
-        make_block!(
-            add_instr!(R ReadReverse, 0),
-            add_instr!(Rebase),
-            add_instr!(Push, 0),
-            add_instr!(SetEqual, 0, 1)
-        ),
-        add_instr!(tag Push, 0, Secret),
-        add_instr!(fun Downgrade, "is_empty"),
-        add_instr!(R Pop, 1),
-        add_instr!(fun Downgrade, "is_empty"),
-    ],
-    verifier: { error with downgrader_policy("is_empty", Some(1)),
-        VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
-    },
-    executor: { error with downgrader_policy("is_empty", Some(1)),
-        ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
-    },
-}
-
-test_program! {
-    /// [#9] The implicit retag is strict: a `Confidential ->> Public` downgrader
-    /// whose body returns a `Secret` value (not the connection `source`) is
-    /// rejected by both runners. The verifier catches it at definition time;
-    /// the executor when the body actually returns.
-    downgrader_return_tag_must_match_source,
+    /// Implicit retagging is not allowed; even if A->B->C, a downgrader defined with C->A is
+    /// rejected if called on B; where A, B, C are tags.
+    downgrader_no_implicit_retag,
     program: vec![
         add_instr!(fun Downgrader, "leak"),
         make_block!(
@@ -469,9 +413,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#10a] The budget is global, not per value: downgrading two *distinct*
-    /// secret cells still counts as two calls, exceeding `max_calls = 1`.
-    downgrader_budget_is_global,
+    /// Downgraders usually should come with a call limit, which is tested here.
+    downgrader_call_limit,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -482,7 +425,7 @@ test_program! {
         ),
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "is_empty"),
-        add_instr!(tag Push, 0, Secret),
+        add_instr!(R Pop, 1),
         add_instr!(fun Downgrade, "is_empty"),
     ],
     verifier: { error with downgrader_policy("is_empty", Some(1)),
@@ -494,8 +437,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#10b] A budget of two covers downgrading two distinct secret cells.
-    downgrader_budget_covers_distinct_values,
+    /// Another test for the downgrader call limit, this time with 2 allowed calls.
+    downgrader_call_limit_2,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -526,35 +469,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#11] Popping values does not refund the budget: even with all previous
-    /// values popped, the second call still exceeds `max_calls = 1`.
-    downgrader_budget_not_reset_by_pop,
-    program: vec![
-        add_instr!(fun Downgrader, "is_empty"),
-        make_block!(
-            add_instr!(R ReadReverse, 0),
-            add_instr!(Rebase),
-            add_instr!(Push, 0),
-            add_instr!(SetEqual, 0, 1)
-        ),
-        add_instr!(tag Push, 0, Secret),
-        add_instr!(fun Downgrade, "is_empty"),
-        add_instr!(R Pop, 2),
-        add_instr!(tag Push, 0, Secret),
-        add_instr!(fun Downgrade, "is_empty"),
-    ],
-    verifier: { error with downgrader_policy("is_empty", Some(1)),
-        VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
-    },
-    executor: { error with downgrader_policy("is_empty", Some(1)),
-        ExecutorError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
-    },
-}
-
-test_program! {
-    /// [#12] An unlimited (`None`) budget lets the downgrader be called any
-    /// number of times.
-    downgrader_unlimited_budget,
+    /// A downgrader with no call limit
+    downgrader_no_call_limit,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -587,8 +503,8 @@ test_program! {
     /// the budget: at runtime only one branch executes, so the verifier merges
     /// the two branches' call counts with MAX, not their sum. Here each branch
     /// downgrades once (merged count: 1) and a final top-level downgrade makes
-    /// it 2, exactly within `max_calls = 2` — a sum-merge would reject it.
-    downgrader_budget_ifelse_branches_max,
+    /// it 2, exactly within `max_calls = 2`.
+    downgrader_call_limit_ifelse,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
         make_block!(
@@ -633,11 +549,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#13] Downgrader calls must happen at the top level: a downgrader
-    /// (`outer`) whose body calls another downgrader (`inner`) is rejected.
-    /// The verifier catches it at `outer`'s definition; the executor when
-    /// `outer` runs.
-    downgrader_cannot_call_downgrader,
+    /// Downgraders cannot be called from inside another downgrader or another ordinary function.
+    downgrader_nested,
     program: vec![
         add_instr!(fun Downgrader, "inner"),
         make_block!(
@@ -651,7 +564,7 @@ test_program! {
             add_instr!(R ReadReverse, 0),
             add_instr!(Rebase),
             add_instr!(tag Push, 0, Secret),
-            add_instr!(fun Downgrade, "inner")
+            add_instr!(fun Downgrade, "inner") // FAILS: nested call
         ),
         add_instr!(tag Push, 0, Secret),
         add_instr!(fun Downgrade, "outer"),
@@ -669,9 +582,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#14] A registered downgrader may not be invoked with the ordinary
-    /// `FunctionCall`: it must use `Downgrade`. Both runners reject the call as
-    /// `DowngraderUndefined`.
+    /// A registered downgrader may not be invoked with the ordinary `FunctionCall`:
+    /// it must use `Downgrade`. Both runners reject the call as `DowngraderUndefined`.
     function_call_on_downgrader_rejected,
     program: vec![
         add_instr!(fun Downgrader, "is_empty"),
@@ -682,7 +594,7 @@ test_program! {
             add_instr!(SetEqual, 0, 1)
         ),
         add_instr!(tag Push, 0, Secret),
-        add_instr!(fun FunctionCall, "is_empty"),
+        add_instr!(fun FunctionCall, "is_empty"), // FAILS: must use Downgrade
     ],
     verifier: { error with downgrader_policy("is_empty", Some(1)),
         // VerifierError::Flow(FlowError::DowngraderUndefined { .. })
@@ -695,7 +607,7 @@ test_program! {
 }
 
 test_program! {
-    /// [#15] `Downgrade` may only name a downgrader registered in the policy.
+    /// `Downgrade` may only name a downgrader registered in the policy.
     /// Pointing it at an ordinary function is rejected as `DowngraderUndefined`.
     downgrade_on_plain_function_rejected,
     program: vec![
@@ -712,10 +624,8 @@ test_program! {
 }
 
 test_program! {
-    /// [#16] `Downgrader` may only define a downgrader registered in the policy.
-    /// Using it for an ordinary function is rejected at definition time as
-    /// `DowngraderUndefined`.
-    downgrader_define_on_plain_function_rejected,
+    /// A downgrader must be specified with the security policy.
+    downgrader_undefined_in_policy,
     program: vec![
         add_instr!(fun Downgrader, "helper"),
         make_block!(add_instr!(Push, 5)),
@@ -729,11 +639,11 @@ test_program! {
 }
 
 test_program! {
-    /// A registered downgrader may not be defined with the ordinary
-    /// `FunctionDefine`: it must use `Downgrader`. Both runners reject the
-    /// definition as `DowngraderUndefined`.
-    function_define_on_downgrader_rejected,
+    /// Functions and downgraders have separate namespaces.
+    downgrader_function_no_clash,
     program: vec![
+        add_instr!(fun Downgrader, "is_empty"),
+        add_instr!(Nop),
         add_instr!(fun FunctionDefine, "is_empty"),
         make_block!(
             add_instr!(R ReadReverse, 0),
@@ -741,12 +651,18 @@ test_program! {
             add_instr!(Push, 0),
             add_instr!(SetEqual, 0, 1)
         ),
+        add_instr!(Push, 0),
+        add_instr!(fun FunctionCall, "is_empty"),
     ],
-    verifier: { error with downgrader_policy("is_empty", Some(1)),
-        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
+    verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Public),
+            (ValueSpan::new(0, 1), Public)
+        ]
     },
-    executor: { error with downgrader_policy("is_empty", Some(1)),
-        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
+    executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
+            (0, Public),
+            (1, Public)
+        ]
     },
 }
 

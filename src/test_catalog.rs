@@ -93,7 +93,7 @@ macro_rules! verify_expect {
     (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {{
         let verifier = $crate::machine::verifier::Verifier::new($prog)
             .verify()
-            .expect("verifier should accept program");
+            .unwrap_or_else(|error| panic!("verifier should accept program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
             ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($e) ),* ];
         $crate::test_catalog::check_verifier_stack(verifier, expected);
@@ -102,7 +102,7 @@ macro_rules! verify_expect {
         let verifier = $crate::machine::verifier::Verifier::with_policy($prog, $policy)
             .expect("verifier construction should succeed")
             .verify()
-            .expect("verifier should accept program");
+            .unwrap_or_else(|error| panic!("verifier should accept program, but returned: {error:#?}"));
         let expected_values: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
             ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($v) ),* ];
         let expected_tags = ::std::vec![ $( $t ),* ];
@@ -150,7 +150,7 @@ macro_rules! exec_expect {
     (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {{
         let executor = $crate::machine::executor::Executor::new($prog)
             .exec()
-            .expect("executor should run program");
+            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::types::Value> =
             ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
         $crate::test_catalog::check_executor_stack(executor, expected);
@@ -159,7 +159,7 @@ macro_rules! exec_expect {
         let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
             .expect("executor construction should succeed")
             .exec()
-            .expect("executor should run program");
+            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected_values: ::std::vec::Vec<$crate::types::Value> =
             ::std::vec![ $( $crate::types::Value::Integer($v) ),* ];
         let expected_tags = ::std::vec![ $( $t ),* ];
@@ -201,7 +201,7 @@ macro_rules! exec_expect {
         let executor = $crate::machine::executor::Executor::new($prog)
             .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
             .exec()
-            .expect("executor should run program");
+            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::types::Value> =
             ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
         $crate::test_catalog::check_executor_stack(executor, expected);
@@ -212,7 +212,7 @@ macro_rules! exec_expect {
             .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
             .redirect_output(out_buf.clone().into())
             .exec()
-            .expect("executor should run program");
+            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::types::Immediate> = ::std::vec![ $($o),* ];
         assert_eq!(*out_buf.borrow(), expected);
     }};
@@ -234,7 +234,7 @@ macro_rules! exec_expect {
                 .expect("executor construction should succeed")
                 .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
                 .exec()
-                .expect("executor should run program");
+                .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
             let expected_values: ::std::vec::Vec<$crate::types::Value> =
                 ::std::vec![ $( $crate::types::Value::Integer($v) ),* ];
             let expected_tags = ::std::vec![ $( $t ),* ];
@@ -255,7 +255,7 @@ macro_rules! exec_expect {
             let executor = $crate::machine::executor::Executor::new($prog)
                 .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
                 .exec()
-                .expect("executor should run program");
+                .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
             let expected: ::std::vec::Vec<$crate::types::Value> =
                 ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
             $crate::test_catalog::check_executor_stack(executor, expected);
@@ -272,7 +272,7 @@ macro_rules! exec_expect {
                 .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
                 .redirect_output(out_buf.clone().into())
                 .exec()
-                .expect("executor should run program");
+                .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
             let expected: ::std::vec::Vec<$crate::types::Immediate> = ::std::vec![ $($o),* ];
             assert_eq!(*out_buf.borrow(), expected);
         }

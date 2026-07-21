@@ -47,6 +47,9 @@ pub enum VerifierError<Tag: TagTrait = ()> {
         outer_function: String,
         inner_function: String,
     },
+    ConditionalDefinition {
+        function: String,
+    },
     InstructionError,
     Flow(FlowError<Tag>),
 }
@@ -328,6 +331,7 @@ impl MemorizedIndex {
 #[derive(Debug, Clone)]
 struct DefinitionInProgress {
     name: String,
+    is_downgrader: bool,
     args: Vec<MemorizedIndex>,
     collecting_args: bool,
 }
@@ -350,18 +354,21 @@ pub struct Verifier<Tag: TagTrait = ()> {
     pc_tag: Tag,
     /// Argument-collection state while a definition body is being analyzed.
     defining: Option<DefinitionInProgress>,
-    /// Facts discovered about each defined function, by name and alias.
-    /// Deliberately rolled back with blocks and ifelse branches (see
-    /// `evaluate_block` and [`run_ifelse_branch`](Self::run_ifelse_branch)).
+    /// Facts discovered about each defined ordinary function, by name and alias.
     functions: HashMap<String, FunctionFacts<Tag>>,
+    /// Facts discovered about each defined downgrader, kept separate from
+    /// ordinary functions so both kinds may use the same name.
+    downgraders: HashMap<String, FunctionFacts<Tag>>,
     /// Active downgrader connection while analyzing its body at definition
     /// time. No stack is needed: nested definitions are forbidden, so at most
     /// one downgrader is under analysis at a time.
     current_downgrader: Option<AwareConnection<Tag>>,
-    /// How many times each downgrader is called, counted statically. Unlike
-    /// `defining`/`functions` this is never rolled back: the budget spans the
-    /// whole program.
+    /// How many times each downgrader is called, counted statically. The budget
+    /// spans the whole program (with branch-specific merging in `ifelse`).
     downgrader_calls: HashMap<String, usize>,
+    /// True while the verifier is evaluating an ifelse branch. Function and
+    /// downgrader definitions are rejected there because they may not execute.
+    in_conditional_branch: bool,
 }
 
 impl Verifier<()> {
@@ -375,8 +382,10 @@ impl Verifier<()> {
             pc_tag: (),
             defining: None,
             functions: HashMap::new(),
+            downgraders: HashMap::new(),
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
+            in_conditional_branch: false,
         }
     }
 }
@@ -397,8 +406,10 @@ impl<Tag: TagTrait> Verifier<Tag> {
             pc_tag,
             defining: None,
             functions: HashMap::new(),
+            downgraders: HashMap::new(),
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
+            in_conditional_branch: false,
         })
     }
 
@@ -525,14 +536,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
         Ok((last_value, last_tag, body_size))
     }
 
-    /// Verifies a single ifelse-branch instruction on the parent stack:
-    /// cells are mutated in place. `defining` and `functions` are scoped
-    /// (saved on entry, restored on exit): rolling back `functions` is
-    /// intended conservatism — a function defined inside a branch only
-    /// conditionally exists, so calling it afterwards does not verify. The
-    /// machine's global function registry is NOT scoped, matching the
-    /// executor. `Rebase` is forbidden inside the branch via the
-    /// `IfElseBranch` marker frame.
+    /// Verifies a single ifelse-branch instruction on the parent stack. Cells
+    /// are mutated in place, while definitions are rejected as conditional.
+    /// `Rebase` is forbidden inside the branch via the `IfElseBranch` marker.
     ///
     /// Known bug (pinned by an ignored test): argument reads recorded inside
     /// the branch are rolled back with `defining` and thus forgotten.
@@ -545,9 +551,10 @@ impl<Tag: TagTrait> Verifier<Tag> {
         condition_tag: Tag,
     ) -> Result<(), VerifierError<Tag>> {
         let saved_defining = self.defining.clone();
-        let saved_functions = self.functions.clone();
         let saved_pc_tag = self.pc_tag;
+        let saved_in_conditional_branch = self.in_conditional_branch;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
+        self.in_conditional_branch = true;
 
         // The IfElseBranch frame makes pops transparent to enclosing blocks and
         // forbids `Rebase` inside a branch. Cells (value and tag) are merged
@@ -558,7 +565,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         self.pc_tag = saved_pc_tag;
         self.defining = saved_defining;
-        self.functions = saved_functions;
+        self.in_conditional_branch = saved_in_conditional_branch;
 
         exec_result
     }
@@ -581,18 +588,15 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// consecutive aliases) is registered globally by `common_function_logic`
     /// and its body is analyzed by [`analyze_definition_body`](Self::analyze_definition_body).
     fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
+        if self.in_conditional_branch {
+            return Err(ConditionalDefinition {
+                function: fun.to_owned(),
+            });
+        }
         self.ensure_not_nested(fun)?;
 
-        // A registered downgrader must be defined with `Downgrader`, not
-        // `FunctionDefine`.
-        if self.policy.downgrader(fun).is_some() {
-            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                name: fun.to_owned(),
-            }));
-        }
-
         let (info, aliases) = self.analyze_definition_body(fun, false)?;
-        self.publish_function_facts(fun, aliases, info);
+        self.publish_function_facts(fun, aliases, info, false);
         Ok(())
     }
 
@@ -601,6 +605,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// the definition-time implicit retag — the return tag must match `source`
     /// and is recorded as `target`, so call sites publish the downgraded tag.
     fn verify_downgrader_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
+        if self.in_conditional_branch {
+            return Err(ConditionalDefinition {
+                function: fun.to_owned(),
+            });
+        }
         self.ensure_not_nested(fun)?;
 
         let Some(downgrader) = self.policy.downgrader(fun) else {
@@ -632,7 +641,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             None => {}
         }
 
-        self.publish_function_facts(fun, aliases, info);
+        self.publish_function_facts(fun, aliases, info, true);
         Ok(())
     }
 
@@ -680,6 +689,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         // discovered facts) must persist so callers and recursive calls see it.
         let saved_defining = self.defining.replace(DefinitionInProgress {
             name: fun.to_owned(),
+            is_downgrader,
             args: Vec::new(),
             collecting_args: true,
         });
@@ -714,6 +724,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         fun: &str,
         aliases: Vec<String>,
         facts: FunctionFacts<Tag>,
+        is_downgrader: bool,
     ) {
         trace!("Finished verifying function definition for '{}'", fun);
         trace!(
@@ -721,10 +732,15 @@ impl<Tag: TagTrait> Verifier<Tag> {
             fun, facts.args
         );
 
+        let destination = if is_downgrader {
+            &mut self.downgraders
+        } else {
+            &mut self.functions
+        };
         for alias in aliases {
-            self.functions.insert(alias, facts.clone());
+            destination.insert(alias, facts.clone());
         }
-        self.functions.insert(fun.to_string(), facts);
+        destination.insert(fun.to_string(), facts);
     }
 
     /// Verifies an ordinary `FunctionCall` site and pushes the callee's
@@ -732,7 +748,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
     fn verify_function_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
         self.machine.function_get(function_name)?;
 
-        let (return_value, return_tag) = self.callee_return(function_name, true)?;
+        let (return_value, return_tag) = self.callee_return(function_name, true, false)?;
         self.push_existing(return_value, return_tag);
         Ok(())
     }
@@ -777,7 +793,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         // A downgrader's cached return tag is its explicitly approved target.
         // Do not re-taint it with source argument tags at the call site.
-        let (return_value, return_tag) = self.callee_return(function_name, false)?;
+        let (return_value, return_tag) = self.callee_return(function_name, false, true)?;
         self.push_existing(return_value, return_tag);
         Ok(())
     }
@@ -789,11 +805,16 @@ impl<Tag: TagTrait> Verifier<Tag> {
         &self,
         function_name: &str,
         propagate_argument_tags: bool,
+        is_downgrader: bool,
     ) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         use FunctionDataError::FunctionUndefined;
 
-        let facts = self
-            .functions
+        let facts_by_name = if is_downgrader {
+            &self.downgraders
+        } else {
+            &self.functions
+        };
+        let facts = facts_by_name
             .get(function_name)
             .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?;
 
@@ -912,7 +933,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                         return_tag: None,
                     };
                     let name = defining.name.clone();
-                    self.functions.insert(name, partial);
+                    if defining.is_downgrader {
+                        self.downgraders.insert(name, partial);
+                    } else {
+                        self.functions.insert(name, partial);
+                    }
                 }
             }
             Input => {
@@ -1081,14 +1106,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
-        // `defining` and `functions` are scoped to the block; rolling back
-        // `functions` is the same intended conservatism as in
-        // `run_ifelse_branch`.
+        // Scope only definition-analysis state; globally published function
+        // facts persist. Definitions in conditional branches are rejected.
         let saved_defining = self.defining.clone();
-        let saved_functions = self.functions.clone();
         let result = self.run_nested(instrs);
         self.defining = saved_defining;
-        self.functions = saved_functions;
 
         match result? {
             (Some(val), Some(tag), _) => self.push_existing(val, tag),

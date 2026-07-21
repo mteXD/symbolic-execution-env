@@ -477,19 +477,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         use types::{Input, Output};
 
         match instr {
-            // The body is registered identically for both; the downgrade
-            // semantics live entirely at the call site (implicit retag, budget).
-            // The instruction's intent must still agree with the policy so a
-            // downgrade gate is never defined as an ordinary function.
-            FunctionDefine => {
-                if self.policy.downgrader(name).is_some() {
-                    return Err(FlowError::DowngraderUndefined {
-                        name: name.to_owned(),
-                    }
-                    .into());
-                }
-                _ = self.machine.common_function_logic(name)?
-            }
+            FunctionDefine => _ = self.machine.common_function_logic(name)?,
             Downgrader => {
                 if self.policy.downgrader(name).is_none() {
                     return Err(FlowError::DowngraderUndefined {
