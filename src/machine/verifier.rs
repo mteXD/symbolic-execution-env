@@ -591,7 +591,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             }));
         }
 
-        let (info, aliases) = self.analyze_definition_body(fun)?;
+        let (info, aliases) = self.analyze_definition_body(fun, false)?;
         self.publish_function_facts(fun, aliases, info);
         Ok(())
     }
@@ -615,7 +615,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         // forbidden, so at most one downgrader is under analysis at a time.
         let saved_downgrader = self.current_downgrader;
         self.current_downgrader = Some(connection);
-        let analysis = self.analyze_definition_body(fun);
+        let analysis = self.analyze_definition_body(fun, true);
         self.current_downgrader = saved_downgrader;
         let (mut info, aliases) = analysis?;
 
@@ -658,8 +658,13 @@ impl<Tag: TagTrait> Verifier<Tag> {
     fn analyze_definition_body(
         &mut self,
         fun: &str,
+        is_downgrader: bool,
     ) -> Result<(FunctionFacts<Tag>, Vec<String>), VerifierError<Tag>> {
-        let aliases = self.machine.common_function_logic(fun)?;
+        let aliases = if is_downgrader {
+            self.machine.common_downgrader_logic(fun)?
+        } else {
+            self.machine.common_function_logic(fun)?
+        };
 
         // Shadowing is not permitted; compilers can generate unique function names.
         // Borrow the current instruction and clone only the block's `Rc` (a
@@ -723,18 +728,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Verifies an ordinary `FunctionCall` site and pushes the callee's
-    /// recorded return span/tag. Rejects names registered as downgraders in
-    /// the policy (those must use `Downgrade`).
+    /// recorded return span/tag.
     fn verify_function_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
-        if self.policy.downgrader(function_name).is_some() {
-            return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
-                name: function_name.to_owned(),
-            }));
-        }
-
         self.machine.function_get(function_name)?;
 
-        let (return_value, return_tag) = self.callee_return(function_name)?;
+        let (return_value, return_tag) = self.callee_return(function_name, true)?;
         self.push_existing(return_value, return_tag);
         Ok(())
     }
@@ -775,9 +773,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
             ));
         }
 
-        self.machine.function_get(function_name)?;
+        self.machine.downgrader_get(function_name)?;
 
-        let (return_value, return_tag) = self.callee_return(function_name)?;
+        // A downgrader's cached return tag is its explicitly approved target.
+        // Do not re-taint it with source argument tags at the call site.
+        let (return_value, return_tag) = self.callee_return(function_name, false)?;
         self.push_existing(return_value, return_tag);
         Ok(())
     }
@@ -785,7 +785,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// Looks up the callee's discovered facts, checks that every argument
     /// index it reads resolves to an existing caller cell, and returns its
     /// recorded return span/tag (defaults: unbounded span, default tag).
-    fn callee_return(&self, function_name: &str) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
+    fn callee_return(
+        &self,
+        function_name: &str,
+        propagate_argument_tags: bool,
+    ) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         use FunctionDataError::FunctionUndefined;
 
         let facts = self
@@ -797,38 +801,58 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         // Every index the function reads as an argument must resolve to an
         // existing cell in the caller's current stack.
-        let available = self.stack.len();
+        let stack_len = self.stack.len();
         let deepest_missing = facts
             .args
             .iter()
             .map(|index| index.required_depth())
-            .filter(|depth| *depth > available)
+            .filter(|depth| *depth > stack_len)
             .max();
         if let Some(required) = deepest_missing {
             return Err(NotEnoughArguments {
                 required: required.try_into().unwrap_or(CellIndex::MAX),
-                available,
+                available: stack_len,
             });
         }
 
         let return_value = facts.return_value.unwrap_or_else(ValueSpan::inf);
-        let return_tag = facts
+        let mut return_tag = facts
             .return_tag
             .unwrap_or_else(|| self.policy.default_tag());
+
+        // Definition analysis uses synthetic argument values and therefore
+        // cannot cache their caller-specific tags. At an ordinary call site,
+        // conservatively join the tags of every caller cell read by the
+        // function into its cached return tag. This preserves information-flow
+        // safety without changing the explicitly approved target of a
+        // downgrader call.
+        if propagate_argument_tags {
+            for argument in &facts.args {
+                let index = match *argument {
+                    MemorizedIndex::Normal(index) => usize::from(index),
+                    MemorizedIndex::Reverse(index) => usize::from(
+                        reverse_index(stack_len, index).expect("argument depth was checked above"),
+                    ),
+                };
+                let argument_tag = self
+                    .stack
+                    .tag_at(index)
+                    .expect("argument depth was checked above");
+                return_tag = self.combine_tags(return_tag, argument_tag)?;
+            }
+        }
+        debug!(
+            "callee_return: function={function_name:?}, caller_stack_tags={:?}, recorded_args={:?}, cached_return_tag={return_tag:?}",
+            self.stack.tags(),
+            facts.args,
+        );
         Ok((return_value, return_tag))
     }
 
-    pub fn read(&self, reg: CellIndex) -> Result<ValueSpan, VerifierError<Tag>> {
-        self.stack.value_at(reg.into()).ok_or(InvalidCell {
-            instr: self.machine.program_data.get_current()?.clone(),
-            cell_index: reg,
-        })
-    }
-
-    /// Like [`read`](Self::read), but while collecting a function's arguments
+    /// Reads a cell's value and tag. While collecting a function's arguments
     /// an out-of-scope read is recorded as a `Normal` argument index and
-    /// yields an unbounded span (with `default_tag`) instead of erroring.
-    fn read_normal(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
+    /// yields an unbounded span (with the argument tag) instead of erroring.
+    pub fn read(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         // A read outside the function's own loaded cells (`[base, len)`) reads
         // a caller-supplied argument rather than function-local data.
         let reads_argument = !(self.stack.base()..self.stack.len()).contains(&usize::from(idx));
@@ -836,9 +860,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
             self.record_arg(MemorizedIndex::Normal(idx));
             return Ok((ValueSpan::inf(), self.arg_tag()));
         }
-        let val = self.read(idx)?;
+        let value = self.stack.value_at(idx.into()).ok_or(InvalidCell {
+            instr: self.machine.program_data.get_current()?.clone(),
+            cell_index: idx,
+        })?;
         let tag = self.read_tag(idx)?;
-        Ok((val, tag))
+        Ok((value, tag))
     }
 
     /// Verifies the program, returning self.
@@ -920,12 +947,12 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
 
         match instr {
             Not => {
-                let (val, tag) = self.read_normal(arg)?;
+                let (val, tag) = self.read(arg)?;
                 let result = ValueSpan::new(!val.max, !val.min);
                 self.push_with_tag(result, tag)?;
             }
             Read => {
-                let (val, tag) = self.read_normal(arg)?;
+                let (val, tag) = self.read(arg)?;
                 self.push_with_tag(val, tag)?;
             }
             ReadReverse => {
@@ -940,7 +967,12 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                     if usize::from(arg) >= loaded {
                         self.record_arg(MemorizedIndex::Reverse(arg));
                     }
-                    self.push_with_tag(ValueSpan::inf(), self.arg_tag())?;
+                    let synthetic_tag = self.arg_tag();
+                    debug!(
+                        "collecting ReadReverse: index={arg}, loaded={loaded}, caller_tags={:?}, synthetic_tag={synthetic_tag:?}",
+                        self.stack.tags(),
+                    );
+                    self.push_with_tag(ValueSpan::inf(), synthetic_tag)?;
                 } else {
                     trace!(
                         "Not collecting function arguments, performing normal read with reverse indexing."
@@ -950,8 +982,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                         cell_index: arg,
                     })?;
 
-                    let val = self.read(index)?;
-                    let tag = self.read_tag(index)?;
+                    let (val, tag) = self.read(index)?;
                     self.push_with_tag(val, tag)?;
                 }
             }
@@ -1013,8 +1044,8 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
     ) -> Result<(), Self::Error> {
         use BinaryOp::*;
 
-        let (a, tag_a) = self.read_normal(arg1)?;
-        let (b, tag_b) = self.read_normal(arg2)?;
+        let (a, tag_a) = self.read(arg1)?;
+        let (b, tag_b) = self.read(arg2)?;
         let result_tag = self.combine_tags(tag_a, tag_b)?;
 
         // TODO: Write tests for arithmetic overflow checks
@@ -1073,8 +1104,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         when_true: Rc<Instruction<Tag>>,
         when_false: Rc<Instruction<Tag>>,
     ) -> Result<(), Self::Error> {
-        let condition = self.read(cond_idx)?;
-        let condition_tag = self.read_tag(cond_idx)?;
+        let (condition, condition_tag) = self.read(cond_idx)?;
         let known_truth_value = Self::known_truth_value(&condition);
 
         match known_truth_value {
@@ -1085,8 +1115,13 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                 self.run_ifelse_branch(&chosen, condition_tag)?;
             }
             // Condition is unknown: both branches are explored. They each mutate
-            // the parent stack in place, so we keep a single copy of the initial
-            // cells to re-run the false branch from the same starting point.
+            // the parent stack in place, so we keep a copy of the initial stack
+            // to re-run the false branch from the same starting point. The copy
+            // must include the frames, not just the cells: a branch that pops
+            // below an enclosing block's `start` mutates that `Block` frame's
+            // `start`/`saved_below`, and restoring only the cells would leak
+            // those mutations into the false branch and the block's exit.
+            //
             // Downgrader budgets are also re-run per branch and merged with the
             // per-downgrader MAX: at runtime only one branch executes, so
             // exploring both must not double-charge.

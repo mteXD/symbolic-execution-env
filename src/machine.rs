@@ -43,6 +43,7 @@ type CoreResult<T> = std::result::Result<T, CoreError>;
 #[derive(Debug, Clone)]
 pub struct CoreMachine<Tag = ()> {
     function_data: FunctionData<Tag>,
+    downgrader_data: FunctionData<Tag>,
     program_data: ProgramData<Tag>,
     output: Output,
     input: Input,
@@ -52,6 +53,7 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
     pub fn new(program: impl Into<Rc<[Instruction<Tag>]>>) -> Self {
         Self {
             function_data: FunctionData::default(),
+            downgrader_data: FunctionData::default(),
             program_data: ProgramData::new(program),
             output: Output::Stdout,
             input: Input::Stdin,
@@ -67,10 +69,32 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         Ok(())
     }
 
+    pub fn downgrader_get(&self, name: &str) -> CoreResult<&Instruction<Tag>> {
+        self.downgrader_data.get(name).map_err(Into::into)
+    }
+
+    pub fn downgrader_insert(&mut self, name: String, entry: FdEntry<Tag>) -> CoreResult<()> {
+        self.downgrader_data.insert(name, entry)?;
+        Ok(())
+    }
+
     /// Registers the *current* instruction as the body of `function_name`,
     /// consuming any immediately following `FunctionDefine`s as aliases of it.
     /// Returns the alias names. Warns (but continues) if no block follows.
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
+        self.common_definition_logic(function_name, false)
+    }
+
+    /// Registers a downgrader separately from ordinary function data.
+    pub fn common_downgrader_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
+        self.common_definition_logic(function_name, true)
+    }
+
+    fn common_definition_logic(
+        &mut self,
+        function_name: &str,
+        is_downgrader: bool,
+    ) -> CoreResult<Vec<String>> {
         use Instruction::AluUnaryString;
         use UnaryOpString::FunctionDefine;
 
@@ -100,10 +124,18 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         let function_name = function_name.to_owned();
         let current = self.program_data.get_current()?;
         debug!("Function '{}' will point to {:?}", function_name, current);
-        self.function_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
+        if is_downgrader {
+            self.downgrader_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
+        } else {
+            self.function_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
+        }
 
         for alias in &aliases {
-            self.function_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
+            if is_downgrader {
+                self.downgrader_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
+            } else {
+                self.function_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
+            }
         }
 
         Ok(aliases)

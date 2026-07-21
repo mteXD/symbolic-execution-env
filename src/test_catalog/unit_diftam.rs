@@ -44,7 +44,8 @@ fn public_input_policy() -> SecurityPolicy<Confidentiality> {
 // ---------------------------------------------------------------------------
 
 test_program! {
-    /// Confidentiality taint propagates through `Add`.
+    /// Tag propagation with one default tag and one explicit tag: the `Add`
+    /// result inherits the more restrictive tag.
     confidentiality_ift,
     program: vec![
         add_instr!(Push, 10),
@@ -66,7 +67,8 @@ test_program! {
 }
 
 test_program! {
-    /// Integrity taint propagates through `Add`.
+    /// Tag propagation with two explicit tags: the `Add` result inherits the
+    /// more restrictive tag.
     integrity_ift,
     program: vec![
         add_instr!(tag Push, 10, Low),
@@ -130,10 +132,11 @@ test_program! {
         ]
     },
     executor: { cases with confidentiality_policy(), {
-        input [42] => tagged_stack [
-            (42, Secret)
-        ]
-    } },
+            input [42] => tagged_stack [
+                (42, Secret)
+            ]
+        }
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +194,6 @@ test_program! {
 
 test_program! {
     /// Tags stay aligned with values across function call, rebase and pop.
-    #[ignore = "Fix tag assignment"]
     tags_remain_aligned_through_function_rebase,
     program: vec![
         add_instr!(fun FunctionDefine, "add_public"),
@@ -683,10 +685,12 @@ test_program! {
         add_instr!(fun FunctionCall, "is_empty"),
     ],
     verifier: { error with downgrader_policy("is_empty", Some(1)),
-        VerifierError::Flow(FlowError::DowngraderUndefined { .. })
+        // VerifierError::Flow(FlowError::DowngraderUndefined { .. })
+        VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionUndefined(_)))
     },
     executor: { error with downgrader_policy("is_empty", Some(1)),
-        ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
+        // ExecutorError::Flow(FlowError::DowngraderUndefined { .. })
+        ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionUndefined(_)))
     },
 }
 

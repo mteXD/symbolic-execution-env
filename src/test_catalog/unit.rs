@@ -1,6 +1,7 @@
 //! Unit tests for core VM behavior.
 
 use super::*;
+use crate::types::Immediate;
 
 // ---------------------------------------------------------------------------
 // Stack operations
@@ -124,6 +125,9 @@ test_program! {
 
 test_program! {
     /// [POSITIVE] Reads the top 3 values.
+    ///
+    /// As can be seen, `ReadReverse` with the same index used multiple times can be utilized to
+    /// clone a portion of the stack.
     stack_read_reverse_multiple,
     program: vec![
         add_instr!(Push, 10),
@@ -183,6 +187,21 @@ test_program! {
     ],
     verifier: { error VerifierError::DivisionByZero },
     executor: { error ExecutorError::DivisionByZero },
+}
+
+test_program! {
+    /// An exact arithmetic result at the representable boundary is not an
+    /// overflow. The executor accepts this; the verifier currently mistakes
+    /// `Immediate::MAX` for its unbounded-span sentinel.
+    #[ignore = "Verifier mistakes an exact boundary result for overflow"]
+    arith_exact_max_is_not_overflow,
+    program: vec![
+        add_instr!(Push, Immediate::MAX),
+        add_instr!(Push, 0),
+        add_instr!(Add, 0, 1),
+    ],
+    verifier: { stack [Immediate::MAX, 0, Immediate::MAX] },
+    executor: { stack [Immediate::MAX, 0, Immediate::MAX] },
 }
 
 // ---------------------------------------------------------------------------
@@ -290,11 +309,13 @@ test_program! {
     verifier: { error VerifierError::CondUnequalStackSizes {
         true_branch_cells: 4,
         false_branch_cells: 2
-    } },
+        }
+    },
     executor: { cases {
         input [100] => stack [100, 5, 1, 42];
         input [-100] => stack [-100, 5]
-    } },
+        }
+    },
 }
 
 test_program! {
@@ -317,10 +338,12 @@ test_program! {
 test_program! {
     /// [NEGATIVE] No condition on the stack at all when ifelse runs.
     cond_ifelse_no_condition,
-    program: vec![add_instr!(ifelse 0,
-        add_instr!(Push, 1),
-        add_instr!(Push, 2)
-    )],
+    program: vec![
+        add_instr!(ifelse 0,
+            add_instr!(Push, 1),
+            add_instr!(Push, 2)
+        )
+    ],
     verifier: { error VerifierError::InvalidCell { .. } },
     executor: { error ExecutorError::InvalidCell },
 }
@@ -332,13 +355,15 @@ test_program! {
     /// Regression test: the marker frame used to be leaked, and the block's
     /// later `exit_block` panicked on it in both runners.
     cond_ifelse_inside_block,
-    program: vec![make_block!(
-        add_instr!(Push, 1),
-        add_instr!(ifelse 0,
-            add_instr!(Push, 2),
-            add_instr!(Push, 3)
+    program: vec![
+        make_block!(
+            add_instr!(Push, 1),
+            add_instr!(ifelse 0,
+                add_instr!(Push, 2),
+                add_instr!(Push, 3)
+            )
         )
-    )],
+    ],
     verifier: { stack [2] },
     executor: { stack [2] },
 }
@@ -348,6 +373,82 @@ test_program! {
 // condition, pops inside a branch that reach below an enclosing block's start
 // mutate that `Block` frame's `start`/`saved_below` before the cells are
 // restored for the second branch. To be fixed if a real program ever hits it.
+
+test_program! {
+    /// A: 0 locals, symmetric R Pop 2 into parent
+    test_a,
+    program: vec![
+        add_instr!(Push, 10),
+        add_instr!(Push, 20),
+        add_instr!(Input),
+        add_instr!(Push, 0),
+        add_instr!(SetGreaterThan, 2, 3),
+        make_block!(
+            add_instr!(ifelse 4,
+                add_instr!(R Pop, 2),
+                add_instr!(R Pop, 2)
+            ),
+            add_instr!(Push, 777)
+        ),
+    ],
+    verifier: { stack [10, 20, ValueSpan::inf(), 0, ValueSpan::new(0, 1), 777] },
+    executor: { cases {
+            input [100] => stack [10, 20, 100, 0, 1, 777];
+            input [-100] => stack [10, 20, -100, 0, 0, 777];
+        }
+    },
+}
+
+test_program! {
+    /// B: 1 local, R Pop 2 branches (1 below start each)
+    test_b,
+    program: vec![
+        add_instr!(Push, 10),
+        add_instr!(Push, 20),
+        add_instr!(Input),
+        add_instr!(Push, 0),
+        add_instr!(SetGreaterThan, 2, 3),
+        make_block!(
+            add_instr!(Push, 30),
+            add_instr!(ifelse 4,
+                add_instr!(R Pop, 2),
+                add_instr!(R Pop, 2)
+            ),
+            add_instr!(Push, 777)
+        ),
+    ],
+    verifier: { stack [10, 20, ValueSpan::inf(), 0, ValueSpan::new(0, 1), 777] },
+    executor: { cases {
+            input [100] => stack [10, 20, 100, 0, 1, 777];
+            input [-100] => stack [10, 20, -100, 0, 0, 777];
+        }
+    },
+}
+
+test_program! {
+    /// C: asymmetric (true R Pop 3 below start, false Nop)
+    test_c,
+    program: vec![
+        add_instr!(Push, 10),
+        add_instr!(Push, 20),
+        add_instr!(Input),
+        add_instr!(Push, 0),
+        add_instr!(SetGreaterThan, 2, 3),
+        make_block!(
+            add_instr!(ifelse 4,
+                add_instr!(R Pop, 3),
+                add_instr!(R Pop, 3)
+            ),
+            add_instr!(Push, 777)
+        ),
+    ],
+    verifier: { stack [10, 20, ValueSpan::inf(), 0, ValueSpan::new(0, 1), 777] },
+    executor: { cases {
+            input [100] => stack [10, 20, 100, 0, 1, 777];
+            input [-100] => stack [10, 20, -100, 0, 0, 777];
+        }
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Blocks

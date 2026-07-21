@@ -243,17 +243,9 @@ impl<Tag: TagTrait> Executor<Tag> {
     }
 
     /// Calls the ordinary function `function_name` and pushes its return value
-    /// (if any). Rejects names registered as downgraders in the policy (those
-    /// must use `Downgrade`).
+    /// (if any).
     fn call_function(&mut self, function_name: &str) -> ExecutorResult<(), Tag> {
-        if self.policy.downgrader(function_name).is_some() {
-            return Err(FlowError::DowngraderUndefined {
-                name: function_name.to_owned(),
-            }
-            .into());
-        }
-
-        if let Some(entry) = self.run_function_body(function_name)? {
+        if let Some(entry) = self.run_function_body(function_name, false)? {
             self.push_existing_entry(entry);
         }
         Ok(())
@@ -300,7 +292,7 @@ impl<Tag: TagTrait> Executor<Tag> {
             .into());
         }
 
-        if let Some((value, tag)) = self.run_function_body(function_name)? {
+        if let Some((value, tag)) = self.run_function_body(function_name, true)? {
             let connection = downgrader.connection;
             if tag != connection.source {
                 return Err(FlowError::DowngraderReturnTagMismatch {
@@ -319,8 +311,14 @@ impl<Tag: TagTrait> Executor<Tag> {
     fn run_function_body(
         &mut self,
         function_name: &str,
+        is_downgrader: bool,
     ) -> ExecutorResult<Option<(Value, Tag)>, Tag> {
-        let body = self.machine.function_get(function_name)?.clone();
+        let body = if is_downgrader {
+            self.machine.downgrader_get(function_name)?
+        } else {
+            self.machine.function_get(function_name)?
+        }
+        .clone();
 
         self.function_depth += 1;
         if self.function_depth > RECURSION_LIMIT {
@@ -499,7 +497,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                     }
                     .into());
                 }
-                _ = self.machine.common_function_logic(name)?
+                _ = self.machine.common_downgrader_logic(name)?
             }
             FunctionCall => self.call_function(name)?,
             Downgrade => self.call_downgrader(name)?,
