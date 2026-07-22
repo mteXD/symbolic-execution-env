@@ -51,6 +51,9 @@ pub enum VerifierError<Tag: TagTrait = ()> {
         function: String,
     },
     InstructionError,
+    InfiniteRecursion {
+        function: String,
+    },
     Flow(FlowError<Tag>),
 }
 
@@ -369,6 +372,10 @@ pub struct Verifier<Tag: TagTrait = ()> {
     /// True while the verifier is evaluating an ifelse branch. Function and
     /// downgrader definitions are rejected there because they may not execute.
     in_conditional_branch: bool,
+    /// True when at least one enclosing conditional branch has an unknown
+    /// (non-singleton) condition. Used to distinguish confirmed infinite
+    /// recursion from recursion that is only possible on one path.
+    in_uncertain_branch: bool,
 }
 
 impl Verifier<()> {
@@ -386,6 +393,7 @@ impl Verifier<()> {
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
             in_conditional_branch: false,
+            in_uncertain_branch: false,
         }
     }
 }
@@ -410,6 +418,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             current_downgrader: None,
             downgrader_calls: HashMap::new(),
             in_conditional_branch: false,
+            in_uncertain_branch: false,
         })
     }
 
@@ -549,12 +558,15 @@ impl<Tag: TagTrait> Verifier<Tag> {
         &mut self,
         instr: &Instruction<Tag>,
         condition_tag: Tag,
+        condition_is_known: bool,
     ) -> Result<(), VerifierError<Tag>> {
         let saved_defining = self.defining.clone();
         let saved_pc_tag = self.pc_tag;
         let saved_in_conditional_branch = self.in_conditional_branch;
+        let saved_in_uncertain = self.in_uncertain_branch;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
         self.in_conditional_branch = true;
+        self.in_uncertain_branch = saved_in_uncertain || !condition_is_known;
 
         // The IfElseBranch frame makes pops transparent to enclosing blocks and
         // forbids `Rebase` inside a branch. Cells (value and tag) are merged
@@ -566,6 +578,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.pc_tag = saved_pc_tag;
         self.defining = saved_defining;
         self.in_conditional_branch = saved_in_conditional_branch;
+        self.in_uncertain_branch = saved_in_uncertain;
 
         exec_result
     }
@@ -746,6 +759,31 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// Verifies an ordinary `FunctionCall` site and pushes the callee's
     /// recorded return span/tag.
     fn verify_function_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
+        // Direct recursion while analyzing the current function's body.
+        if self
+            .defining
+            .as_ref()
+            .is_some_and(|d| d.name == function_name)
+        {
+            if self.in_uncertain_branch {
+                warn!(
+                    "Recursive call to '{}' inside an uncertain conditional branch may not be infinite",
+                    function_name
+                );
+                self.functions
+                    .entry(function_name.to_owned())
+                    .or_insert_with(|| FunctionFacts {
+                        args: Vec::new(),
+                        return_value: None,
+                        return_tag: None,
+                    });
+            } else {
+                return Err(InfiniteRecursion {
+                    function: function_name.to_owned(),
+                });
+            }
+        }
+
         self.machine.function_get(function_name)?;
 
         let (return_value, return_tag) = self.callee_return(function_name, true, false)?;
@@ -1134,7 +1172,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
                 let chosen = if taken { when_true } else { when_false };
-                self.run_ifelse_branch(&chosen, condition_tag)?;
+                self.run_ifelse_branch(&chosen, condition_tag, true)?;
             }
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a copy of the initial stack
@@ -1151,11 +1189,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                 let initial = self.stack.slots().to_vec();
                 let initial_calls = self.downgrader_calls.clone();
 
-                self.run_ifelse_branch(&when_true, condition_tag)?;
+                self.run_ifelse_branch(&when_true, condition_tag, false)?;
                 let true_cells = self.stack.replace_slots(initial);
                 let true_calls = std::mem::replace(&mut self.downgrader_calls, initial_calls);
 
-                self.run_ifelse_branch(&when_false, condition_tag)?;
+                self.run_ifelse_branch(&when_false, condition_tag, false)?;
                 let false_cells = self.stack.take_slots();
 
                 for (name, count) in true_calls {

@@ -765,7 +765,6 @@ test_program! {
 
 test_program! {
     /// [NEGATIVE] Calling the function being defined is obvious infinite recursion.
-    #[ignore = "Solve obvious recursion"]
     functions_sequential_defs_loop,
     program: vec![
         add_instr!(fun FunctionDefine, "push2_1"),
@@ -774,12 +773,47 @@ test_program! {
         add_instr!(fun FunctionCall, "push2_1"),
         add_instr!(fun FunctionCall, "push2_1"),
     ],
-    verifier: { error VerifierError::Core(CoreError::FunctionDataError(
-        FunctionDataError::FunctionRedefinition(_)
-    )) },
-    executor: { error ExecutorError::Core(CoreError::FunctionDataError(
-        FunctionDataError::FunctionRedefinition(_)
-    )) },
+    verifier_only: { error VerifierError::InfiniteRecursion { function: f } if f == "push2_1" },
+}
+
+test_program! {
+    /// [NEGATIVE] A recursive call in a statically-known branch is confirmed infinite recursion.
+    functions_infinite_recursion_known_branch,
+    program: vec![
+        add_instr!(fun FunctionDefine, "f"),
+        make_block!(
+            add_instr!(Rebase),
+            add_instr!(Push, 10),
+            add_instr!(Push, 5),
+            add_instr!(SetGreaterThan, 0, 1),
+            add_instr!(ifelse 2,
+                add_instr!(fun FunctionCall, "f"),
+                add_instr!(Push, 0)
+            )
+        ),
+        add_instr!(fun FunctionCall, "f"),
+    ],
+    verifier_only: { error VerifierError::InfiniteRecursion { function: f } if f == "f" },
+}
+
+test_program! {
+    /// [POSITIVE] A recursive call in an uncertain branch is accepted with a warning.
+    functions_recursion_unknown_branch,
+    program: vec![
+        add_instr!(fun FunctionDefine, "f"),
+        make_block!(
+            add_instr!(Rebase),
+            add_instr!(Input),
+            add_instr!(Push, 0),
+            add_instr!(SetGreaterThan, 0, 1),
+            add_instr!(ifelse 2,
+                add_instr!(fun FunctionCall, "f"),
+                add_instr!(Push, 0)
+            )
+        ),
+        add_instr!(fun FunctionCall, "f"),
+    ],
+    verifier_only: { stack [ValueSpan::inf()] },
 }
 
 test_program! {
