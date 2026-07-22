@@ -325,7 +325,7 @@ test_program! {
 //
 // Call limit semantics: `max_calls` is the downgrader's TOTAL
 // number of allowed calls per program run, independent of which values are
-// downgraded and never refunded by pops. (Previously the budget was counted
+// downgraded and never refunded by pops. (Previously the call limit was counted
 // per stack cell and reset when the cell was popped.)
 // ---------------------------------------------------------------------------
 
@@ -500,7 +500,7 @@ test_program! {
 
 test_program! {
     /// Exploring both branches of an unknown condition must not double-charge
-    /// the budget: at runtime only one branch executes, so the verifier merges
+    /// the call limit: at runtime only one branch executes, so the verifier merges
     /// the two branches' call counts with MAX, not their sum. Here each branch
     /// downgrades once (merged count: 1) and a final top-level downgrade makes
     /// it 2, exactly within `max_calls = 2`.

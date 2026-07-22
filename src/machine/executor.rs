@@ -275,8 +275,8 @@ impl<Tag: TagTrait> Executor<Tag> {
             .into());
         }
 
-        // Charge the call against the downgrader's total budget before the
-        // body runs, so an over-budget call fails without side effects.
+        // Charge the call against the downgrader's total call limit before the
+        // body runs, so a call exceeding the limit fails without side effects.
         let calls = self
             .downgrader_calls
             .entry(function_name.to_owned())

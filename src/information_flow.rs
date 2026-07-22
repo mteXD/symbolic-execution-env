@@ -76,8 +76,8 @@ pub enum FlowError<Tag: TagTrait> {
     NestedDowngraderCall {
         downgrader: String,
     },
-    /// The downgrader was called more times than its total `max_calls` budget
-    /// for the program run allows.
+    /// The downgrader was called more times than its total `max_calls` call
+    /// limit for the program run allows.
     DowngraderCallLimitExceeded {
         downgrader: String,
         limit: usize,
@@ -409,7 +409,7 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
     /// tags unknown to the graph ([`FlowError::UnknownTag`]), and duplicate
     /// downgrader names ([`FlowError::DuplicateDowngrader`]).
     ///
-    /// `max_calls` is the downgrader's total call budget for a whole program
+    /// `max_calls` is the downgrader's total call limit for a whole program
     /// run (`None` = unlimited).
     pub fn with_downgrader(
         mut self,

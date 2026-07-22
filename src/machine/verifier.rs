@@ -363,8 +363,8 @@ pub struct Verifier<Tag: TagTrait = ()> {
     /// time. No stack is needed: nested definitions are forbidden, so at most
     /// one downgrader is under analysis at a time.
     current_downgrader: Option<AwareConnection<Tag>>,
-    /// How many times each downgrader is called, counted statically. The budget
-    /// spans the whole program (with branch-specific merging in `ifelse`).
+    /// How many times each downgrader is called, counted statically. The call
+    /// limit spans the whole program (with branch-specific merging in `ifelse`).
     downgrader_calls: HashMap<String, usize>,
     /// True while the verifier is evaluating an ifelse branch. Function and
     /// downgrader definitions are rejected there because they may not execute.
@@ -771,7 +771,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             }));
         }
 
-        // Charge the call against the downgrader's total budget (mirrors the
+        // Charge the call against the downgrader's total call limit (mirrors the
         // executor: the charge precedes everything the call would do).
         let calls = self
             .downgrader_calls
@@ -1144,8 +1144,8 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             // `start`/`saved_below`, and restoring only the cells would leak
             // those mutations into the false branch and the block's exit.
             //
-            // Downgrader budgets are also re-run per branch and merged with the
-            // per-downgrader MAX: at runtime only one branch executes, so
+            // Downgrader call counts are also tracked per branch and merged
+            // with the per-downgrader MAX: at runtime only one branch executes, so
             // exploring both must not double-charge.
             None => {
                 let initial = self.stack.slots().to_vec();

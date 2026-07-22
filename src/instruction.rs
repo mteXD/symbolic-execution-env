@@ -44,8 +44,8 @@ pub enum UnaryOpString {
     FunctionCall,
     /// Defines a new downgrader.
     Downgrader,
-    /// Invokes a downgrader, applying its implicit retag and consuming one
-    /// call from its total budget. Only allowed at the top level (not inside
+    /// Invokes a downgrader, applying its implicit retag and counting once
+    /// toward its total call limit. Only allowed at the top level (not inside
     /// function or downgrader bodies).
     Downgrade,
     FileRead,
