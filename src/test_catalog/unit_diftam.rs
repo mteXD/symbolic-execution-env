@@ -149,13 +149,13 @@ mod pgs {
         output_rejected,
         program: vec![add_instr!(tag Push, 42, Secret), add_instr!(R Print, 0)],
         verifier: { error with confidentiality_policy(),
-            VerifierError::Flow(FlowError::InformationFlowViolation {
+            VerifierError::Flow(FlowError::PGViolation {
                 found: Secret,
                 guard: Public,
             })
         },
         executor: { error with confidentiality_policy(),
-            ExecutorError::Flow(FlowError::InformationFlowViolation {
+            ExecutorError::Flow(FlowError::PGViolation {
                 found: Secret,
                 guard: Public,
             })
@@ -172,13 +172,13 @@ mod pgs {
             add_instr!(ifelse 0, add_instr!(R Print, 1), add_instr!(Nop)),
         ],
         verifier: { error with confidentiality_policy(),
-            VerifierError::Flow(FlowError::InformationFlowViolation {
+            VerifierError::Flow(FlowError::PGViolation {
                 found: Secret,
                 guard: Public,
             })
         },
         executor: { error with confidentiality_policy(),
-            ExecutorError::Flow(FlowError::InformationFlowViolation {
+            ExecutorError::Flow(FlowError::PGViolation {
                 found: Secret,
                 guard: Public,
             })

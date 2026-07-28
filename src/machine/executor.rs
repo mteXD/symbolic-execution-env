@@ -165,7 +165,7 @@ impl<Tag: TagTrait> Executor<Tag> {
     /// Calculates ccd(left, right)
     fn combine_tags(&self, left: Tag, right: Tag) -> ExecutorResult<Tag, Tag> {
         self.policy
-            .closest_common_descendant(left, right)
+            .ccd(left, right)
             .map_err(Into::into)
     }
 
@@ -337,7 +337,7 @@ impl<Tag: TagTrait> Executor<Tag> {
         if self.policy.can_flow(effective_tag, output_guard)? {
             Ok(())
         } else {
-            Err(FlowError::InformationFlowViolation {
+            Err(FlowError::PGViolation {
                 found: effective_tag,
                 guard: output_guard,
             }

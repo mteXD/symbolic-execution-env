@@ -437,7 +437,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// Calculates ccd(left, right).
     fn combine_tags(&self, left: Tag, right: Tag) -> Result<Tag, VerifierError<Tag>> {
         self.policy
-            .closest_common_descendant(left, right)
+            .ccd(left, right)
             .map_err(VerifierError::Flow)
     }
 
@@ -503,7 +503,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         {
             Ok(())
         } else {
-            Err(VerifierError::Flow(FlowError::InformationFlowViolation {
+            Err(VerifierError::Flow(FlowError::PGViolation {
                 found: effective_tag,
                 guard: output_guard,
             }))
@@ -1222,7 +1222,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                             value: a.value.combine(b.value),
                             tag: self
                                 .policy
-                                .closest_common_descendant(a.tag, b.tag)
+                                .ccd(a.tag, b.tag)
                                 .map_err(VerifierError::Flow)?,
                         })
                     })

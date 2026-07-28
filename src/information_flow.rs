@@ -47,10 +47,9 @@ impl<T: Copy + Eq + Hash + Debug> TagTrait for T {}
 /// Errors produced while building a flow graph or enforcing a flow policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlowError<Tag: TagTrait> {
-    DuplicateTag(Tag),
     UnknownTag(Tag),
     Cycle,
-    AmbiguousClosestCommonDescendant {
+    AmbiguousCCD {
         left: Tag,
         right: Tag,
     },
@@ -58,7 +57,7 @@ pub enum FlowError<Tag: TagTrait> {
         left: Tag,
         right: Tag,
     },
-    InformationFlowViolation {
+    PGViolation {
         found: Tag,
         guard: Tag,
     },
@@ -226,6 +225,12 @@ impl<Tag: TagTrait> Topology<Tag> {
 
     /// Validates and preprocesses this topology as a [`PolicyGraph`].
     fn into_graph(self) -> Result<PolicyGraph<Tag>, FlowError<Tag>> {
+        let mut seen = HashSet::new();
+        for tag in &self.tags {
+            if !seen.insert(*tag) {
+                return Err(FlowError::Cycle);
+            }
+        }
         PolicyGraph::new(self.tags, self.edges)
     }
 }
@@ -258,7 +263,7 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
         let mut indices = HashMap::with_capacity(tags.len());
         for (index, tag) in tags.iter().copied().enumerate() {
             if indices.insert(tag, index).is_some() {
-                return Err(FlowError::DuplicateTag(tag));
+                panic!("Duplicate tag {:?} in policy graph", tag) // This should never happen; besides, PolicyGraph is internal
             }
         }
 
@@ -317,7 +322,7 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
                     [] => {}
                     [only] => ccd[left][right] = Some(tags[*only]),
                     _ => {
-                        return Err(FlowError::AmbiguousClosestCommonDescendant {
+                        return Err(FlowError::AmbiguousCCD {
                             left: tags[left],
                             right: tags[right],
                         });
@@ -469,7 +474,7 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
     }
 
     /// Computes the closest common descendant of two tags, if it exists.
-    pub fn closest_common_descendant(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
+    pub fn ccd(&self, left: Tag, right: Tag) -> Result<Tag, FlowError<Tag>> {
         self.graph.ccd(left, right)
     }
 
@@ -641,19 +646,15 @@ mod tests {
         );
         assert!(matches!(
             ambiguous,
-            Err(FlowError::AmbiguousClosestCommonDescendant { .. })
+            Err(FlowError::AmbiguousCCD { .. })
         ));
     }
 
     #[test]
     fn rejects_bad_graphs_and_policy_tags() {
         assert!(matches!(
-            PolicyGraph::new([Public, Public], []),
-            Err(FlowError::DuplicateTag(Public))
-        ));
-        assert!(matches!(
             Topology::linear([Public, Public]).into_graph(),
-            Err(FlowError::DuplicateTag(Public))
+            Err(FlowError::Cycle)
         ));
         assert!(matches!(
             PolicyGraph::new([Public, Private], [(Public, Private), (Private, Public)]),
@@ -665,6 +666,12 @@ mod tests {
             SecurityPolicy::new(topology, Public, Private, Separate),
             Err(FlowError::UnknownTag(Separate))
         ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate tag")]
+    fn internal_policy_graph_rejects_duplicate_tags() {
+        let _ = PolicyGraph::new([Public, Public], []);
     }
 
     #[test]
