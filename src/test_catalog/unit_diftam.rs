@@ -384,7 +384,7 @@ mod downgraders {
         // The downgrader's result carries the connection target (Public).
         verifier: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public)
+                (1, Public)
             ]
         },
         executor: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
@@ -440,10 +440,11 @@ mod downgraders {
             add_instr!(Push, 0),
             add_instr!(fun Downgrade, "is_zero"),
         ],
-        verifier: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
-                (0, Public),
-                (ValueSpan::inf(), Public)
-            ]
+        verifier: { error with downgrader_policy("is_zero", Some(1)),
+            VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
+                found: Public,
+                expected: Secret,
+            })
         },
         executor: { error with downgrader_policy("is_zero", Some(1)),
             ExecutorError::Flow(FlowError::DowngraderReturnTagMismatch {
@@ -495,9 +496,9 @@ mod downgraders {
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public),
+                (1, Public),
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public)
+                (1, Public)
             ]
         },
         executor: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
@@ -529,7 +530,7 @@ mod downgraders {
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", None), [
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public)
+                (1, Public)
             ]
         },
         executor: { tagged_stack with downgrader_policy("is_empty", None), [
@@ -566,9 +567,9 @@ mod downgraders {
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
                 (ValueSpan::inf(), Secret),
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public),
+                (1, Public),
                 (0, Secret),
-                (ValueSpan::new(0, 1), Public)
+                (1, Public)
             ]
         },
         executor: { cases with downgrader_policy("is_empty", Some(2)), {

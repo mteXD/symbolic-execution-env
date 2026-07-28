@@ -791,9 +791,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
         Ok(())
     }
 
-    /// Verifies a `Downgrade` site and pushes the downgrader's recorded return
-    /// span/tag (the tag already carries the connection `target`, recorded at
-    /// definition time). Rejects names not registered as downgraders.
+    /// Verifies a `Downgrade` site by re-executing the downgrader body with the
+    /// actual caller argument tags, then applying the implicit retag. Rejects
+    /// names not registered as downgraders.
     fn verify_downgrader_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
         let Some(downgrader) = self.policy.downgrader(function_name) else {
             return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
@@ -827,12 +827,34 @@ impl<Tag: TagTrait> Verifier<Tag> {
             ));
         }
 
-        self.machine.downgrader_get(function_name)?;
+        // Re-execute the body with the actual caller argument tags. Downgraders
+        // cannot call functions or other downgraders, so there is no recursion
+        // risk. `defining` is temporarily taken so `is_collecting_args()` is
+        // false, letting `ReadReverse` read real caller cells instead of
+        // synthesising source-tagged placeholders.
+        let body_instr = self.machine.downgrader_get(function_name)?.clone();
+        let body = match &body_instr {
+            Instruction::Block(inner) => Rc::clone(inner),
+            _ => Rc::new([body_instr.clone()]),
+        };
 
-        // A downgrader's cached return tag is its explicitly approved target.
-        // Do not re-taint it with source argument tags at the call site.
-        let (return_value, return_tag) = self.callee_return(function_name, false, true)?;
-        self.push_existing(return_value, return_tag);
+        let saved_defining = self.defining.take();
+        let result = self.run_nested(body);
+        self.defining = saved_defining;
+
+        let connection = downgrader.connection;
+        match result? {
+            (Some(return_value), Some(return_tag), _) => {
+                if return_tag != connection.source {
+                    return Err(VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
+                        found: return_tag,
+                        expected: connection.source,
+                    }));
+                }
+                self.push_existing(return_value, connection.target);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
