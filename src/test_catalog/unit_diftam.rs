@@ -45,6 +45,24 @@ fn public_input_policy() -> SecurityPolicy<Confidentiality> {
 
 mod tag_propagation {
     use super::*;
+    use crate::information_flow::DisjointTag;
+
+    /// A policy that combines the `Confidentiality` and `Integrity` lattices
+    /// as a disjoint union, so `Left(...)` and `Right(...)` tags never share a
+    /// common descendant.
+    fn disjoint_policy() -> SecurityPolicy<DisjointTag<Confidentiality, Integrity>> {
+        use DisjointTag::Right;
+
+        let confidentiality = Topology::linear([Public, Secret]);
+        let integrity = Topology::linear([Low, High]);
+        let topology =
+            Topology::<DisjointTag<Confidentiality, Integrity>>::disjoint_union(
+                confidentiality,
+                integrity,
+            );
+        SecurityPolicy::new(topology, Right(Low), Right(Low), Right(High))
+            .unwrap()
+    }
 
     test_program! {
         /// Tag propagation with one default tag and one explicit tag: the `Add`
@@ -119,6 +137,22 @@ mod tag_propagation {
             ]
         },
     }
+
+    test_program! {
+        /// A `Left(Confidentiality)` value cannot be joined with a `Right(Integrity)`
+        /// program-counter tag: there is no common descendant.
+        no_ccd,
+        program: vec![
+            add_instr!(tag Push, 42, DisjointTag::Left(Public)),
+        ],
+        verifier: { error with disjoint_policy(),
+            VerifierError::Flow(FlowError::NoCommonDescendant { .. })
+        },
+        executor: { error with disjoint_policy(),
+            ExecutorError::Flow(FlowError::NoCommonDescendant { .. })
+        },
+    }
+
 }
 
 /// These tests check perimeter guards functionality.
@@ -388,6 +422,33 @@ mod downgraders {
             ExecutorError::Flow(FlowError::DowngraderReturnTagMismatch {
                 found: Secret,
                 expected: Confidential,
+            })
+        },
+    }
+
+    test_program! {
+        /// Passing a Public-tagged value to a Secret->>Public downgrader is rejected:
+        /// the body returns the argument unchanged (Public), but the connection
+        /// source is Secret.
+        wrong_argument_tag,
+        program: vec![
+            add_instr!(fun Downgrader, "is_zero"),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(Rebase),
+            ),
+            add_instr!(Push, 0),
+            add_instr!(fun Downgrade, "is_zero"),
+        ],
+        verifier: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
+                (0, Public),
+                (ValueSpan::inf(), Public)
+            ]
+        },
+        executor: { error with downgrader_policy("is_zero", Some(1)),
+            ExecutorError::Flow(FlowError::DowngraderReturnTagMismatch {
+                found: Public,
+                expected: Secret,
             })
         },
     }
@@ -700,6 +761,23 @@ mod downgraders {
         },
         executor: { error with downgrader_policy("is_empty", Some(1)),
             ExecutorError::Flow(FlowError::NestedDowngraderCall { .. })
+        },
+    }
+
+    test_program! {
+        /// A downgrader defined twice under the same name is a redefinition.
+        redefinition_rejected,
+        program: vec![
+            add_instr!(fun Downgrader, "foo"),
+            make_block!(add_instr!(tag Push, 0, Secret)),
+            add_instr!(fun Downgrader, "foo"),
+            make_block!(add_instr!(tag Push, 0, Secret)),
+        ],
+        verifier: { error with downgrader_policy("foo", Some(1)),
+            VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionRedefinition(_)))
+        },
+        executor: { error with downgrader_policy("foo", Some(1)),
+            ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionRedefinition(_)))
         },
     }
 }

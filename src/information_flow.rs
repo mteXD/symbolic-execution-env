@@ -63,6 +63,11 @@ pub enum FlowError<Tag: TagTrait> {
     },
     ReflexiveAwareConnection(Tag),
     DuplicateDowngrader(String),
+    /// A `Downgrader`/`Downgrade` instruction named something not registered
+    /// as a downgrader in the policy.
+    DowngraderUndefined {
+        name: String,
+    },
     /// A downgrader's body returned a value whose tag is not its connection
     /// `source`, so the implicit retag to `target` is rejected.
     DowngraderReturnTagMismatch {
@@ -80,11 +85,6 @@ pub enum FlowError<Tag: TagTrait> {
     DowngraderCallLimitExceeded {
         downgrader: String,
         limit: usize,
-    },
-    /// A `Downgrader`/`Downgrade` instruction named something not registered
-    /// as a downgrader in the policy.
-    DowngraderUndefined {
-        name: String,
     },
 }
 
