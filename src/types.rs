@@ -103,6 +103,7 @@ pub enum FdEntry<Tag = ()> {
 pub enum FunctionDataError {
     FunctionRedefinition(String),
     FunctionUndefined(String),
+    FunctionMissingBody(String),
 }
 use FunctionDataError::*;
 

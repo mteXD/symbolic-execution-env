@@ -1002,6 +1002,16 @@ test_program! {
     executor: { error ExecutorError::InvalidCell },
 }
 
+test_program! {
+    /// [NEGATIVE] Missing function body
+    function_missing_body,
+    program: vec![
+        add_instr!(fun FunctionDefine, FUNC_NAME)
+    ],
+    verifier: { error VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody( .. ))) },
+    executor: { error ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody( .. ))) },
+}
+
 // ---------------------------------------------------------------------------
 // Intrinsics
 // ---------------------------------------------------------------------------

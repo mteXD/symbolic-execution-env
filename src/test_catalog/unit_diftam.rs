@@ -624,6 +624,39 @@ mod downgraders {
     }
 
     test_program! {
+        /// Unlike a nested `Downgrade` (rejected as `NestedDowngraderCall`), an
+        /// ordinary `FunctionCall` inside a downgrader body is allowed: the
+        /// function runs normally and its return value flows through the
+        /// downgrader's implicit retag. Here `helper` returns a `Secret` value
+        /// (matching the connection source), which the `Secret ->> Public`
+        /// downgrader `d` then downgrades to `Public`. The final `5` on the
+        /// stack proves `helper` executed inside the downgrader body.
+        function_call_inside_downgrader_allowed,
+        program: vec![
+            add_instr!(fun FunctionDefine, "helper"),
+            make_block!(add_instr!(tag Push, 5, Secret)),
+            add_instr!(fun Downgrader, "d"),
+            make_block!(
+                add_instr!(R ReadReverse, 0),
+                add_instr!(Rebase),
+                add_instr!(fun FunctionCall, "helper")
+            ),
+            add_instr!(tag Push, 0, Secret),
+            add_instr!(fun Downgrade, "d"),
+        ],
+        verifier: { tagged_stack with downgrader_policy("d", Some(1)), [
+                (0, Secret),
+                (5, Public)
+            ]
+        },
+        executor: { tagged_stack with downgrader_policy("d", Some(1)), [
+                (0, Secret),
+                (5, Public)
+            ]
+        },
+    }
+
+    test_program! {
         /// A registered downgrader may not be invoked with the ordinary `FunctionCall`:
         /// it must use `Downgrade`. Both runners reject the call as `DowngraderUndefined`.
         function_call_rejected,

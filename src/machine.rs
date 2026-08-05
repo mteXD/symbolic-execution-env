@@ -1,4 +1,4 @@
-use log::{debug, error, warn};
+use log::{debug, warn};
 use std::{fmt::Debug, rc::Rc};
 
 use crate::{
@@ -80,7 +80,8 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
 
     /// Registers the *current* instruction as the body of `function_name`,
     /// consuming any immediately following `FunctionDefine`s as aliases of it.
-    /// Returns the alias names. Warns (but continues) if no block follows.
+    /// Returns the alias names. A definition at the end of the program has no
+    /// body and returns `FunctionMissingBody`.
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
         self.common_definition_logic(function_name, false)
     }
@@ -105,24 +106,23 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
             aliases.push(name);
         }
 
-        match self.program_data.get_current() {
-            Ok(Instruction::Block(_)) => (),
-            Ok(instr) => {
-                warn!(
-                    "Expected block after function definitions, but found instruction: {:?}",
-                    instr
+        let current = match self.program_data.get_current() {
+            Ok(current) => current,
+            Err(ProgramDataError::InvalidPC { .. }) => {
+                return Err(
+                    FunctionDataError::FunctionMissingBody(function_name.to_owned()).into(),
                 );
             }
-            Err(err) => {
-                error!(
-                    "Error while fetching instruction for function definition: {:?}",
-                    err
-                );
-            }
+        };
+
+        if !matches!(current, Instruction::Block(_)) {
+            warn!(
+                "Expected block after function definitions, but found instruction: {:?}",
+                current
+            );
         }
 
         let function_name = function_name.to_owned();
-        let current = self.program_data.get_current()?;
         debug!("Function '{}' will point to {:?}", function_name, current);
         if is_downgrader {
             self.downgrader_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
