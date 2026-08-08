@@ -219,26 +219,16 @@ impl IoBuffer {
 #[derive(Debug, Clone)]
 pub enum Output {
     Stdout,
-    File(String),
     Buffer(IoBuffer),
 }
 
 #[derive(Debug, Clone)]
 pub enum Input {
     Stdin,
-    File(String),
     Buffer(IoBuffer),
 }
 
 impl Output {
-    pub fn from_path(path: &str) -> Self {
-        if path.is_empty() {
-            Self::Stdout
-        } else {
-            Self::File(path.to_owned())
-        }
-    }
-
     pub fn write(&mut self, data: &[Immediate]) {
         let bytes = data.iter().map(|byte| *byte as u8).collect::<Vec<u8>>();
 
@@ -246,17 +236,6 @@ impl Output {
             Output::Stdout => {
                 let mut out = io::stdout();
                 let _ = out.write_all(bytes.as_slice());
-            }
-            Output::File(path) => {
-                use std::fs::OpenOptions;
-
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .unwrap();
-
-                let _ = file.write_all(bytes.as_slice());
             }
             Output::Buffer(buf) => {
                 let mut buf = buf.borrow_mut();
@@ -267,14 +246,6 @@ impl Output {
 }
 
 impl Input {
-    pub fn from_path(path: &str) -> Self {
-        if path.is_empty() {
-            Self::Stdin
-        } else {
-            Self::File(path.to_owned())
-        }
-    }
-
     pub fn read_all(&mut self) -> Vec<Immediate> {
         match self {
             Input::Stdin => {
@@ -283,11 +254,6 @@ impl Input {
 
                 buf.iter().map(|byte| *byte as Immediate).collect()
             }
-            Input::File(path) => std::fs::read(path)
-                .unwrap()
-                .iter()
-                .map(|byte| *byte as Immediate)
-                .collect(),
             Input::Buffer(data) => {
                 let mut buf = Vec::new();
                 data.borrow().iter().for_each(|byte| buf.push(*byte));

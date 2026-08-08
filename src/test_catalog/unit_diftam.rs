@@ -427,7 +427,7 @@ mod downgraders {
     }
 
     test_program! {
-        /// Passing a Public-tagged value to a Secret->>Public downgrader is rejected:
+        /// Passing a Public-tagged value to a Secret->Public downgrader is rejected:
         /// the body returns the argument unchanged (Public), but the connection
         /// source is Secret.
         wrong_argument_tag,

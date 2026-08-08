@@ -1032,6 +1032,8 @@ test_program! {
     ///
     /// Ignored: depends on the filesystem (no buffered-I/O equivalent yet). The
     /// constructor is still referenced to keep it documented.
+    // Preserved verbatim for review after removal of the file-I/O instructions.
+    #[cfg(any())]
     #[ignore = "Files not yet completely implemented."]
     intrinsics_file_io_example,
     program: {

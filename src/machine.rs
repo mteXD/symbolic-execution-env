@@ -23,7 +23,6 @@ pub enum CoreError {
     ProgramDataError(ProgramDataError),
     RebaseError,
     IoReadError,
-    IoWriteError,
 }
 
 impl From<FunctionDataError> for CoreError {

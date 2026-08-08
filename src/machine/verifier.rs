@@ -1107,15 +1107,12 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         name: &str,
     ) -> Result<(), Self::Error> {
         use UnaryOpString::*;
-        use types::{Input, Output};
 
         match instr {
             FunctionDefine => self.verify_function_definition(name)?,
             Downgrader => self.verify_downgrader_definition(name)?,
             FunctionCall => self.verify_function_call(name)?,
             Downgrade => self.verify_downgrader_call(name)?,
-            FileRead => self.machine.input = Input::from_path(name),
-            FileWrite => self.machine.output = Output::from_path(name),
         }
 
         Ok(())

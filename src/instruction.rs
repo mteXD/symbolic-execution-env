@@ -48,8 +48,6 @@ pub enum UnaryOpString {
     /// toward its total call limit. Only allowed at the top level (not inside
     /// function or downgrader bodies).
     Downgrade,
-    FileRead,
-    FileWrite,
 }
 
 /// Operations with 2 Cell Index arguments
@@ -120,13 +118,6 @@ macro_rules! add_instr {
     (R $op:ident, $a:expr) => {
         // for register
         $crate::instruction::Instruction::AluUnaryCell($crate::instruction::UnaryOpCell::$op, $a)
-    };
-    (strarg $op:ident, $name:expr) => {
-        // for an io-path string (FileRead, FileWrite)
-        $crate::instruction::Instruction::AluUnaryString(
-            $crate::instruction::UnaryOpString::$op,
-            String::from($name),
-        )
     };
     ($op:ident, $a:expr, $b:expr) => {
         $crate::instruction::Instruction::AluBinary($crate::instruction::BinaryOp::$op, $a, $b)

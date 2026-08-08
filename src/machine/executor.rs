@@ -16,7 +16,7 @@ use crate::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::{Cell, CoreError, CoreMachine, Evaluate, Stack, reverse_index},
-    types::{self, CellIndex, Immediate, IoBuffer, ProgramData, Value},
+    types::{self, CellIndex, Immediate, ProgramData, Value},
 };
 use ExecutorError::*;
 use Value::*;
@@ -359,12 +359,6 @@ impl<Tag: TagTrait> Executor<Tag> {
                     Err(error) => todo!("For now, invalid input is a fatal error: {error}"),
                 }
             }
-            Input::File(_) => {
-                let mut data = self.machine.input.read_all();
-                let value = data.pop().ok_or(Core(CoreError::IoReadError))?;
-                self.machine.input = IoBuffer::new(data).into();
-                value
-            }
             Input::Buffer(buffer) => buffer
                 .borrow_mut()
                 .pop()
@@ -439,7 +433,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
                 match &mut self.machine.output {
                     types::Output::Stdout => print!("{value}"),
-                    types::Output::File(_) | types::Output::Buffer(_) => {
+                    types::Output::Buffer(_) => {
                         let immediate = value.into_immediate().map_err(|_| InvalidCell)?;
                         self.machine.output.write(&[immediate]);
                     }
@@ -474,7 +468,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         name: &str,
     ) -> ExecutorResult<(), Tag> {
         use UnaryOpString::*;
-        use types::{Input, Output};
 
         match instr {
             FunctionDefine => _ = self.machine.common_function_logic(name)?,
@@ -489,8 +482,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
             }
             FunctionCall => self.call_function(name)?,
             Downgrade => self.call_downgrader(name)?,
-            FileRead => self.machine.input = Input::from_path(name),
-            FileWrite => self.machine.output = Output::from_path(name),
         }
 
         Ok(())
