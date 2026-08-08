@@ -436,9 +436,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
     /// Calculates ccd(left, right).
     fn combine_tags(&self, left: Tag, right: Tag) -> Result<Tag, VerifierError<Tag>> {
-        self.policy
-            .ccd(left, right)
-            .map_err(VerifierError::Flow)
+        self.policy.ccd(left, right).map_err(VerifierError::Flow)
     }
 
     /// Tag applied to a function's collected arguments during analysis. Inside
@@ -846,10 +844,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
         match result? {
             (Some(return_value), Some(return_tag), _) => {
                 if return_tag != connection.source {
-                    return Err(VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
-                        found: return_tag,
-                        expected: connection.source,
-                    }));
+                    return Err(VerifierError::Flow(
+                        FlowError::DowngraderReturnTagMismatch {
+                            found: return_tag,
+                            expected: connection.source,
+                        },
+                    ));
                 }
                 self.push_existing(return_value, connection.target);
             }
@@ -1239,10 +1239,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                     .map(|(a, b)| {
                         Ok(Cell {
                             value: a.value.combine(b.value),
-                            tag: self
-                                .policy
-                                .ccd(a.tag, b.tag)
-                                .map_err(VerifierError::Flow)?,
+                            tag: self.policy.ccd(a.tag, b.tag).map_err(VerifierError::Flow)?,
                         })
                     })
                     .collect::<Result<Vec<_>, VerifierError<Tag>>>()?;

@@ -164,9 +164,7 @@ impl<Tag: TagTrait> Executor<Tag> {
 
     /// Calculates ccd(left, right)
     fn combine_tags(&self, left: Tag, right: Tag) -> ExecutorResult<Tag, Tag> {
-        self.policy
-            .ccd(left, right)
-            .map_err(Into::into)
+        self.policy.ccd(left, right).map_err(Into::into)
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.

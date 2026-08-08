@@ -55,13 +55,11 @@ mod tag_propagation {
 
         let confidentiality = Topology::linear([Public, Secret]);
         let integrity = Topology::linear([Low, High]);
-        let topology =
-            Topology::<DisjointTag<Confidentiality, Integrity>>::disjoint_union(
-                confidentiality,
-                integrity,
-            );
-        SecurityPolicy::new(topology, Right(Low), Right(Low), Right(High))
-            .unwrap()
+        let topology = Topology::<DisjointTag<Confidentiality, Integrity>>::disjoint_union(
+            confidentiality,
+            integrity,
+        );
+        SecurityPolicy::new(topology, Right(Low), Right(Low), Right(High)).unwrap()
     }
 
     test_program! {
@@ -152,7 +150,6 @@ mod tag_propagation {
             ExecutorError::Flow(FlowError::NoCommonDescendant { .. })
         },
     }
-
 }
 
 /// These tests check perimeter guards functionality.

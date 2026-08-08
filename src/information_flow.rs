@@ -644,10 +644,7 @@ mod tests {
                 (Separate, Private),
             ],
         );
-        assert!(matches!(
-            ambiguous,
-            Err(FlowError::AmbiguousCCD { .. })
-        ));
+        assert!(matches!(ambiguous, Err(FlowError::AmbiguousCCD { .. })));
     }
 
     #[test]
