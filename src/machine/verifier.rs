@@ -138,6 +138,17 @@ impl ValueSpan {
         }
     }
 
+    /// Exact interval model of bitwise `Not` for signed 64-bit values.
+    ///
+    /// [`Immediate`] is `i64`, for which `!x == -1 - x`. This is a strictly
+    /// decreasing bijection over the entire representable domain, so the image
+    /// of `[min, max]` is exactly `[!max, !min]`. Both endpoint complements are
+    /// always representable, including at `Immediate::MIN` and
+    /// `Immediate::MAX`.
+    fn not_span(self) -> Self {
+        Self::new(!self.max, !self.min)
+    }
+
     /// Interval model of `Add`: saturating on the raw bounds. `None` means
     /// two exact operands overflowed.
     fn add_span(self, other: Self) -> Option<Self> {
@@ -216,9 +227,6 @@ impl ValueSpan {
 
     /// Rejects a result that degenerated to unbounded even though both
     /// operands were exact values — the only overflow detectable today.
-    ///
-    /// FIXME: Make it so that overflows are checked for all not-infinite
-    /// value spans.
     fn check_overflow(a: Self, b: Self, result: Self) -> Option<Self> {
         if a.is_single_value() && b.is_single_value() && result.is_unbounded() {
             None
@@ -595,9 +603,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
         }
     }
 
-    /// Verifies the body of a `FunctionDefine`. The function (and any
-    /// consecutive aliases) is registered globally by `common_function_logic`
-    /// and its body is analyzed by [`analyze_definition_body`](Self::analyze_definition_body).
+    /// Verifies the body of a `FunctionDefine`. The function is registered
+    /// globally by `common_function_logic` and its body is analyzed by
+    /// [`analyze_definition_body`](Self::analyze_definition_body).
     fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
         if self.in_conditional_branch {
             return Err(ConditionalDefinition {
@@ -606,8 +614,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
         }
         self.ensure_not_nested(fun)?;
 
-        let (info, aliases) = self.analyze_definition_body(fun, false)?;
-        self.publish_function_facts(fun, aliases, info, false);
+        let info = self.analyze_definition_body(fun, false)?;
+        self.publish_function_facts(fun, info, false);
         Ok(())
     }
 
@@ -637,7 +645,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.current_downgrader = Some(connection);
         let analysis = self.analyze_definition_body(fun, true);
         self.current_downgrader = saved_downgrader;
-        let (mut info, aliases) = analysis?;
+        let mut info = analysis?;
 
         match info.return_tag {
             Some(tag) if tag == connection.source => info.return_tag = Some(connection.target),
@@ -652,7 +660,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
             None => {}
         }
 
-        self.publish_function_facts(fun, aliases, info, true);
+        self.publish_function_facts(fun, info, true);
         Ok(())
     }
 
@@ -673,18 +681,17 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// indices it reads from the caller's frame (see `ReadReverse` and
     /// `Rebase`), its return span, and its return tag. Partial facts are
     /// additionally published at the `Rebase` instruction so recursive calls
-    /// inside the body resolve. Returns the collected facts and any aliases
-    /// registered by consecutive `FunctionDefine`s.
+    /// inside the body resolve. Returns the collected facts.
     fn analyze_definition_body(
         &mut self,
         fun: &str,
         is_downgrader: bool,
-    ) -> Result<(FunctionFacts<Tag>, Vec<String>), VerifierError<Tag>> {
-        let aliases = if is_downgrader {
+    ) -> Result<FunctionFacts<Tag>, VerifierError<Tag>> {
+        if is_downgrader {
             self.machine.common_downgrader_logic(fun)?
         } else {
             self.machine.common_function_logic(fun)?
-        };
+        }
 
         // Shadowing is not permitted; compilers can generate unique function names.
         // Borrow the current instruction and clone only the block's `Rc` (a
@@ -719,21 +726,17 @@ impl<Tag: TagTrait> Verifier<Tag> {
         };
 
         run_result?;
-        Ok((
-            FunctionFacts {
-                args: in_progress.args,
-                return_value,
-                return_tag,
-            },
-            aliases,
-        ))
+        Ok(FunctionFacts {
+            args: in_progress.args,
+            return_value,
+            return_tag,
+        })
     }
 
-    /// Publishes a function's discovered facts under its name and all aliases.
+    /// Publishes a function's discovered facts under its name.
     fn publish_function_facts(
         &mut self,
         fun: &str,
-        aliases: Vec<String>,
         facts: FunctionFacts<Tag>,
         is_downgrader: bool,
     ) {
@@ -748,9 +751,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
         } else {
             &mut self.functions
         };
-        for alias in aliases {
-            destination.insert(alias, facts.clone());
-        }
         destination.insert(fun.to_string(), facts);
     }
 
@@ -1033,7 +1033,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         match instr {
             Not => {
                 let (val, tag) = self.read(arg)?;
-                let result = ValueSpan::new(!val.max, !val.min);
+                let result = val.not_span();
                 self.push_with_tag(result, tag)?;
             }
             Read => {
@@ -1130,7 +1130,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         let (b, tag_b) = self.read(arg2)?;
         let result_tag = self.combine_tags(tag_a, tag_b)?;
 
-        // TODO: Write tests for arithmetic overflow checks
         let calculated_value = match instr {
             Add => a.add_span(b).ok_or(ArithmeticOverflow)?,
             Mul => a.mul_span(b).ok_or(ArithmeticOverflow)?,

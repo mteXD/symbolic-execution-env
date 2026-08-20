@@ -468,7 +468,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         use UnaryOpString::*;
 
         match instr {
-            FunctionDefine => _ = self.machine.common_function_logic(name)?,
+            FunctionDefine => self.machine.common_function_logic(name)?,
             Downgrader => {
                 if self.policy.downgrader(name).is_none() {
                     return Err(FlowError::DowngraderUndefined {
@@ -476,7 +476,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                     }
                     .into());
                 }
-                _ = self.machine.common_downgrader_logic(name)?
+                self.machine.common_downgrader_logic(name)?
             }
             FunctionCall => self.call_function(name)?,
             Downgrade => self.call_downgrader(name)?,

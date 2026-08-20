@@ -170,6 +170,45 @@ test_program! {
 }
 
 test_program! {
+    /// [POSITIVE] Bitwise not maps the merged interval `[-2, 4]` exactly to
+    /// `[!4, !-2] == [-5, 1]`.
+    arith_bitwise_not_interval,
+    program: vec![
+        add_instr!(Input),
+        add_instr!(Push, 0),
+        add_instr!(CmpGreaterThan, 0, 1),
+        add_instr!(ifelse 2,
+            add_instr!(Push, -2),
+            add_instr!(Push, 4)
+        ),
+        add_instr!(R Not, 3),
+    ],
+    verifier: { stack [
+        ValueSpan::inf(),
+        0,
+        ValueSpan::new(0, 1),
+        ValueSpan::new(-2, 4),
+        ValueSpan::new(-5, 1),
+    ] },
+    executor: { cases {
+        input [1] => stack [1, 0, 1, -2, 1];
+        input [0] => stack [0, 0, 0, 4, -5]
+    } },
+}
+
+test_program! {
+    /// [POSITIVE] Bitwise not maps the full signed 64-bit input range back to
+    /// itself and exchanges its endpoints.
+    arith_bitwise_not_full_range,
+    program: vec![add_instr!(Input), add_instr!(R Not, 0)],
+    verifier: { stack [ValueSpan::inf(), ValueSpan::inf()] },
+    executor: { cases {
+        input [Immediate::MIN] => stack [Immediate::MIN, Immediate::MAX];
+        input [Immediate::MAX] => stack [Immediate::MAX, Immediate::MIN]
+    } },
+}
+
+test_program! {
     /// [POSITIVE] Tests Nop.
     arith_nop,
     program: vec![add_instr!(Nop)],
@@ -749,7 +788,7 @@ test_program! {
 }
 
 test_program! {
-    /// [POSITIVE] Multiple sequential function definitions count as aliases.
+    /// [NEGATIVE] A function definition cannot be another definition's body.
     functions_sequential_defs,
     program: vec![
         add_instr!(fun FunctionDefine, "push2_1"),
@@ -759,21 +798,8 @@ test_program! {
         add_instr!(fun FunctionCall, "push2_1"),
         add_instr!(fun FunctionCall, "push2_2"),
     ],
-    verifier: { stack [2, 2] },
-    executor: { stack [2, 2] },
-}
-
-test_program! {
-    /// [NEGATIVE] Calling the function being defined is obvious infinite recursion.
-    functions_sequential_defs_loop,
-    program: vec![
-        add_instr!(fun FunctionDefine, "push2_1"),
-        add_instr!(fun FunctionDefine, "push2_2"),
-        add_instr!(fun FunctionDefine, "push2_3"),
-        add_instr!(fun FunctionCall, "push2_1"),
-        add_instr!(fun FunctionCall, "push2_1"),
-    ],
-    verifier_only: { error VerifierError::InfiniteRecursion { function: f } if f == "push2_1" },
+    verifier: { error VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody(name))) if name == "push2_1" },
+    executor: { error ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody(name))) if name == "push2_1" },
 }
 
 test_program! {

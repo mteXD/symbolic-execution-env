@@ -77,16 +77,15 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         Ok(())
     }
 
-    /// Registers the *current* instruction as the body of `function_name`,
-    /// consuming any immediately following `FunctionDefine`s as aliases of it.
-    /// Returns the alias names. A definition at the end of the program has no
-    /// body and returns `FunctionMissingBody`.
-    pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
+    /// Registers the instruction immediately following a `FunctionDefine` as
+    /// the body of `function_name`. A consecutive `FunctionDefine` or a
+    /// definition at the end of the program returns `FunctionMissingBody`.
+    pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<()> {
         self.common_definition_logic(function_name, false)
     }
 
     /// Registers a downgrader separately from ordinary function data.
-    pub fn common_downgrader_logic(&mut self, function_name: &str) -> CoreResult<Vec<String>> {
+    pub fn common_downgrader_logic(&mut self, function_name: &str) -> CoreResult<()> {
         self.common_definition_logic(function_name, true)
     }
 
@@ -94,24 +93,17 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         &mut self,
         function_name: &str,
         is_downgrader: bool,
-    ) -> CoreResult<Vec<String>> {
+    ) -> CoreResult<()> {
         use Instruction::AluUnaryString;
         use UnaryOpString::FunctionDefine;
 
-        let mut aliases = Vec::new();
-
-        while let Some(AluUnaryString(FunctionDefine, name)) = self.next() {
-            debug!("Found consecutive definition: '{}'", name);
-            aliases.push(name);
-        }
-
-        let current = match self.program_data.get_current() {
-            Ok(current) => current,
-            Err(ProgramDataError::InvalidPC { .. }) => {
+        let current = match self.next() {
+            Some(AluUnaryString(FunctionDefine, _)) | None => {
                 return Err(
                     FunctionDataError::FunctionMissingBody(function_name.to_owned()).into(),
                 );
             }
+            Some(current) => current,
         };
 
         if !matches!(current, Instruction::Block(_)) {
@@ -124,20 +116,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         let function_name = function_name.to_owned();
         debug!("Function '{}' will point to {:?}", function_name, current);
         if is_downgrader {
-            self.downgrader_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
+            self.downgrader_insert(function_name, FdEntry::Inst(current))?;
         } else {
-            self.function_insert(function_name.clone(), FdEntry::Inst(current.to_owned()))?;
+            self.function_insert(function_name, FdEntry::Inst(current))?;
         }
 
-        for alias in &aliases {
-            if is_downgrader {
-                self.downgrader_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
-            } else {
-                self.function_insert(alias.clone(), FdEntry::Str(function_name.clone()))?;
-            }
-        }
-
-        Ok(aliases)
+        Ok(())
     }
 }
 
