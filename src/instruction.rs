@@ -2,13 +2,12 @@
 
 use std::rc::Rc;
 
-use crate::types::{CellIndex, Immediate};
+use crate::types::{CellAmount, CellIndex, Immediate};
 
 /// Operations with 0 arguments
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NullaryOp {
     Nop,
-    Rebase,
     Input,
 }
 
@@ -75,13 +74,18 @@ pub enum BinaryOp {
 /// Instruction type for the virtual machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<Tag = ()> {
-    AluNullary(NullaryOp),
-    AluUnaryImm(UnaryOpImm<Tag>, Immediate),
-    AluUnaryCell(UnaryOpCell, CellIndex),
-    AluUnaryCellAmnt(UnaryOpCellAmnt, CellIndex),
-    AluUnaryString(UnaryOpString, String),
-    AluBinary(BinaryOp, CellIndex, CellIndex),
-    Block(Rc<[Instruction<Tag>]>),
+    Nullary(NullaryOp),
+    UnaryImm(UnaryOpImm<Tag>, Immediate),
+    UnaryCell(UnaryOpCell, CellIndex),
+    UnaryCellAmnt(UnaryOpCellAmnt, CellAmount),
+    UnaryString(UnaryOpString, String),
+    Binary(BinaryOp, CellIndex, CellIndex),
+    /// A structured block and its argument count.
+    ///
+    /// The count clones that many cells from the top of the caller's stack,
+    /// preserves their original order, and isolates the body from the caller.
+    /// The block collapses to the body's top cell when it returns.
+    Block(CellAmount, Rc<[Instruction<Tag>]>),
     IfElse(CellIndex, Rc<Instruction<Tag>>, Rc<Instruction<Tag>>),
 }
 
@@ -93,14 +97,14 @@ pub enum Instruction<Tag = ()> {
 #[macro_export]
 macro_rules! add_instr {
     ($op:ident) => {
-        $crate::instruction::Instruction::AluNullary($crate::instruction::NullaryOp::$op)
+        $crate::instruction::Instruction::Nullary($crate::instruction::NullaryOp::$op)
     };
     ($op:ident, $a:expr) => {
         // for immediate
-        $crate::instruction::Instruction::AluUnaryImm($crate::instruction::UnaryOpImm::$op, $a)
+        $crate::instruction::Instruction::UnaryImm($crate::instruction::UnaryOpImm::$op, $a)
     };
     (tag Push, $value:expr, $tag:expr) => {
-        $crate::instruction::Instruction::AluUnaryImm(
+        $crate::instruction::Instruction::UnaryImm(
             $crate::instruction::UnaryOpImm::TaggedPush($tag),
             $value,
         )
@@ -108,22 +112,22 @@ macro_rules! add_instr {
     (R Pop, $a:expr) => {
         // for a cell amount (e.g. how many cells to pop); must precede the
         // generic `R` arm below since `Pop` also matches `$op:ident`.
-        $crate::instruction::Instruction::AluUnaryCellAmnt(
+        $crate::instruction::Instruction::UnaryCellAmnt(
             $crate::instruction::UnaryOpCellAmnt::Pop,
             $a,
         )
     };
     (R $op:ident, $a:expr) => {
         // for register
-        $crate::instruction::Instruction::AluUnaryCell($crate::instruction::UnaryOpCell::$op, $a)
+        $crate::instruction::Instruction::UnaryCell($crate::instruction::UnaryOpCell::$op, $a)
     };
     ($op:ident, $a:expr, $b:expr) => {
-        $crate::instruction::Instruction::AluBinary($crate::instruction::BinaryOp::$op, $a, $b)
+        $crate::instruction::Instruction::Binary($crate::instruction::BinaryOp::$op, $a, $b)
     };
     (fun $op:ident, $name:expr) => {
         // for a function-name string (FunctionDefine, FunctionCall, Downgrader,
         // Downgrade)
-        $crate::instruction::Instruction::AluUnaryString(
+        $crate::instruction::Instruction::UnaryString(
             $crate::instruction::UnaryOpString::$op,
             String::from($name),
         )
@@ -137,10 +141,17 @@ macro_rules! add_instr {
     };
 }
 
-/// Builds an [`Instruction::Block`] from one or more instruction expressions.
+/// Builds an [`Instruction::Block`] with an explicit argument count.
+///
+/// The first expression is the number of caller cells cloned into the isolated
+/// block. The instruction list may be empty, although both runners reject an
+/// empty block when processing it.
 #[macro_export]
 macro_rules! make_block {
-    ($($instr:expr),*  $(,)?) => { // Variadic arguments, at least one
-        $crate::instruction::Instruction::Block(std::rc::Rc::from(vec![ $( $instr ),* ]))
+    ($argument_count:expr $(, $instr:expr)* $(,)?) => {
+        $crate::instruction::Instruction::Block(
+            $argument_count,
+            std::rc::Rc::from(vec![ $( $instr ),* ]),
+        )
     };
 }

@@ -11,6 +11,8 @@ use log::error;
 use crate::instruction::Instruction;
 
 pub type CellIndex = u16;
+/// Number of cells operated on by an instruction.
+pub type CellAmount = u16;
 pub type Immediate = i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]

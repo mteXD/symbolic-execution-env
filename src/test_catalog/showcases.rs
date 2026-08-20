@@ -94,13 +94,11 @@ test_program! {
     factorial,
     program: vec![
         add_instr!(fun FunctionDefine, "factorial"),
-        make_block!(
-            add_instr!(R ReadReverse, 0), // n
-            add_instr!(Rebase),
+        make_block!(1,
             add_instr!(Push, 1),              // 1
             add_instr!(CmpGreaterThan, 0, 1), // n > 1
             add_instr!(ifelse 2, // if n <= 1, skip to return
-                make_block!(
+                make_block!(3,
                     add_instr!(Push, -1),
                     add_instr!(Add, 0, 3), // n - 1
                     add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
@@ -130,10 +128,8 @@ test_program! {
     factorial_alt,
     program: vec![
         add_instr!(fun FunctionDefine, "factorial"),
-        make_block!(
-            add_instr!(R Read, 1),
-            add_instr!(Rebase),
-            make_block!(
+        make_block!(1,
+            make_block!(1,
                 // argument of next function call
                 add_instr!(Push, -1), // Push -1
                 add_instr!(Add, 0, 1) // n - 1
@@ -141,9 +137,10 @@ test_program! {
             add_instr!(Push, 1),
             add_instr!(CmpGreaterThan, 0, 2),
             add_instr!(ifelse 3, // if n <= 1, skip to return
-                make_block!(
+                make_block!(4,
+                    add_instr!(R Read, 1), // copy n - 1 to the call suffix
                     add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
-                    add_instr!(Mul, 0, 4)                      // n * factorial(n - 1)
+                    add_instr!(Mul, 0, 5)                      // n * factorial(n - 1)
                 ),
                 add_instr!(Push, 1)
             )
@@ -170,13 +167,11 @@ test_program! {
     fibonacci,
     program: vec![
         add_instr!(fun FunctionDefine, "fibonacci"),
-        make_block!(
-            add_instr!(R ReadReverse, 0), // n
-            add_instr!(Rebase),
+        make_block!(1,
             add_instr!(Push, 1),              // 2
             add_instr!(CmpGreaterThan, 0, 1), // n > 2
             add_instr!(ifelse 2, // if n <= 1, skip to return
-                make_block!(
+                make_block!(3,
                     add_instr!(Push, -1),
                     add_instr!(Add, 0, 3), // n - 1
                     add_instr!(fun FunctionCall, "fibonacci"), // fibonacci(n - 1)
@@ -212,15 +207,12 @@ test_program! {
         // `remaining - (remaining / 10) * 10` because the VM has no remainder
         // instruction.
         add_instr!(fun FunctionDefine, "reverse_digits"),
-        make_block!(
-            add_instr!(R ReadReverse, 1), // remaining
-            add_instr!(R ReadReverse, 1), // reversed
-            add_instr!(Rebase),
+        make_block!(2,
             add_instr!(Push, 0),
             add_instr!(CmpEqual, 0, 2), // remaining == 0
             add_instr!(ifelse 3,
                 add_instr!(R Read, 1), // return reversed
-                make_block!(
+                make_block!(4,
                     add_instr!(Push, 10),
                     add_instr!(Div, 0, 4), // quotient = remaining / 10
                     add_instr!(Mul, 5, 4), // quotient * 10
@@ -238,14 +230,12 @@ test_program! {
         // is_palindrome(x) rejects negative values, reverses non-negative x,
         // and compares the result with the original input.
         add_instr!(fun FunctionDefine, "is_palindrome"),
-        make_block!(
-            add_instr!(R ReadReverse, 0), // x
-            add_instr!(Rebase),
+        make_block!(1,
             add_instr!(Push, 0),
             add_instr!(CmpLessThan, 0, 1), // x < 0
             add_instr!(ifelse 2,
                 add_instr!(Push, 0),
-                make_block!(
+                make_block!(3,
                     add_instr!(R Read, 0), // remaining
                     add_instr!(Push, 0),   // reversed
                     add_instr!(fun FunctionCall, "reverse_digits"),
@@ -279,15 +269,12 @@ test_program! {
     euclidean_gcd,
     program: vec![
         add_instr!(fun FunctionDefine, "gcd"),
-        make_block!(
-            add_instr!(R ReadReverse, 1), // cell 0: current first operand
-            add_instr!(R ReadReverse, 1), // cell 1: current second operand
-            add_instr!(Rebase),           // cells 0-1: function arguments
+        make_block!(2,
             add_instr!(Push, 0),          // cell 2: zero constant
             add_instr!(CmpEqual, 1, 2),   // cell 3: second operand == 0
             add_instr!(ifelse 3,
                 add_instr!(R Read, 0), // cell 4: return first operand
-                make_block!(
+                make_block!(4,
                     add_instr!(Div, 0, 1), // cell 4: quotient
                     add_instr!(Mul, 4, 1), // cell 5: quotient * divisor
                     add_instr!(Push, -1), // cell 6: negation constant
@@ -326,15 +313,12 @@ test_program! {
     exponentiation_by_squaring,
     program: vec![
         add_instr!(fun FunctionDefine, "power"),
-        make_block!(
-            add_instr!(R ReadReverse, 1), // cell 0: base
-            add_instr!(R ReadReverse, 1), // cell 1: exponent
-            add_instr!(Rebase),           // cells 0-1: function arguments
+        make_block!(2,
             add_instr!(Push, 0),          // cell 2: zero constant
             add_instr!(CmpEqual, 1, 2),   // cell 3: exponent == 0
             add_instr!(ifelse 3,
                 add_instr!(Push, 1), // cell 4: base-case result
-                make_block!(
+                make_block!(4,
                     add_instr!(Push, 2), // cell 4: divisor
                     add_instr!(Div, 1, 4), // cell 5: half-exponent
                     add_instr!(R Read, 0), // cell 6: recursive base argument
@@ -379,14 +363,12 @@ test_program! {
     population_count,
     program: vec![
         add_instr!(fun FunctionDefine, "popcount"),
-        make_block!(
-            add_instr!(R ReadReverse, 0), // cell 0: remaining bits
-            add_instr!(Rebase),           // cell 0: function argument
+        make_block!(1,
             add_instr!(Push, 0),          // cell 1: zero constant
             add_instr!(CmpEqual, 0, 1),   // cell 2: remaining bits == 0
             add_instr!(ifelse 2,
                 add_instr!(Push, 0), // cell 3: base-case count
-                make_block!(
+                make_block!(3,
                     add_instr!(Push, 1), // cell 3: mask and shift amount
                     add_instr!(And, 0, 3), // cell 4: low bit
                     add_instr!(ShiftRightLogical, 0, 3), // cell 5: remaining bits
@@ -421,15 +403,12 @@ test_program! {
     primality_test,
     program: vec![
         add_instr!(fun FunctionDefine, "is_prime_trial"),
-        make_block!(
-            add_instr!(R ReadReverse, 1), // cell 0: number
-            add_instr!(R ReadReverse, 1), // cell 1: candidate divisor
-            add_instr!(Rebase),           // cells 0-1: function arguments
+        make_block!(2,
             add_instr!(Div, 0, 1),        // cell 2: number / divisor
             add_instr!(CmpGreaterThan, 1, 2), // cell 3: divisor > quotient
             add_instr!(ifelse 3,
                 add_instr!(Push, 1), // cell 4: no divisor remains
-                make_block!(
+                make_block!(4,
                     add_instr!(Mul, 2, 1), // cell 4: quotient * divisor
                     add_instr!(Push, -1), // cell 5: negation constant
                     add_instr!(Mul, 4, 5), // cell 6: negated product
@@ -438,7 +417,7 @@ test_program! {
                     add_instr!(CmpEqual, 7, 8), // cell 9: divisible
                     add_instr!(ifelse 9,
                         add_instr!(Push, 0), // cell 10: composite result
-                        make_block!(
+                        make_block!(10,
                             add_instr!(Push, 1), // cell 10: increment constant
                             add_instr!(Add, 1, 10), // cell 11: next divisor
                             add_instr!(R Read, 0), // cell 12: recursive number argument
@@ -450,14 +429,12 @@ test_program! {
             )
         ),
         add_instr!(fun FunctionDefine, "is_prime"),
-        make_block!(
-            add_instr!(R ReadReverse, 0), // cell 0: number
-            add_instr!(Rebase),           // cell 0: function argument
+        make_block!(1,
             add_instr!(Push, 2),          // cell 1: minimum prime/divisor
             add_instr!(CmpLessThan, 0, 1), // cell 2: number < 2
             add_instr!(ifelse 2,
                 add_instr!(Push, 0), // cell 3: below-two result
-                make_block!(
+                make_block!(3,
                     add_instr!(R Read, 0), // cell 3: trial number argument
                     add_instr!(Push, 2), // cell 4: initial divisor argument
                     add_instr!(fun FunctionCall, "is_prime_trial") // cell 5: result

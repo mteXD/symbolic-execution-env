@@ -521,10 +521,10 @@ fn validate_instruction_tags<Tag: TagTrait>(
     policy: &SecurityPolicy<Tag>,
 ) -> Result<(), FlowError<Tag>> {
     match instruction {
-        Instruction::AluUnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
+        Instruction::UnaryImm(UnaryOpImm::TaggedPush(tag), _) => {
             policy.validate_tag(*tag)?;
         }
-        Instruction::Block(body) => validate_program_tags(body, policy)?,
+        Instruction::Block(_, body) => validate_program_tags(body, policy)?,
         Instruction::IfElse(_, when_true, when_false) => {
             validate_instruction_tags(when_true, policy)?;
             validate_instruction_tags(when_false, policy)?;

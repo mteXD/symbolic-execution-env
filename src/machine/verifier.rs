@@ -16,7 +16,9 @@ use crate::{
         CoreError::{self},
         CoreMachine, Evaluate, Stack, reverse_index,
     },
-    types::{self, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError},
+    types::{
+        self, CellAmount, CellIndex, FunctionDataError, Immediate, ProgramData, ProgramDataError,
+    },
 };
 use VerifierError::*;
 use log::{debug, trace, warn};
@@ -31,10 +33,6 @@ pub enum VerifierError<Tag: TagTrait = ()> {
     },
     ArithmeticOverflow,
     DivisionByZero,
-    NotEnoughArguments {
-        required: CellIndex,
-        available: usize,
-    },
     UnsafeCondPlacement,
     DebugError(&'static str),
     CondUnequalStackSizes {
@@ -315,44 +313,20 @@ impl Add<Immediate> for ValueSpan {
     }
 }
 
-/// An index a function reads from its caller's frame while collecting
-/// arguments. `Normal` indexes count from the bottom of the stack (as used by
-/// `Read`, `Not`, `Add`, ...); `Reverse` indexes count from the top (as used
-/// by `ReadReverse`). Both record an index that must resolve to an existing
-/// cell in the caller's stack when the function is invoked.
-#[derive(Debug, Clone, Copy)]
-enum MemorizedIndex {
-    Normal(CellIndex),
-    Reverse(CellIndex),
-}
-
-impl MemorizedIndex {
-    /// Minimum number of cells the caller must provide for this index to
-    /// resolve to an existing cell.
-    fn required_depth(self) -> usize {
-        match self {
-            MemorizedIndex::Normal(i) | MemorizedIndex::Reverse(i) => usize::from(i) + 1,
-        }
-    }
-}
-
-/// Argument-collection state for the definition body currently under
-/// analysis. `collecting_args` is true until the body's `Rebase` closes the
-/// collection window.
+/// Definition currently under analysis. The name is retained for nested
+/// definition rejection and direct-recursion classification; block arity is
+/// declared explicitly and therefore needs no read-based discovery state.
 #[derive(Debug, Clone)]
 struct DefinitionInProgress {
     name: String,
-    is_downgrader: bool,
-    args: Vec<MemorizedIndex>,
-    collecting_args: bool,
 }
 
-/// What the verifier knows about a defined function: the caller-frame indices
-/// its body reads as arguments, and its return span/tag. A downgrader's
-/// return tag is the connection `target` (recorded at definition time).
+/// What the verifier knows about a defined function: its declared arity and
+/// return span/tag. A downgrader's return tag is the connection `target`
+/// (recorded at definition time).
 #[derive(Debug, Clone)]
 struct FunctionFacts<Tag: TagTrait = ()> {
-    args: Vec<MemorizedIndex>,
+    argument_count: usize,
     return_value: Option<ValueSpan>,
     return_tag: Option<Tag>,
 }
@@ -363,7 +337,7 @@ pub struct Verifier<Tag: TagTrait = ()> {
     stack: Stack<ValueSpan, Tag>,
     policy: SecurityPolicy<Tag>,
     pc_tag: Tag,
-    /// Argument-collection state while a definition body is being analyzed.
+    /// Identity of the definition body currently being analyzed.
     defining: Option<DefinitionInProgress>,
     /// Facts discovered about each defined ordinary function, by name and alias.
     functions: HashMap<String, FunctionFacts<Tag>>,
@@ -447,7 +421,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.policy.ccd(left, right).map_err(VerifierError::Flow)
     }
 
-    /// Tag applied to a function's collected arguments during analysis. Inside
+    /// Tag applied to a function's synthetic declared arguments during analysis. Inside
     /// a downgrader this is the connection's `source`, so the computed result
     /// matches `source` and passes the implicit-retag source check. Otherwise
     /// it is the policy default (non-downgrader functions are unaffected).
@@ -478,7 +452,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
                 .program_data
                 .get_current()
                 .cloned()
-                .unwrap_or(Instruction::AluNullary(NullaryOp::Nop)),
+                .unwrap_or(Instruction::Nullary(NullaryOp::Nop)),
             cell_index: idx,
         })
     }
@@ -525,23 +499,43 @@ impl<Tag: TagTrait> Verifier<Tag> {
         Ok(())
     }
 
-    /// Low-level nested run: scopes the value/tag cells (via the stack's
-    /// `Block` frame) and `program_data`.
+    /// Runs a counted block while scoping its value/tag cells and program data.
     /// Returns `(last_value, last_tag, body_stack_size)`.
     ///
     /// `defining` and `functions` are NOT scoped here; callers that need that
     /// (e.g. `evaluate_block`) save and restore them around the call.
     fn run_nested(
         &mut self,
+        argument_count: CellAmount,
         instrs: Rc<[Instruction<Tag>]>,
     ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
-        let saved_base = self.stack.enter_block();
+        self.stack.enter_block(argument_count)?;
+        self.run_entered_block(instrs)
+    }
+
+    /// Runs a block using synthetic argument cells. Definition analysis uses
+    /// this path because its declared parameters have no concrete caller yet.
+    fn run_nested_with_arguments(
+        &mut self,
+        arguments: Vec<Cell<ValueSpan, Tag>>,
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
+        self.stack.enter_block_with_arguments(arguments);
+        self.run_entered_block(instrs)
+    }
+
+    /// Completes a block whose stack frame has already been entered. Cleanup is
+    /// unconditional so an abstract-execution error cannot leak scoped state.
+    fn run_entered_block(
+        &mut self,
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let (last, body_size) = self.stack.exit_block(saved_base);
+        let (last, body_size) = self.stack.exit_block();
         let (last_value, last_tag) = match last {
             Some(slot) => (Some(slot.value), Some(slot.tag)),
             None => (None, None),
@@ -552,11 +546,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Verifies a single ifelse-branch instruction on the parent stack. Cells
-    /// are mutated in place, while definitions are rejected as conditional.
-    /// `Rebase` is forbidden inside the branch via the `IfElseBranch` marker.
-    ///
-    /// Known bug (pinned by an ignored test): argument reads recorded inside
-    /// the branch are rolled back with `defining` and thus forgotten.
+    /// are mutated in place, while definitions are rejected as conditional. A
+    /// branch instruction that is a block applies its own declared semantics.
     ///
     /// The `condition_tag` is combined with the current `pc_tag` so that all
     /// values pushed inside the branch carry the condition's taint.
@@ -574,12 +565,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.in_conditional_branch = true;
         self.in_uncertain_branch = saved_in_uncertain || !condition_is_known;
 
-        // The IfElseBranch frame makes pops transparent to enclosing blocks and
-        // forbids `Rebase` inside a branch. Cells (value and tag) are merged
-        // across the two branches by evaluate_ifelse.
-        self.stack.enter_ifelse_branch();
         let exec_result = self.evaluate_instruction(instr);
-        self.stack.exit_ifelse_branch();
 
         self.pc_tag = saved_pc_tag;
         self.defining = saved_defining;
@@ -587,20 +573,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.in_uncertain_branch = saved_in_uncertain;
 
         exec_result
-    }
-
-    /// True while a definition body is being analyzed and its `Rebase` has not
-    /// yet closed the argument-collection window.
-    fn is_collecting_args(&self) -> bool {
-        self.defining.as_ref().is_some_and(|d| d.collecting_args)
-    }
-
-    /// Records an out-of-scope read performed while collecting a function's
-    /// arguments. No-op when not currently defining.
-    fn record_arg(&mut self, index: MemorizedIndex) {
-        if let Some(defining) = self.defining.as_mut() {
-            defining.args.push(index);
-        }
     }
 
     /// Verifies the body of a `FunctionDefine`. The function is registered
@@ -620,7 +592,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Verifies a `Downgrader` definition: analyzes the body with the
-    /// connection `source` applied to its collected arguments, then performs
+    /// connection `source` applied to its declared arguments, then performs
     /// the definition-time implicit retag — the return tag must match `source`
     /// and is recorded as `target`, so call sites publish the downgraded tag.
     fn verify_downgrader_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
@@ -677,11 +649,10 @@ impl<Tag: TagTrait> Verifier<Tag> {
         Ok(())
     }
 
-    /// Analyzes a definition body in a scoped stack, collecting the argument
-    /// indices it reads from the caller's frame (see `ReadReverse` and
-    /// `Rebase`), its return span, and its return tag. Partial facts are
-    /// additionally published at the `Rebase` instruction so recursive calls
-    /// inside the body resolve. Returns the collected facts.
+    /// Analyzes a definition body in an isolated stack initialized with one
+    /// unbounded cell per declared argument. Partial arity facts are published
+    /// before body analysis so recursive calls can resolve without a marker
+    /// instruction inside the body.
     fn analyze_definition_body(
         &mut self,
         fun: &str,
@@ -693,29 +664,43 @@ impl<Tag: TagTrait> Verifier<Tag> {
             self.machine.common_function_logic(fun)?
         }
 
-        // Shadowing is not permitted; compilers can generate unique function names.
-        // Borrow the current instruction and clone only the block's `Rc` (a
-        // cheap pointer bump) rather than deep-cloning the instruction tree.
-        let to_check = match self.machine.program_data.get_current()? {
-            Instruction::Block(inner) => Rc::clone(inner),
-            instr => {
-                Rc::new([instr.clone()]) // Not expensive
+        let (argument_count, to_check) = match self.machine.program_data.get_current()? {
+            Instruction::Block(argument_count, inner) => {
+                (usize::from(*argument_count), Rc::clone(inner))
+            }
+            _ => {
+                return Err(CoreError::InvalidDefinitionBody {
+                    name: fun.to_owned(),
+                }
+                .into());
             }
         };
+        if to_check.is_empty() {
+            return Err(EmptyBlock);
+        }
 
-        // Scope only the argument-collection state. `functions` (the
-        // discovered facts) must persist so callers and recursive calls see it.
+        let partial = FunctionFacts {
+            argument_count,
+            return_value: None,
+            return_tag: None,
+        };
+        if is_downgrader {
+            self.downgraders.insert(fun.to_owned(), partial);
+        } else {
+            self.functions.insert(fun.to_owned(), partial);
+        }
+
         let saved_defining = self.defining.replace(DefinitionInProgress {
             name: fun.to_owned(),
-            is_downgrader,
-            args: Vec::new(),
-            collecting_args: true,
         });
 
-        let run_result = self.run_nested(to_check);
+        let argument_tag = self.combine_tags(self.arg_tag(), self.pc_tag)?;
+        let arguments = (0..argument_count)
+            .map(|_| Cell::new(ValueSpan::inf(), argument_tag))
+            .collect();
+        let run_result = self.run_nested_with_arguments(arguments, to_check);
 
-        let in_progress = self
-            .defining
+        self.defining
             .take()
             .expect("definition analysis state must still be present");
         self.defining = saved_defining;
@@ -727,7 +712,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         run_result?;
         Ok(FunctionFacts {
-            args: in_progress.args,
+            argument_count,
             return_value,
             return_tag,
         })
@@ -742,8 +727,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
     ) {
         trace!("Finished verifying function definition for '{}'", fun);
         trace!(
-            "Discovered argument indices for '{}': {:?}",
-            fun, facts.args
+            "Declared argument count for '{}': {}",
+            fun, facts.argument_count
         );
 
         let destination = if is_downgrader {
@@ -771,7 +756,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
                 self.functions
                     .entry(function_name.to_owned())
                     .or_insert_with(|| FunctionFacts {
-                        args: Vec::new(),
+                        argument_count: 0,
                         return_value: None,
                         return_tag: None,
                     });
@@ -784,7 +769,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         self.machine.function_get(function_name)?;
 
-        let (return_value, return_tag) = self.callee_return(function_name, true, false)?;
+        let (return_value, return_tag) = self.callee_return(function_name)?;
         self.push_existing(return_value, return_tag);
         Ok(())
     }
@@ -825,75 +810,61 @@ impl<Tag: TagTrait> Verifier<Tag> {
             ));
         }
 
-        // Re-execute the body with the actual caller argument tags. Downgraders
-        // cannot call functions or other downgraders, so there is no recursion
-        // risk. `defining` is temporarily taken so `is_collecting_args()` is
-        // false, letting `ReadReverse` read real caller cells instead of
-        // synthesising source-tagged placeholders.
+        // Re-execute the body with the actual top caller suffix. The counted
+        // block clones values and tags together before isolating the body.
         let body_instr = self.machine.downgrader_get(function_name)?.clone();
-        let body = match &body_instr {
-            Instruction::Block(inner) => Rc::clone(inner),
-            _ => Rc::new([body_instr.clone()]),
+        let (argument_count, body) = match body_instr {
+            Instruction::Block(argument_count @ 0.., inner) => (argument_count, inner),
+            _ => {
+                return Err(CoreError::InvalidDefinitionBody {
+                    name: function_name.to_owned(),
+                }
+                .into());
+            }
         };
+        if body.is_empty() {
+            return Err(EmptyBlock);
+        }
 
         let saved_defining = self.defining.take();
-        let result = self.run_nested(body);
+        let result = self.run_nested(argument_count, body);
         self.defining = saved_defining;
 
         let connection = downgrader.connection;
-        match result? {
-            (Some(return_value), Some(return_tag), _) => {
-                if return_tag != connection.source {
-                    return Err(VerifierError::Flow(
-                        FlowError::DowngraderReturnTagMismatch {
-                            found: return_tag,
-                            expected: connection.source,
-                        },
-                    ));
-                }
-                self.push_existing(return_value, connection.target);
+        if let (Some(return_value), Some(return_tag), _) = result? {
+            if return_tag != connection.source {
+                return Err(VerifierError::Flow(
+                    FlowError::DowngraderReturnTagMismatch {
+                        found: return_tag,
+                        expected: connection.source,
+                    },
+                ));
             }
-            _ => {}
+            self.push_existing(return_value, connection.target);
         }
         Ok(())
     }
 
-    /// Looks up the callee's discovered facts, checks that every argument
-    /// index it reads resolves to an existing caller cell, and returns its
-    /// recorded return span/tag (defaults: unbounded span, default tag).
-    fn callee_return(
-        &self,
-        function_name: &str,
-        propagate_argument_tags: bool,
-        is_downgrader: bool,
-    ) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
+    /// Looks up the callee's facts, checks its declared arity against the caller
+    /// stack, and returns its recorded return span/tag (defaults: unbounded
+    /// span, default tag).
+    fn callee_return(&self, function_name: &str) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
         use FunctionDataError::FunctionUndefined;
 
-        let facts_by_name = if is_downgrader {
-            &self.downgraders
-        } else {
-            &self.functions
-        };
-        let facts = facts_by_name
+        let facts = self
+            .functions
             .get(function_name)
             .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?;
 
         trace!("Function facts for '{}': {:#?}", function_name, facts);
 
-        // Every index the function reads as an argument must resolve to an
-        // existing cell in the caller's current stack.
         let stack_len = self.stack.len();
-        let deepest_missing = facts
-            .args
-            .iter()
-            .map(|index| index.required_depth())
-            .filter(|depth| *depth > stack_len)
-            .max();
-        if let Some(required) = deepest_missing {
-            return Err(NotEnoughArguments {
-                required: required.try_into().unwrap_or(CellIndex::MAX),
+        if facts.argument_count > stack_len {
+            return Err(CoreError::NotEnoughArguments {
+                required: facts.argument_count,
                 available: stack_len,
-            });
+            }
+            .into());
         }
 
         let return_value = facts.return_value.unwrap_or_else(ValueSpan::inf);
@@ -901,46 +872,26 @@ impl<Tag: TagTrait> Verifier<Tag> {
             .return_tag
             .unwrap_or_else(|| self.policy.default_tag());
 
-        // Definition analysis uses synthetic argument values and therefore
-        // cannot cache their caller-specific tags. At an ordinary call site,
-        // conservatively join the tags of every caller cell read by the
-        // function into its cached return tag. This preserves information-flow
-        // safety without changing the explicitly approved target of a
-        // downgrader call.
-        if propagate_argument_tags {
-            for argument in &facts.args {
-                let index = match *argument {
-                    MemorizedIndex::Normal(index) => usize::from(index),
-                    MemorizedIndex::Reverse(index) => usize::from(
-                        reverse_index(stack_len, index).expect("argument depth was checked above"),
-                    ),
-                };
-                let argument_tag = self
-                    .stack
-                    .tag_at(index)
-                    .expect("argument depth was checked above");
-                return_tag = self.combine_tags(return_tag, argument_tag)?;
-            }
+        // Definition analysis uses synthetic argument tags. At an ordinary call
+        // site, conservatively join every declared caller argument into the
+        // cached return tag.
+        for index in stack_len - facts.argument_count..stack_len {
+            let argument_tag = self
+                .stack
+                .tag_at(index)
+                .expect("argument depth was checked above");
+            return_tag = self.combine_tags(return_tag, argument_tag)?;
         }
         debug!(
-            "callee_return: function={function_name:?}, caller_stack_tags={:?}, recorded_args={:?}, cached_return_tag={return_tag:?}",
+            "callee_return: function={function_name:?}, caller_stack_tags={:?}, argument_count={}, cached_return_tag={return_tag:?}",
             self.stack.tags(),
-            facts.args,
+            facts.argument_count,
         );
         Ok((return_value, return_tag))
     }
 
-    /// Reads a cell's value and tag. While collecting a function's arguments
-    /// an out-of-scope read is recorded as a `Normal` argument index and
-    /// yields an unbounded span (with the argument tag) instead of erroring.
+    /// Reads a cell's value and tag from the currently visible stack.
     pub fn read(&mut self, idx: CellIndex) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
-        // A read outside the function's own loaded cells (`[base, len)`) reads
-        // a caller-supplied argument rather than function-local data.
-        let reads_argument = !(self.stack.base()..self.stack.len()).contains(&usize::from(idx));
-        if self.is_collecting_args() && reads_argument {
-            self.record_arg(MemorizedIndex::Normal(idx));
-            return Ok((ValueSpan::inf(), self.arg_tag()));
-        }
         let value = self.stack.value_at(idx.into()).ok_or(InvalidCell {
             instr: self.machine.program_data.get_current()?.clone(),
             cell_index: idx,
@@ -978,28 +929,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
 
         match instr {
             Nop => (),
-            Rebase => {
-                self.stack.rebase()?;
-                // Crossing `Rebase` ends argument collection: freeze the
-                // arguments discovered so far and publish partial facts so
-                // recursive calls inside the body resolve.
-                if let Some(defining) = self.defining.as_mut()
-                    && defining.collecting_args
-                {
-                    defining.collecting_args = false;
-                    let partial = FunctionFacts {
-                        args: defining.args.clone(),
-                        return_value: None,
-                        return_tag: None,
-                    };
-                    let name = defining.name.clone();
-                    if defining.is_downgrader {
-                        self.downgraders.insert(name, partial);
-                    } else {
-                        self.functions.insert(name, partial);
-                    }
-                }
-            }
             Input => {
                 self.push_with_tag(ValueSpan::inf(), self.policy.input_tag())?;
             }
@@ -1042,34 +971,13 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             }
             ReadReverse => {
                 debug!("ReadReverse with arg: {}", arg);
-                if self.is_collecting_args() {
-                    // While collecting a function's arguments, a `ReadReverse`
-                    // reads a fresh caller argument only if it reaches *past*
-                    // the values already loaded in this phase. Reaching into
-                    // the already-loaded region just re-reads function-local
-                    // data and is not an argument.
-                    let loaded = self.stack.len().saturating_sub(self.stack.base());
-                    if usize::from(arg) >= loaded {
-                        self.record_arg(MemorizedIndex::Reverse(arg));
-                    }
-                    let synthetic_tag = self.arg_tag();
-                    debug!(
-                        "collecting ReadReverse: index={arg}, loaded={loaded}, caller_tags={:?}, synthetic_tag={synthetic_tag:?}",
-                        self.stack.tags(),
-                    );
-                    self.push_with_tag(ValueSpan::inf(), synthetic_tag)?;
-                } else {
-                    trace!(
-                        "Not collecting function arguments, performing normal read with reverse indexing."
-                    );
-                    let index = reverse_index(self.stack.len(), arg).ok_or(InvalidCell {
-                        instr: self.machine.program_data.get_current()?.clone(),
-                        cell_index: arg,
-                    })?;
+                let index = reverse_index(self.stack.len(), arg).ok_or(InvalidCell {
+                    instr: self.machine.program_data.get_current()?.clone(),
+                    cell_index: arg,
+                })?;
 
-                    let (val, tag) = self.read(index)?;
-                    self.push_with_tag(val, tag)?;
-                }
+                let (val, tag) = self.read(index)?;
+                self.push_with_tag(val, tag)?;
             }
             Print => {
                 let tag = self.read_tag(arg)?;
@@ -1083,7 +991,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
     fn evaluate_alu_unary_cell_amnt(
         &mut self,
         instr: &UnaryOpCellAmnt,
-        amount: CellIndex,
+        amount: CellAmount,
     ) -> Result<(), Self::Error> {
         use UnaryOpCellAmnt::*;
 
@@ -1158,14 +1066,18 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> Result<(), Self::Error> {
+    fn evaluate_block(
+        &mut self,
+        argument_count: CellAmount,
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(), Self::Error> {
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
         // Scope only definition-analysis state; globally published function
         // facts persist. Definitions in conditional branches are rejected.
         let saved_defining = self.defining.clone();
-        let result = self.run_nested(instrs);
+        let result = self.run_nested(argument_count, instrs);
         self.defining = saved_defining;
 
         match result? {
@@ -1194,12 +1106,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             }
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a copy of the initial stack
-            // to re-run the false branch from the same starting point. The copy
-            // must include the frames, not just the cells: a branch that pops
-            // below an enclosing block's `start` mutates that `Block` frame's
-            // `start`/`saved_below`, and restoring only the cells would leak
-            // those mutations into the false branch and the block's exit.
-            //
+            // to re-run the false branch from the same starting point. This
             // Downgrader call counts are also tracked per branch and merged
             // with the per-downgrader MAX: at runtime only one branch executes, so
             // exploring both must not double-charge.

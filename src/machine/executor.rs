@@ -16,7 +16,7 @@ use crate::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     machine::{Cell, CoreError, CoreMachine, Evaluate, Stack, reverse_index},
-    types::{self, CellIndex, Immediate, ProgramData, Value},
+    types::{self, CellAmount, CellIndex, Immediate, ProgramData, Value},
 };
 use ExecutorError::*;
 use Value::*;
@@ -192,40 +192,38 @@ impl<Tag: TagTrait> Executor<Tag> {
         Ok(self)
     }
 
-    /// Runs `instrs` as a nested context (block / function body / ifelse branch).
+    /// Runs `instrs` as a counted block context.
     ///
-    /// Saves and restores `program_data` while the stack's `Block` frame scopes
-    /// the value and tag cells together.
+    /// The count clones the ordered caller suffix and isolates it before the
+    /// first instruction. Program and stack state are restored even when body
+    /// execution fails.
     fn run_nested(
         &mut self,
+        argument_count: CellAmount,
         instrs: Rc<[Instruction<Tag>]>,
     ) -> ExecutorResult<Option<(Value, Tag)>, Tag> {
-        let saved_base = self.stack.enter_block();
+        self.stack.enter_block(argument_count)?;
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let run_result = self.run();
 
         self.machine.program_data = saved_program;
-        let (slot, _) = self.stack.exit_block(saved_base);
+        let (slot, _) = self.stack.exit_block();
         let result = slot.map(|s| (s.value, s.tag));
 
         run_result?;
         Ok(result)
     }
 
-    /// Runs the body of an ifelse branch *inline* on the parent stack: cells
-    /// are not isolated, so pops and pushes persist after the branch ends.
-    /// `program_data` is still scoped. The marker frame pushed via
-    /// [`Stack::enter_ifelse_branch`] makes `Rebase` an error inside the
-    /// branch.
+    /// Runs one ifelse branch inline on the current stack. A branch instruction
+    /// that is itself a `Block` applies its declared isolated argument scope.
     fn run_ifelse_branch(
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
         condition_tag: Tag,
     ) -> ExecutorResult<(), Tag> {
         let branch_pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
-        self.stack.enter_ifelse_branch();
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
         let saved_pc_tag = self.pc_tag;
@@ -235,7 +233,6 @@ impl<Tag: TagTrait> Executor<Tag> {
 
         self.machine.program_data = saved_program;
         self.pc_tag = saved_pc_tag;
-        self.stack.exit_ifelse_branch();
 
         run_result
     }
@@ -323,7 +320,14 @@ impl<Tag: TagTrait> Executor<Tag> {
             panic!("Recursion limit of {RECURSION_LIMIT} exceeded in function '{function_name}'");
         }
 
-        let result = self.run_nested(Rc::from(vec![body]));
+        let result = match body {
+            Instruction::Block(_, instrs) if instrs.is_empty() => Err(EmptyBlock),
+            Instruction::Block(argument_count, instrs) => self.run_nested(argument_count, instrs),
+            _ => Err(CoreError::InvalidDefinitionBody {
+                name: function_name.to_owned(),
+            }
+            .into()),
+        };
         self.function_depth -= 1;
         result
     }
@@ -375,7 +379,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
         match instr {
             Nop => (),
-            Rebase => self.stack.rebase()?,
             Input => {
                 let value = self.read_input_value()?;
                 self.push_new_value(Integer(value), self.policy.input_tag())?;
@@ -445,7 +448,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
     fn evaluate_alu_unary_cell_amnt(
         &mut self,
         instr: &UnaryOpCellAmnt,
-        amount: CellIndex,
+        amount: CellAmount,
     ) -> ExecutorResult<(), Tag> {
         use UnaryOpCellAmnt::*;
 
@@ -536,13 +539,17 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         Ok(())
     }
 
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> ExecutorResult<(), Tag> {
+    fn evaluate_block(
+        &mut self,
+        argument_count: CellAmount,
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> ExecutorResult<(), Tag> {
         // Each block must leave at least one value on its local stack so the parent can
         // observe a result. A block that ends with an empty local stack is a "void" error.
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
-        match self.run_nested(instrs)? {
+        match self.run_nested(argument_count, instrs)? {
             Some(entry) => self.push_existing_entry(entry),
             None => return Err(BlockHasEmptyStack),
         }

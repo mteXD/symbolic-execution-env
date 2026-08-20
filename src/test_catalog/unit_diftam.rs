@@ -200,7 +200,10 @@ mod pgs {
         program: vec![
             add_instr!(tag Push, 1, Secret),
             add_instr!(tag Push, 42, Public),
-            add_instr!(ifelse 0, add_instr!(R Print, 1), add_instr!(Nop)),
+            add_instr!(ifelse 0,
+                add_instr!(R Print, 1),
+                add_instr!(Nop)
+            ),
         ],
         verifier: { error with confidentiality_policy(),
             VerifierError::Flow(FlowError::PGViolation {
@@ -281,13 +284,11 @@ mod implicit_flow {
 }
 
 test_program! {
-    /// Tags stay aligned with values across function call, rebase and pop.
-    tags_remain_aligned_through_function_rebase,
+    /// Tags stay aligned with values across an isolated function call and pop.
+    tags_remain_aligned_through_function_block,
     program: vec![
         add_instr!(fun FunctionDefine, "add_public"),
-        make_block!(
-            add_instr!(R ReadReverse, 0),
-            add_instr!(Rebase),
+        make_block!(1,
             add_instr!(tag Push, 1, Public),
             add_instr!(Add, 0, 1)
         ),
@@ -368,9 +369,7 @@ mod downgraders {
         basic,
         program: vec![
             add_instr!(fun Downgrader, "is_zero"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -397,9 +396,7 @@ mod downgraders {
         no_implicit_retag,
         program: vec![
             add_instr!(fun Downgrader, "leak"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(tag Push, 5, Secret)
             ),
             add_instr!(tag Push, 0, Secret),
@@ -430,9 +427,8 @@ mod downgraders {
         wrong_argument_tag,
         program: vec![
             add_instr!(fun Downgrader, "is_zero"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
+                add_instr!(Nop)
             ),
             add_instr!(Push, 0),
             add_instr!(fun Downgrade, "is_zero"),
@@ -456,9 +452,7 @@ mod downgraders {
         call_limit,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -480,9 +474,7 @@ mod downgraders {
         call_limit_2,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -512,9 +504,7 @@ mod downgraders {
         no_call_limit,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -546,9 +536,7 @@ mod downgraders {
         call_limit_ifelse,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -592,16 +580,12 @@ mod downgraders {
         nested_rejected,
         program: vec![
             add_instr!(fun Downgrader, "inner"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(fun Downgrader, "outer"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(tag Push, 0, Secret),
                 add_instr!(fun Downgrade, "inner") // FAILS: nested call
             ),
@@ -631,11 +615,11 @@ mod downgraders {
         function_call_inside_downgrader_allowed,
         program: vec![
             add_instr!(fun FunctionDefine, "helper"),
-            make_block!(add_instr!(tag Push, 5, Secret)),
+            make_block!(0,
+                add_instr!(tag Push, 5, Secret)
+            ),
             add_instr!(fun Downgrader, "d"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(fun FunctionCall, "helper")
             ),
             add_instr!(tag Push, 0, Secret),
@@ -659,9 +643,7 @@ mod downgraders {
         function_call_rejected,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -684,7 +666,9 @@ mod downgraders {
         normal_function_rejected,
         program: vec![
             add_instr!(fun FunctionDefine, "helper"),
-            make_block!(add_instr!(Push, 5)),
+            make_block!(0,
+                add_instr!(Push, 5)
+            ),
             add_instr!(fun Downgrade, "helper"),
         ],
         verifier: { error with confidentiality_policy(),
@@ -700,7 +684,9 @@ mod downgraders {
         undefined_in_policy,
         program: vec![
             add_instr!(fun Downgrader, "helper"),
-            make_block!(add_instr!(Push, 5)),
+            make_block!(0,
+                add_instr!(Push, 5)
+            ),
         ],
         verifier: { error with confidentiality_policy(),
             VerifierError::Flow(FlowError::DowngraderUndefined { .. })
@@ -715,11 +701,11 @@ mod downgraders {
         function_no_clash,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            add_instr!(Nop),
+            make_block!(0,
+                add_instr!(Nop)
+            ),
             add_instr!(fun FunctionDefine, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
@@ -745,11 +731,9 @@ mod downgraders {
         nested_define_rejected,
         program: vec![
             add_instr!(fun FunctionDefine, OUTER),
-            make_block!(
+            make_block!(0,
                 add_instr!(fun Downgrader, "is_empty"),
-                make_block!(
-                    add_instr!(R ReadReverse, 0),
-                    add_instr!(Rebase),
+                make_block!(1,
                     add_instr!(Push, 0),
                     add_instr!(CmpEqual, 0, 1)
                 ),
@@ -774,14 +758,12 @@ mod downgraders {
         inside_function_rejected,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
-            make_block!(
-                add_instr!(R ReadReverse, 0),
-                add_instr!(Rebase),
+            make_block!(1,
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(fun FunctionDefine, "wrapper"),
-            make_block!(
+            make_block!(0,
                 add_instr!(tag Push, 0, Secret),
                 add_instr!(fun Downgrade, "is_empty")
             ),
@@ -800,9 +782,13 @@ mod downgraders {
         redefinition_rejected,
         program: vec![
             add_instr!(fun Downgrader, "foo"),
-            make_block!(add_instr!(tag Push, 0, Secret)),
+            make_block!(0,
+                add_instr!(tag Push, 0, Secret)
+            ),
             add_instr!(fun Downgrader, "foo"),
-            make_block!(add_instr!(tag Push, 0, Secret)),
+            make_block!(0,
+                add_instr!(tag Push, 0, Secret)
+            ),
         ],
         verifier: { error with downgrader_policy("foo", Some(1)),
             VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionRedefinition(_)))

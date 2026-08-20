@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::debug;
 use std::{fmt::Debug, rc::Rc};
 
 use crate::{
@@ -7,10 +7,9 @@ use crate::{
         Instruction::{self},
         NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
-    machine::CoreError::RebaseError,
     types::{
-        CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output, ProgramData,
-        ProgramDataError,
+        CellAmount, CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
+        ProgramData, ProgramDataError,
     },
 };
 
@@ -21,7 +20,8 @@ pub mod verifier;
 pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
-    RebaseError,
+    NotEnoughArguments { required: usize, available: usize },
+    InvalidDefinitionBody { name: String },
     IoReadError,
 }
 
@@ -94,11 +94,11 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         function_name: &str,
         is_downgrader: bool,
     ) -> CoreResult<()> {
-        use Instruction::AluUnaryString;
+        use Instruction::UnaryString;
         use UnaryOpString::FunctionDefine;
 
         let current = match self.next() {
-            Some(AluUnaryString(FunctionDefine, _)) | None => {
+            Some(UnaryString(FunctionDefine, _)) | None => {
                 return Err(
                     FunctionDataError::FunctionMissingBody(function_name.to_owned()).into(),
                 );
@@ -106,11 +106,13 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
             Some(current) => current,
         };
 
-        if !matches!(current, Instruction::Block(_)) {
-            warn!(
-                "Expected block after function definitions, but found instruction: {:?}",
-                current
-            );
+        match &current {
+            Instruction::Block(_, _) => {}
+            _ => {
+                return Err(CoreError::InvalidDefinitionBody {
+                    name: function_name.to_owned(),
+                });
+            }
         }
 
         let function_name = function_name.to_owned();
@@ -142,33 +144,33 @@ trait Evaluate<Tag: Debug = ()> {
         use log::debug;
 
         match instr {
-            AluNullary(instr) => {
+            Nullary(instr) => {
                 debug!("Evaling: {:?}", instr);
                 self.evaluate_alu_nullary(instr)
             }
-            AluUnaryImm(instr, imm) => {
+            UnaryImm(instr, imm) => {
                 debug!("Evaling: {:?}, imm: {:?}", instr, imm);
                 self.evaluate_alu_unary_imm(instr, *imm)
             }
-            AluUnaryCell(instr, cell) => {
+            UnaryCell(instr, cell) => {
                 debug!("Evaling: {:?}, cell: {:?}", instr, cell);
                 self.evaluate_alu_unary_cell(instr, *cell)
             }
-            AluUnaryCellAmnt(instr, amount) => {
+            UnaryCellAmnt(instr, amount) => {
                 debug!("Evaling: {:?}, amount: {:?}", instr, amount);
                 self.evaluate_alu_unary_cell_amnt(instr, *amount)
             }
-            AluUnaryString(instr, name) => {
+            UnaryString(instr, name) => {
                 debug!("Evaling: {:?}, name: '{}'", instr, name);
                 self.evaluate_alu_unary_string(instr, name)
             }
-            AluBinary(instr, arg1, arg2) => {
+            Binary(instr, arg1, arg2) => {
                 debug!("Evaling: {:?}; args: {:?}, {:?}", instr, arg1, arg2);
                 self.evaluate_alu_binary(instr, *arg1, *arg2)
             }
-            Block(instrs) => {
-                debug!("Entering block...");
-                self.evaluate_block(instrs.clone())
+            Block(argument_count, instrs) => {
+                debug!("Entering block with argument count {argument_count}...");
+                self.evaluate_block(*argument_count, instrs.clone())
             }
             IfElse(cond_idx, when_true, when_false) => {
                 debug!("Entering if-else block...");
@@ -193,7 +195,7 @@ trait Evaluate<Tag: Debug = ()> {
     fn evaluate_alu_unary_cell_amnt(
         &mut self,
         instr: &UnaryOpCellAmnt,
-        amount: CellIndex,
+        amount: CellAmount,
     ) -> Result<(), Self::Error>;
     fn evaluate_alu_unary_string(
         &mut self,
@@ -206,7 +208,11 @@ trait Evaluate<Tag: Debug = ()> {
         arg1: CellIndex,
         arg2: CellIndex,
     ) -> Result<(), Self::Error>;
-    fn evaluate_block(&mut self, instrs: Rc<[Instruction<Tag>]>) -> Result<(), Self::Error>;
+    fn evaluate_block(
+        &mut self,
+        argument_count: CellAmount,
+        instrs: Rc<[Instruction<Tag>]>,
+    ) -> Result<(), Self::Error>;
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
@@ -218,32 +224,19 @@ trait Evaluate<Tag: Debug = ()> {
 // =============================================================================
 // Shared frame-stack mechanics used by both Executor and Verifier.
 //
-// Two variants:
-//   * `Block`         — an isolating nested context (block / function body).
-//                       Pops below `start` save displaced parent cells, and
-//                       `Rebase` is permitted (it drains parent cells into the
-//                       frame's `saved_below`). On exit, body-local cells are
-//                       dropped and `saved_below` is replayed.
-//   * `IfElseBranch`  — a NON-isolating marker. Pops are not trapped, `Rebase`
-//                       is forbidden, and cell changes persist after exit.
-//                       Pops that drop below an *enclosing* `Block`'s `start`
-//                       are still saved against that outer block (so the
-//                       enclosing block's restore-on-exit remains correct).
+// Every frame owns the hidden caller stack while the body runs solely on cloned
+// argument cells. On exit, locals are discarded and the caller is restored
+// unchanged.
 // =============================================================================
 
 #[derive(Clone, Debug)]
-pub enum Frame<V, T> {
-    Block {
-        start: usize,
-        saved_below: Vec<Cell<V, T>>,
-    },
-    IfElseBranch,
+pub struct Frame<V, T> {
+    caller: Vec<Cell<V, T>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Stack<V, T> {
     cells: Vec<Cell<V, T>>,
-    base: usize,
     frames: Vec<Frame<V, T>>,
 }
 
@@ -257,7 +250,6 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     pub fn new() -> Self {
         Self {
             cells: Vec::new(),
-            base: 0,
             frames: Vec::new(),
         }
     }
@@ -267,26 +259,9 @@ impl<V: Clone, T: Clone> Stack<V, T> {
         self.cells.push(value);
     }
 
-    /// Pops the top cell. If the resulting `cells.len()` drops below the start
-    /// of the innermost enclosing `Block` frame, the popped value is saved
-    /// against that block (and its `start` is decremented). `IfElseBranch`
-    /// frames are transparent to this accounting.
+    /// Pops the top cell from the current stack context.
     pub fn pop(&mut self) -> Option<Cell<V, T>> {
-        let popped = self.cells.pop()?;
-        let len = self.cells.len();
-        for frame in self.frames.iter_mut().rev() {
-            match frame {
-                Frame::Block { start, saved_below } => {
-                    if len < *start {
-                        saved_below.push(popped.clone());
-                        *start -= 1;
-                    }
-                    break;
-                }
-                Frame::IfElseBranch => continue,
-            }
-        }
-        Some(popped)
+        self.cells.pop()
     }
 
     #[inline]
@@ -294,83 +269,42 @@ impl<V: Clone, T: Clone> Stack<V, T> {
         self.cells.get(idx)
     }
 
-    /// Begin a block-style isolating context. Pushes a `Block` frame, sets
-    /// `base` to the current stack length, and returns the previous `base`
-    /// (which the caller must pass to [`Self::exit_block`] to restore).
-    pub fn enter_block(&mut self) -> usize {
-        let saved_base = self.base;
-        self.base = self.cells.len();
-        self.frames.push(Frame::Block {
-            start: self.cells.len(),
-            saved_below: Vec::new(),
-        });
-        saved_base
-    }
-
-    /// End a block-style context: restore `base`, drop body-local cells, and
-    /// replay any displaced parent cells. Returns `(last_cell_at_end_of_body,
-    /// body_stack_size)`.
-    pub fn exit_block(&mut self, saved_base: usize) -> (Option<Cell<V, T>>, usize) {
-        self.base = saved_base;
-
-        match self.frames.pop().expect("exit_block: no frame") {
-            Frame::Block { start, saved_below } => {
-                let body_stack_size = self.cells.len().saturating_sub(start);
-                let result = self.cells.last().cloned();
-                self.cells.truncate(start);
-                self.cells.extend(saved_below.iter().rev().cloned());
-                (result, body_stack_size)
-            }
-            Frame::IfElseBranch => {
-                panic!("exit_block called but topmost frame is IfElseBranch")
-            }
-        }
-    }
-
-    /// Begin an ifelse branch. Cells are NOT isolated; the marker exists solely
-    /// to forbid `Rebase` and to make pops transparent to enclosing blocks.
-    #[inline]
-    pub fn enter_ifelse_branch(&mut self) {
-        self.frames.push(Frame::IfElseBranch);
-    }
-
-    /// End an ifelse branch, popping its marker frame.
-    pub fn exit_ifelse_branch(&mut self) {
-        match self.frames.pop() {
-            Some(Frame::IfElseBranch) => (),
-            _ => panic!("exit_ifelse_branch called but topmost frame is not IfElseBranch"),
-        }
-    }
-
-    /// Drains `cells[..base]` into the innermost enclosing `Block` frame's
-    /// `saved_below`. Returns `Err` if `base > cells.len()` or if the
-    /// immediately-topmost frame is an `IfElseBranch` (rebase is forbidden
-    /// inside ifelse branches).
-    pub fn rebase(&mut self) -> Result<(), CoreError> {
-        if self.base > self.cells.len() {
-            panic!(
-                "Base {} is greater than stack length {}, this should not happen",
-                self.base,
-                self.cells.len()
-            );
+    /// Enters a block with the declared argument count.
+    ///
+    /// Atomically clones the caller's top `count` cells in their original order
+    /// and hides the complete caller stack.
+    pub fn enter_block(&mut self, count: CellAmount) -> CoreResult<()> {
+        let required = usize::from(count);
+        let available = self.cells.len();
+        if required > available {
+            return Err(CoreError::NotEnoughArguments {
+                required,
+                available,
+            });
         }
 
-        match self.frames.last_mut() {
-            Some(Frame::Block { start, saved_below }) => {
-                // Check that we aren't rebasing twice
-                if self.base > *start {
-                    return Err(RebaseError);
-                }
+        let arguments = self.cells[available - required..].to_vec();
+        let caller = std::mem::replace(&mut self.cells, arguments);
+        self.frames.push(Frame { caller });
+        Ok(())
+    }
 
-                // Temporarily save the cells below `base`
-                saved_below.extend(self.cells.drain(..self.base).rev());
-                *start = 0;
-                Ok(())
-            }
-            Some(Frame::IfElseBranch) | None => {
-                Err(RebaseError) // Not rebase-able in IfElse or outside block
-            }
-        }
+    /// Enters an isolated block with explicit cells instead of cloning them
+    /// from the caller. Used by definition-time abstract analysis, where the
+    /// declared parameters are represented by synthetic cells.
+    pub fn enter_block_with_arguments(&mut self, arguments: Vec<Cell<V, T>>) {
+        let caller = std::mem::replace(&mut self.cells, arguments);
+        self.frames.push(Frame { caller });
+    }
+
+    /// Ends the current block, restores its caller environment, and returns
+    /// `(last_cell_at_end_of_body, body_stack_size)`.
+    pub fn exit_block(&mut self) -> (Option<Cell<V, T>>, usize) {
+        let Frame { caller } = self.frames.pop().expect("exit_block: no frame");
+        let body_stack_size = self.cells.len();
+        let result = self.cells.last().cloned();
+        self.cells = caller;
+        (result, body_stack_size)
     }
 
     /// A "getter" method for cells' length
@@ -381,11 +315,6 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     /// A "getter" method for cells' is_empty method
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
-    }
-
-    /// A "getter" method for base
-    pub fn base(&self) -> usize {
-        self.base
     }
 }
 
