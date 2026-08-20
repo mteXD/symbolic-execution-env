@@ -1146,12 +1146,12 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             ShiftLeftLogical => a.bitop_span(b, |x, y| x << y),
             ShiftRightLogical => a.bitop_span(b, |x, y| (x as u64 >> y as u64) as Immediate),
             ShiftRightArithmetic => a.bitop_span(b, |x, y| x >> y),
-            SetEqual => a.chck_eq(&b),
-            SetNotEqual => a.chck_neq(&b),
-            SetLessThan => a.chck_lt(&b),
-            SetLessThanOrEqual => a.chck_lte(&b),
-            SetGreaterThan => a.chck_gt(&b),
-            SetGreaterThanOrEqual => a.chck_gte(&b),
+            CmpEqual => a.chck_eq(&b),
+            CmpNotEqual => a.chck_neq(&b),
+            CmpLessThan => a.chck_lt(&b),
+            CmpLessThanOrEqual => a.chck_lte(&b),
+            CmpGreaterThan => a.chck_gt(&b),
+            CmpGreaterThanOrEqual => a.chck_gte(&b),
         };
 
         self.push_with_tag(calculated_value, result_tag)?;

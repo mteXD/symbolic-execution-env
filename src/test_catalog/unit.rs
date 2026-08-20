@@ -214,7 +214,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 10),
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1), // 10 > 5 -> known true
+        add_instr!(CmpGreaterThan, 0, 1), // 10 > 5 -> known true
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // taken
             add_instr!(Push, 0)   // not taken
@@ -230,7 +230,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 3),
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1), // 3 > 5 -> known false
+        add_instr!(CmpGreaterThan, 0, 1), // 3 > 5 -> known false
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // not taken
             add_instr!(Push, 0)   // taken
@@ -246,7 +246,7 @@ test_program! {
     program: vec![
         add_instr!(Input), // [?]
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1), // unknown condition
+        add_instr!(CmpGreaterThan, 0, 1), // unknown condition
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // +1 cell if taken
             add_instr!(Push, 0)   // +1 cell if not taken (balanced)
@@ -265,7 +265,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 10),
         add_instr!(Push, 3),
-        add_instr!(SetGreaterThan, 0, 1), // 10 > 3 -> known true
+        add_instr!(CmpGreaterThan, 0, 1), // 10 > 3 -> known true
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // taken: +1 cell
             add_instr!(R Pop, 2)  // dead:  would be -2 cells
@@ -281,7 +281,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 0),
         add_instr!(Push, 3),
-        add_instr!(SetGreaterThan, 0, 1), // 3 > 10 -> known false
+        add_instr!(CmpGreaterThan, 0, 1), // 3 > 10 -> known false
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // dead
             add_instr!(R Pop, 2)  // taken: +1 cell
@@ -300,7 +300,7 @@ test_program! {
     program: vec![
         add_instr!(Input), // [?]
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1), // unknown condition
+        add_instr!(CmpGreaterThan, 0, 1), // unknown condition
         add_instr!(ifelse 2,
             add_instr!(Push, 42), // +1 cell if taken
             add_instr!(R Pop, 1)  // -1 cell if not taken (unbalanced)
@@ -382,7 +382,7 @@ test_program! {
         add_instr!(Push, 20),
         add_instr!(Input),
         add_instr!(Push, 0),
-        add_instr!(SetGreaterThan, 2, 3),
+        add_instr!(CmpGreaterThan, 2, 3),
         make_block!(
             add_instr!(ifelse 4,
                 add_instr!(R Pop, 2),
@@ -407,7 +407,7 @@ test_program! {
         add_instr!(Push, 20),
         add_instr!(Input),
         add_instr!(Push, 0),
-        add_instr!(SetGreaterThan, 2, 3),
+        add_instr!(CmpGreaterThan, 2, 3),
         make_block!(
             add_instr!(Push, 30),
             add_instr!(ifelse 4,
@@ -433,7 +433,7 @@ test_program! {
         add_instr!(Push, 20),
         add_instr!(Input),
         add_instr!(Push, 0),
-        add_instr!(SetGreaterThan, 2, 3),
+        add_instr!(CmpGreaterThan, 2, 3),
         make_block!(
             add_instr!(ifelse 4,
                 add_instr!(R Pop, 3),
@@ -655,7 +655,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 10),
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1),
+        add_instr!(CmpGreaterThan, 0, 1),
         add_instr!(ifelse 2,
             add_instr!(Rebase), // Error: no block frame in branch
             add_instr!(Push, 0)
@@ -671,7 +671,7 @@ test_program! {
     program: vec![
         add_instr!(Push, 10),
         add_instr!(Push, 5),
-        add_instr!(SetGreaterThan, 0, 1),
+        add_instr!(CmpGreaterThan, 0, 1),
         add_instr!(ifelse 2,
             make_block!(
                 add_instr!(Rebase), // OK: block frame exists in branch
@@ -785,7 +785,7 @@ test_program! {
             add_instr!(Rebase),
             add_instr!(Push, 10),
             add_instr!(Push, 5),
-            add_instr!(SetGreaterThan, 0, 1),
+            add_instr!(CmpGreaterThan, 0, 1),
             add_instr!(ifelse 2,
                 add_instr!(fun FunctionCall, "f"),
                 add_instr!(Push, 0)
@@ -805,7 +805,7 @@ test_program! {
             add_instr!(Rebase),
             add_instr!(Input),
             add_instr!(Push, 0),
-            add_instr!(SetGreaterThan, 0, 1),
+            add_instr!(CmpGreaterThan, 0, 1),
             add_instr!(ifelse 2,
                 add_instr!(fun FunctionCall, "f"),
                 add_instr!(Push, 0)

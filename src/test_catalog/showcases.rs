@@ -98,7 +98,7 @@ test_program! {
             add_instr!(R ReadReverse, 0), // n
             add_instr!(Rebase),
             add_instr!(Push, 1),              // 1
-            add_instr!(SetGreaterThan, 0, 1), // n > 1
+            add_instr!(CmpGreaterThan, 0, 1), // n > 1
             add_instr!(ifelse 2, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(Push, -1),
@@ -139,7 +139,7 @@ test_program! {
                 add_instr!(Add, 0, 1) // n - 1
             ),
             add_instr!(Push, 1),
-            add_instr!(SetGreaterThan, 0, 2),
+            add_instr!(CmpGreaterThan, 0, 2),
             add_instr!(ifelse 3, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
@@ -174,7 +174,7 @@ test_program! {
             add_instr!(R ReadReverse, 0), // n
             add_instr!(Rebase),
             add_instr!(Push, 1),              // 2
-            add_instr!(SetGreaterThan, 0, 1), // n > 2
+            add_instr!(CmpGreaterThan, 0, 1), // n > 2
             add_instr!(ifelse 2, // if n <= 1, skip to return
                 make_block!(
                     add_instr!(Push, -1),
@@ -217,7 +217,7 @@ test_program! {
             add_instr!(R ReadReverse, 1), // reversed
             add_instr!(Rebase),
             add_instr!(Push, 0),
-            add_instr!(SetEqual, 0, 2), // remaining == 0
+            add_instr!(CmpEqual, 0, 2), // remaining == 0
             add_instr!(ifelse 3,
                 add_instr!(R Read, 1), // return reversed
                 make_block!(
@@ -242,14 +242,14 @@ test_program! {
             add_instr!(R ReadReverse, 0), // x
             add_instr!(Rebase),
             add_instr!(Push, 0),
-            add_instr!(SetLessThan, 0, 1), // x < 0
+            add_instr!(CmpLessThan, 0, 1), // x < 0
             add_instr!(ifelse 2,
                 add_instr!(Push, 0),
                 make_block!(
                     add_instr!(R Read, 0), // remaining
                     add_instr!(Push, 0),   // reversed
                     add_instr!(fun FunctionCall, "reverse_digits"),
-                    add_instr!(SetEqual, 0, 5)
+                    add_instr!(CmpEqual, 0, 5)
                 )
             )
         ),
@@ -284,7 +284,7 @@ test_program! {
             add_instr!(R ReadReverse, 1), // cell 1: current second operand
             add_instr!(Rebase),           // cells 0-1: function arguments
             add_instr!(Push, 0),          // cell 2: zero constant
-            add_instr!(SetEqual, 1, 2),   // cell 3: second operand == 0
+            add_instr!(CmpEqual, 1, 2),   // cell 3: second operand == 0
             add_instr!(ifelse 3,
                 add_instr!(R Read, 0), // cell 4: return first operand
                 make_block!(
@@ -331,7 +331,7 @@ test_program! {
             add_instr!(R ReadReverse, 1), // cell 1: exponent
             add_instr!(Rebase),           // cells 0-1: function arguments
             add_instr!(Push, 0),          // cell 2: zero constant
-            add_instr!(SetEqual, 1, 2),   // cell 3: exponent == 0
+            add_instr!(CmpEqual, 1, 2),   // cell 3: exponent == 0
             add_instr!(ifelse 3,
                 add_instr!(Push, 1), // cell 4: base-case result
                 make_block!(
@@ -383,7 +383,7 @@ test_program! {
             add_instr!(R ReadReverse, 0), // cell 0: remaining bits
             add_instr!(Rebase),           // cell 0: function argument
             add_instr!(Push, 0),          // cell 1: zero constant
-            add_instr!(SetEqual, 0, 1),   // cell 2: remaining bits == 0
+            add_instr!(CmpEqual, 0, 1),   // cell 2: remaining bits == 0
             add_instr!(ifelse 2,
                 add_instr!(Push, 0), // cell 3: base-case count
                 make_block!(
@@ -426,7 +426,7 @@ test_program! {
             add_instr!(R ReadReverse, 1), // cell 1: candidate divisor
             add_instr!(Rebase),           // cells 0-1: function arguments
             add_instr!(Div, 0, 1),        // cell 2: number / divisor
-            add_instr!(SetGreaterThan, 1, 2), // cell 3: divisor > quotient
+            add_instr!(CmpGreaterThan, 1, 2), // cell 3: divisor > quotient
             add_instr!(ifelse 3,
                 add_instr!(Push, 1), // cell 4: no divisor remains
                 make_block!(
@@ -435,7 +435,7 @@ test_program! {
                     add_instr!(Mul, 4, 5), // cell 6: negated product
                     add_instr!(Add, 0, 6), // cell 7: derived remainder
                     add_instr!(Push, 0), // cell 8: zero constant
-                    add_instr!(SetEqual, 7, 8), // cell 9: divisible
+                    add_instr!(CmpEqual, 7, 8), // cell 9: divisible
                     add_instr!(ifelse 9,
                         add_instr!(Push, 0), // cell 10: composite result
                         make_block!(
@@ -454,7 +454,7 @@ test_program! {
             add_instr!(R ReadReverse, 0), // cell 0: number
             add_instr!(Rebase),           // cell 0: function argument
             add_instr!(Push, 2),          // cell 1: minimum prime/divisor
-            add_instr!(SetLessThan, 0, 1), // cell 2: number < 2
+            add_instr!(CmpLessThan, 0, 1), // cell 2: number < 2
             add_instr!(ifelse 2,
                 add_instr!(Push, 0), // cell 3: below-two result
                 make_block!(

@@ -12,6 +12,16 @@ pub enum NullaryOp {
     Input,
 }
 
+/// Operations with 1 immediate argument.
+///
+/// [`Self::TaggedPush`] also carries a tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnaryOpImm<Tag = ()> {
+    Push,
+    /// TaggedPush pushes a value with the provided tag.
+    TaggedPush(Tag),
+}
+
 /// Operations with 1 Cell Index argument
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpCell {
@@ -27,16 +37,6 @@ pub enum UnaryOpCellAmnt {
     Pop,
 }
 
-/// Operations with 1 immediate argument.
-///
-/// [`Self::TaggedPush`] also carries a tag.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnaryOpImm<Tag = ()> {
-    Push,
-    /// TaggedPush pushes a value with the provided tag.
-    TaggedPush(Tag),
-}
-
 /// Operations with 1 String argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpString {
@@ -44,9 +44,7 @@ pub enum UnaryOpString {
     FunctionCall,
     /// Defines a new downgrader.
     Downgrader,
-    /// Invokes a downgrader, applying its implicit retag and counting once
-    /// toward its total call limit. Only allowed at the top level (not inside
-    /// function or downgrader bodies).
+    /// Invokes a downgrader
     Downgrade,
 }
 
@@ -65,13 +63,13 @@ pub enum BinaryOp {
     ShiftLeftLogical,
     ShiftRightLogical,
     ShiftRightArithmetic,
-    // Comparison ; Good enough for early stage of development
-    SetEqual,
-    SetNotEqual,
-    SetLessThan,
-    SetLessThanOrEqual,
-    SetGreaterThan,
-    SetGreaterThanOrEqual,
+    // Comparison; Good enough for early stage of development
+    CmpEqual,
+    CmpNotEqual,
+    CmpLessThan,
+    CmpLessThanOrEqual,
+    CmpGreaterThan,
+    CmpGreaterThanOrEqual,
 }
 
 /// Instruction type for the virtual machine.

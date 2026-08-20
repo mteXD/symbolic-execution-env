@@ -372,7 +372,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "is_zero"),
@@ -460,7 +460,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "is_empty"),
@@ -484,7 +484,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "is_empty"),
@@ -516,7 +516,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "is_empty"),
@@ -550,7 +550,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(Input), // unknown condition
             add_instr!(tag Push, 0, Secret),
@@ -596,7 +596,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(fun Downgrader, "outer"),
             make_block!(
@@ -663,7 +663,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun FunctionCall, "is_empty"), // FAILS: must use Downgrade
@@ -721,7 +721,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(Push, 0),
             add_instr!(fun FunctionCall, "is_empty"),
@@ -751,7 +751,7 @@ mod downgraders {
                     add_instr!(R ReadReverse, 0),
                     add_instr!(Rebase),
                     add_instr!(Push, 0),
-                    add_instr!(SetEqual, 0, 1)
+                    add_instr!(CmpEqual, 0, 1)
                 ),
                 add_instr!(Push, 42)
             ),
@@ -778,7 +778,7 @@ mod downgraders {
                 add_instr!(R ReadReverse, 0),
                 add_instr!(Rebase),
                 add_instr!(Push, 0),
-                add_instr!(SetEqual, 0, 1)
+                add_instr!(CmpEqual, 0, 1)
             ),
             add_instr!(fun FunctionDefine, "wrapper"),
             make_block!(

@@ -523,12 +523,12 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                 ShiftLeftLogical => Ok(left << right),
                 ShiftRightLogical => Ok(((left as u64) >> right) as i64),
                 ShiftRightArithmetic => Ok(left >> right),
-                SetEqual => Ok(from_bool(left == right)),
-                SetNotEqual => Ok(from_bool(left != right)),
-                SetLessThan => Ok(from_bool(left < right)),
-                SetLessThanOrEqual => Ok(from_bool(left <= right)),
-                SetGreaterThan => Ok(from_bool(left > right)),
-                SetGreaterThanOrEqual => Ok(from_bool(left >= right)),
+                CmpEqual => Ok(from_bool(left == right)),
+                CmpNotEqual => Ok(from_bool(left != right)),
+                CmpLessThan => Ok(from_bool(left < right)),
+                CmpLessThanOrEqual => Ok(from_bool(left <= right)),
+                CmpGreaterThan => Ok(from_bool(left > right)),
+                CmpGreaterThanOrEqual => Ok(from_bool(left >= right)),
             }
         }?;
         self.push_new_value(Integer(result), result_tag)?;
