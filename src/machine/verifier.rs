@@ -147,6 +147,21 @@ impl ValueSpan {
         Self::new(!self.max, !self.min)
     }
 
+    /// Interval model of mathematical negation. Negation reverses the bounds;
+    /// a singleton at [`Immediate::MIN`] is a definite overflow, while a wider
+    /// interval containing it retains the span of all representable results.
+    fn neg_span(self) -> Option<Self> {
+        if self.is_single_value() {
+            let result = self.min.checked_neg()?;
+            Some(Self::new(result, result))
+        } else {
+            Some(Self::new(
+                self.max.saturating_neg(),
+                self.min.saturating_neg(),
+            ))
+        }
+    }
+
     /// Interval model of `Add`: saturating on the raw bounds. `None` means
     /// two exact operands overflowed.
     fn add_span(self, other: Self) -> Option<Self> {
@@ -155,6 +170,21 @@ impl ValueSpan {
             self.max.saturating_add(other.max),
         );
         Self::check_overflow(self, other, result)
+    }
+
+    /// Interval model of `Sub`: the lowest result uses the left lower bound
+    /// and right upper bound, while the highest uses the opposite pair.
+    /// `None` means two exact operands overflowed.
+    fn sub_span(self, other: Self) -> Option<Self> {
+        if self.is_single_value() && other.is_single_value() {
+            let result = self.min.checked_sub(other.min)?;
+            Some(Self::new(result, result))
+        } else {
+            Some(Self::new(
+                self.min.saturating_sub(other.max),
+                self.max.saturating_sub(other.min),
+            ))
+        }
     }
 
     /// Interval model of `Mul`: the span covering all four corner products.
@@ -960,6 +990,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         use UnaryOpCell::*;
 
         match instr {
+            Neg => {
+                let (val, tag) = self.read(arg)?;
+                let result = val.neg_span().ok_or(ArithmeticOverflow)?;
+                self.push_with_tag(result, tag)?;
+            }
             Not => {
                 let (val, tag) = self.read(arg)?;
                 let result = val.not_span();
@@ -1040,6 +1075,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
 
         let calculated_value = match instr {
             Add => a.add_span(b).ok_or(ArithmeticOverflow)?,
+            Sub => a.sub_span(b).ok_or(ArithmeticOverflow)?,
             Mul => a.mul_span(b).ok_or(ArithmeticOverflow)?,
             Div => {
                 if b == ValueSpan::new(0, 0) {

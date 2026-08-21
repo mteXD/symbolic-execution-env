@@ -169,6 +169,26 @@ mod arith {
     use super::*;
 
     test_program! {
+        /// [POSITIVE] Mathematical negation appends the negated cell.
+        neg,
+        program: vec![add_instr!(Push, 6), add_instr!(R Neg, 0)],
+        verifier: { stack [6, -6] },
+        executor: { stack [6, -6] },
+    }
+
+    test_program! {
+        /// [POSITIVE] Subtraction appends cell1 - cell2 in operand order.
+        sub,
+        program: vec![
+            add_instr!(Push, 10),
+            add_instr!(Push, 3),
+            add_instr!(Sub, 0, 1),
+        ],
+        verifier: { stack [10, 3, 7] },
+        executor: { stack [10, 3, 7] },
+    }
+
+    test_program! {
         /// [POSITIVE] Tests bitwise not.
         bitwise_not,
         program: vec![add_instr!(Push, 0b1100), add_instr!(R Not, 0)],

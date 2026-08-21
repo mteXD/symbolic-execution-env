@@ -411,6 +411,15 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         use UnaryOpCell::*;
 
         match instr {
+            Neg => {
+                let (val, tag) = self.read_entry(arg)?;
+                if let Integer(val) = val {
+                    let result = val.checked_neg().ok_or(ArithmeticOverflow)?;
+                    self.push_new_value(Integer(result), tag)?;
+                } else {
+                    todo!("This will eventually be a TypeError, in case types get implemented.")
+                }
+            }
             Not => {
                 let (val, tag) = self.read_entry(arg)?;
                 if let Integer(val) = val {
@@ -518,6 +527,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
             match instr {
                 Add => left.checked_add(right).ok_or(ArithmeticOverflow),
+                Sub => left.checked_sub(right).ok_or(ArithmeticOverflow),
                 Mul => left.checked_mul(right).ok_or(ArithmeticOverflow),
                 Div => left.checked_div(right).ok_or(DivisionByZero),
                 And => Ok(left & right),

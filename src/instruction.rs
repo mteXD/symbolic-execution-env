@@ -24,6 +24,7 @@ pub enum UnaryOpImm<Tag = ()> {
 /// Operations with 1 Cell Index argument
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOpCell {
+    Neg,
     Not,
     Read,
     ReadReverse,
@@ -52,6 +53,7 @@ pub enum UnaryOpString {
 pub enum BinaryOp {
     // Arithmetic instructions
     Add,
+    Sub,
     Mul,
     Div,
     // Bitwise instructions
