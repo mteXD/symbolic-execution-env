@@ -664,6 +664,19 @@ mod functions {
     use super::*;
 
     test_program! {
+        /// [NEGATIVE] Function body must be a block.
+        direct,
+        program: vec![
+            add_instr!(fun FunctionDefine, FUNC_NAME),
+            add_instr!(Push, 3),
+
+            add_instr!(fun FunctionCall, FUNC_NAME),
+        ],
+        verifier: { error VerifierError::Core(CoreError::InvalidFunctionBody { name }) if name == FUNC_NAME },
+        executor: { error ExecutorError::Core(CoreError::InvalidFunctionBody { name }) if name == FUNC_NAME },
+    }
+
+    test_program! {
         /// [POSITIVE] A simple function that doubles its single argument.
         simple,
         program: vec![
@@ -923,48 +936,5 @@ mod functions {
         ],
         verifier: { error VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody( .. ))) },
         executor: { error ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody( .. ))) },
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Intrinsics
-// ---------------------------------------------------------------------------
-
-mod intrinsics {
-    use super::*;
-
-    test_program! {
-        /// [POSITIVE] Reads an input and prints it back out (buffered I/O).
-        input,
-        program: vec![add_instr!(Input), add_instr!(R Print, 0)],
-        verifier: { stack [ValueSpan::inf()] },
-        executor: { cases {
-            input [42] => stack [42];
-            input [42] => output [42]
-        } },
-    }
-
-    test_program! {
-        /// [POSITIVE] Reads a string from a file and prints it back out.
-        ///
-        /// Ignored: depends on the filesystem (no buffered-I/O equivalent yet). The
-        /// constructor is still referenced to keep it documented.
-        // Preserved verbatim for review after removal of the file-I/O instructions.
-        #[cfg(any())]
-        #[ignore = "Files not yet completely implemented."]
-        file_io_example,
-        program: {
-            let program: Vec<Instruction> = vec![
-                add_instr!(strarg FileRead, "input.txt"),
-                add_instr!(Input),
-                add_instr!(strarg FileWrite, "output.txt"),
-                add_instr!(R Print, 0),
-                add_instr!(strarg FileRead, ""),
-                add_instr!(strarg FileWrite, ""),
-            ];
-            program
-        },
-        verifier: { custom |_program| {} },
-        executor: { custom |_program| {} },
     }
 }

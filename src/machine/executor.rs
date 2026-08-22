@@ -323,7 +323,7 @@ impl<Tag: TagTrait> Executor<Tag> {
         let result = match body {
             Instruction::Block(_, instrs) if instrs.is_empty() => Err(EmptyBlock),
             Instruction::Block(argument_count, instrs) => self.run_nested(argument_count, instrs),
-            _ => Err(CoreError::InvalidDefinitionBody {
+            _ => Err(CoreError::InvalidFunctionBody {
                 name: function_name.to_owned(),
             }
             .into()),

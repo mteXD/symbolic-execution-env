@@ -699,7 +699,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
                 (usize::from(*argument_count), Rc::clone(inner))
             }
             _ => {
-                return Err(CoreError::InvalidDefinitionBody {
+                return Err(CoreError::InvalidFunctionBody {
                     name: fun.to_owned(),
                 }
                 .into());
@@ -846,7 +846,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         let (argument_count, body) = match body_instr {
             Instruction::Block(argument_count @ 0.., inner) => (argument_count, inner),
             _ => {
-                return Err(CoreError::InvalidDefinitionBody {
+                return Err(CoreError::InvalidFunctionBody {
                     name: function_name.to_owned(),
                 }
                 .into());

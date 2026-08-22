@@ -21,7 +21,7 @@ pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
     NotEnoughArguments { required: usize, available: usize },
-    InvalidDefinitionBody { name: String },
+    InvalidFunctionBody { name: String },
     IoReadError,
 }
 
@@ -109,7 +109,7 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         match &current {
             Instruction::Block(_, _) => {}
             _ => {
-                return Err(CoreError::InvalidDefinitionBody {
+                return Err(CoreError::InvalidFunctionBody {
                     name: function_name.to_owned(),
                 });
             }
