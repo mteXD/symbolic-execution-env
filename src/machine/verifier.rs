@@ -29,37 +29,47 @@ type CallableBody<Tag> = (CellAmount, Rc<[Instruction<Tag>]>);
 #[derive(Debug, Clone)]
 pub enum VerifierError<Tag: TagTrait = ()> {
     Core(CoreError),
+    /// When Pop removes too many cells.
     StackUnderflow,
+    /// When cell index is invalid
     InvalidCell {
         instr: Instruction<Tag>,
         cell_index: CellIndex,
     },
     ArithmeticOverflow,
     DivisionByZero,
-    UnsafeCondPlacement,
-    DebugError(&'static str),
+    /// When IfElse branches differ in stack size
     CondUnequalStackSizes {
         true_branch_cells: usize,
         false_branch_cells: usize,
     },
+    /// When block cannot return a value due to having an empty stack
     BlockHasEmptyStack,
+    /// When no instructions are inside a block
     EmptyBlock,
+    /// When FunctionDefine is inside another function's body
     NestedFunctionDefinition {
         outer_function: String,
         inner_function: String,
     },
+    /// When FunctionCall is inside a downgrader's body
     FunctionCallInsideDowngrader {
         function: String,
         downgrader: String,
     },
+    /// When a FunctionDefine is inside IfElse
     ConditionalDefinition {
         function: String,
     },
+    /// When instruction is used in a meaningless way -- curretnly, that's Pop 0
     InstructionError,
+    /// When there is no doubt going to be an infinite recursion
     InfiniteRecursion {
         function: String,
     },
     Flow(FlowError<Tag>),
+    // For debugging purposes
+    DebugError(&'static str),
 }
 
 impl<Tag: TagTrait> From<CoreError> for VerifierError<Tag> {
@@ -632,24 +642,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
         match body {
             Instruction::Block(_, instrs) if instrs.is_empty() => Err(EmptyBlock),
             Instruction::Block(argument_count, instrs) => Ok((*argument_count, Rc::clone(instrs))),
-            _ => Err(CoreError::InvalidFunctionBody {
-                name: function_name.to_owned(),
-            }
-            .into()),
+            _ => Err(FunctionDataError::FunctionMissingBody(function_name.to_owned()).into()),
         }
-    }
-
-    fn ensure_call_arguments(&self, argument_count: CellAmount) -> Result<(), VerifierError<Tag>> {
-        let required = usize::from(argument_count);
-        let available = self.stack.len();
-        if required > available {
-            return Err(CoreError::NotEnoughArguments {
-                required,
-                available,
-            }
-            .into());
-        }
-        Ok(())
     }
 
     /// Interprets an ordinary function at a global call site. Calls reached
@@ -667,7 +661,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
         let (argument_count, body) = self.callable_body(function_name, false)?;
 
         if !self.context.is_top_level() {
-            self.ensure_call_arguments(argument_count)?;
             self.push_existing(ValueSpan::inf(), self.policy.default_tag());
             return Ok(());
         }

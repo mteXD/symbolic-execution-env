@@ -738,7 +738,7 @@ mod functions {
     use super::*;
 
     test_program! {
-        /// [NEGATIVE] Function body must be a block.
+        /// [NEGATIVE] A non-block instruction is not a function body.
         direct,
         program: vec![
             add_instr!(fun FunctionDefine, FUNC_NAME),
@@ -746,8 +746,8 @@ mod functions {
 
             add_instr!(fun FunctionCall, FUNC_NAME),
         ],
-        verifier: { error VerifierError::Core(CoreError::InvalidFunctionBody { name }) if name == FUNC_NAME },
-        executor: { error ExecutorError::Core(CoreError::InvalidFunctionBody { name }) if name == FUNC_NAME },
+        verifier: { error VerifierError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody(name))) if name == FUNC_NAME },
+        executor: { error ExecutorError::Core(CoreError::FunctionDataError(FunctionDataError::FunctionMissingBody(name))) if name == FUNC_NAME },
     }
 
     test_program! {

@@ -20,8 +20,9 @@ pub mod verifier;
 pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
+    /// When there isn't enough values on stack for Block to copy.
     NotEnoughArguments { required: usize, available: usize },
-    InvalidFunctionBody { name: String },
+    /// When there are problems with the buffer
     IoReadError,
 }
 
@@ -77,9 +78,9 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         Ok(())
     }
 
-    /// Registers the instruction immediately following a `FunctionDefine` as
-    /// the body of `function_name`. A consecutive `FunctionDefine` or a
-    /// definition at the end of the program returns `FunctionMissingBody`.
+    /// Registers the block immediately following a `FunctionDefine` as the
+    /// body of `function_name`. A missing or non-block instruction returns
+    /// `FunctionMissingBody`.
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<()> {
         self.common_definition_logic(function_name, false)
     }
@@ -94,26 +95,9 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         function_name: &str,
         is_downgrader: bool,
     ) -> CoreResult<()> {
-        use Instruction::UnaryString;
-        use UnaryOpString::FunctionDefine;
-
-        let current = match self.next() {
-            Some(UnaryString(FunctionDefine, _)) | None => {
-                return Err(
-                    FunctionDataError::FunctionMissingBody(function_name.to_owned()).into(),
-                );
-            }
-            Some(current) => current,
+        let Some(current @ Instruction::Block(_, _)) = self.next() else {
+            return Err(FunctionDataError::FunctionMissingBody(function_name.to_owned()).into());
         };
-
-        match &current {
-            Instruction::Block(_, _) => {}
-            _ => {
-                return Err(CoreError::InvalidFunctionBody {
-                    name: function_name.to_owned(),
-                });
-            }
-        }
 
         let function_name = function_name.to_owned();
         debug!("Function '{}' will point to {:?}", function_name, current);
@@ -270,9 +254,6 @@ impl<V: Clone, T: Clone> Stack<V, T> {
     }
 
     /// Enters a block with the declared argument count.
-    ///
-    /// Atomically clones the caller's top `count` cells in their original order
-    /// and hides the complete caller stack.
     pub fn enter_block(&mut self, count: CellAmount) -> CoreResult<()> {
         let required = usize::from(count);
         let available = self.cells.len();
