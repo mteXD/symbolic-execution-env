@@ -761,7 +761,7 @@ mod functions {
             add_instr!(Push, 3),
             add_instr!(fun FunctionCall, FUNC_NAME),
         ],
-        verifier: { stack [3, ValueSpan::inf()] },
+        verifier: { stack [3, 9] },
         executor: { stack [3, 9] },
     }
 
@@ -796,7 +796,9 @@ mod functions {
     }
 
     test_program! {
-        /// [NEGATIVE] A recursive call in a statically-known branch is confirmed infinite recursion.
+        /// A recursive call reached inside a function body is summarized rather
+        /// than traversed, even when its branch is statically known. This keeps
+        /// verification finite and yields a conservative result.
         infinite_recursion_known_branch,
         program: vec![
             add_instr!(fun FunctionDefine, "f"),
@@ -811,11 +813,12 @@ mod functions {
             ),
             add_instr!(fun FunctionCall, "f"),
         ],
-        verifier_only: { error VerifierError::InfiniteRecursion { function: f } if f == "f" },
+        verifier_only: { stack [ValueSpan::inf()] },
     }
 
     test_program! {
-        /// [POSITIVE] A recursive call in an uncertain branch is accepted with a warning.
+        /// A recursive call reached inside a function body is summarized rather
+        /// than traversed. The uncertain branch merge remains conservative.
         recursion_unknown_branch,
         program: vec![
             add_instr!(fun FunctionDefine, "f"),
@@ -870,7 +873,7 @@ mod functions {
             add_instr!(Push, 30),
             add_instr!(fun FunctionCall, FUNC_NAME),
         ],
-        verifier: { stack [10, 20, 30, ValueSpan::inf()] },
+        verifier: { stack [10, 20, 30, 60] },
         executor: { stack [10, 20, 30, 60] },
     }
 
@@ -922,12 +925,7 @@ mod functions {
             ),
             add_instr!(fun FunctionCall, FUNC_NAME),
         ],
-        verifier: { stack [
-            ValueSpan::inf(),
-            ValueSpan::inf(),
-            ValueSpan::inf(),
-            ValueSpan::inf()
-        ] },
+        verifier: { stack [60, 150, 240, 450] },
         executor: { stack [60, 150, 240, 450] },
     }
 
@@ -977,14 +975,9 @@ mod functions {
     }
 
     test_program! {
-        /// [NEGATIVE] A caller-argument read inside an ifelse branch of a function
-        /// body must count towards the function's argument requirements, so
-        /// calling the function with an empty stack should fail in both runners
-        /// (`NotEnoughBlockArguments` in both runners).
-        ///
-        /// Ignored: the branch rolls back `defining`, forgetting the recorded
-        /// argument (bug), so the verifier accepts the under-supplied call.
-        #[ignore = "In-branch argument reads are forgotten"]
+        /// [NEGATIVE] Declared block arity is checked at the call site before
+        /// interpreting the body, including when the argument is only read in
+        /// an ifelse branch.
         arg_read_inside_branch,
         program: vec![
             add_instr!(fun FunctionDefine, FUNC_NAME),

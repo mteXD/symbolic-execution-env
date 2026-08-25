@@ -1,13 +1,14 @@
-//! This module is the implementation of the verifier. Function calls do not get executed.
+//! This module is the implementation of the verifier. Top-level function calls
+//! are abstractly executed; calls reached from within an ordinary function are
+//! summarized to guarantee verifier termination, while calls inside a
+//! downgrader are rejected.
 //!
 //! For the "entry point", see [`Verifier::verify`].
 
 use std::{collections::HashMap, fmt::Debug, ops::Add, rc::Rc};
 
 use crate::{
-    information_flow::{
-        AwareConnection, FlowError, SecurityPolicy, TagTrait, validate_program_tags,
-    },
+    information_flow::{FlowError, SecurityPolicy, TagTrait, validate_program_tags},
     instruction::{
         BinaryOp, Instruction, NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
@@ -21,7 +22,9 @@ use crate::{
     },
 };
 use VerifierError::*;
-use log::{debug, trace, warn};
+use log::{debug, warn};
+
+type CallableBody<Tag> = (CellAmount, Rc<[Instruction<Tag>]>);
 
 #[derive(Debug, Clone)]
 pub enum VerifierError<Tag: TagTrait = ()> {
@@ -44,6 +47,10 @@ pub enum VerifierError<Tag: TagTrait = ()> {
     NestedFunctionDefinition {
         outer_function: String,
         inner_function: String,
+    },
+    FunctionCallInsideDowngrader {
+        function: String,
+        downgrader: String,
     },
     ConditionalDefinition {
         function: String,
@@ -343,22 +350,28 @@ impl Add<Immediate> for ValueSpan {
     }
 }
 
-/// Definition currently under analysis. The name is retained for nested
-/// definition rejection and direct-recursion classification; block arity is
-/// declared explicitly and therefore needs no read-based discovery state.
+/// Execution context used to distinguish global calls, which are interpreted,
+/// from calls reached inside an ordinary function, which are summarized, and
+/// calls reached inside a downgrader, which are rejected. Top-level blocks and
+/// branches preserve `TopLevel`.
 #[derive(Debug, Clone)]
-struct DefinitionInProgress {
-    name: String,
+enum VerificationContext {
+    TopLevel,
+    Function(String),
+    Downgrader(String),
 }
 
-/// What the verifier knows about a defined function: its declared arity and
-/// return span/tag. A downgrader's return tag is the connection `target`
-/// (recorded at definition time).
-#[derive(Debug, Clone)]
-struct FunctionFacts<Tag: TagTrait = ()> {
-    argument_count: usize,
-    return_value: Option<ValueSpan>,
-    return_tag: Option<Tag>,
+impl VerificationContext {
+    fn is_top_level(&self) -> bool {
+        matches!(self, Self::TopLevel)
+    }
+
+    fn enclosing_name(&self) -> Option<&str> {
+        match self {
+            Self::TopLevel => None,
+            Self::Function(name) | Self::Downgrader(name) => Some(name),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -367,27 +380,14 @@ pub struct Verifier<Tag: TagTrait = ()> {
     stack: Stack<ValueSpan, Tag>,
     policy: SecurityPolicy<Tag>,
     pc_tag: Tag,
-    /// Identity of the definition body currently being analyzed.
-    defining: Option<DefinitionInProgress>,
-    /// Facts discovered about each defined ordinary function, by name and alias.
-    functions: HashMap<String, FunctionFacts<Tag>>,
-    /// Facts discovered about each defined downgrader, kept separate from
-    /// ordinary functions so both kinds may use the same name.
-    downgraders: HashMap<String, FunctionFacts<Tag>>,
-    /// Active downgrader connection while analyzing its body at definition
-    /// time. No stack is needed: nested definitions are forbidden, so at most
-    /// one downgrader is under analysis at a time.
-    current_downgrader: Option<AwareConnection<Tag>>,
+    /// Whether instructions are running globally or in a function-like body.
+    context: VerificationContext,
     /// How many times each downgrader is called, counted statically. The call
     /// limit spans the whole program (with branch-specific merging in `ifelse`).
     downgrader_calls: HashMap<String, usize>,
     /// True while the verifier is evaluating an ifelse branch. Function and
     /// downgrader definitions are rejected there because they may not execute.
     in_conditional_branch: bool,
-    /// True when at least one enclosing conditional branch has an unknown
-    /// (non-singleton) condition. Used to distinguish confirmed infinite
-    /// recursion from recursion that is only possible on one path.
-    in_uncertain_branch: bool,
 }
 
 impl Verifier<()> {
@@ -399,13 +399,9 @@ impl Verifier<()> {
             stack: Stack::new(),
             policy,
             pc_tag: (),
-            defining: None,
-            functions: HashMap::new(),
-            downgraders: HashMap::new(),
-            current_downgrader: None,
+            context: VerificationContext::TopLevel,
             downgrader_calls: HashMap::new(),
             in_conditional_branch: false,
-            in_uncertain_branch: false,
         }
     }
 }
@@ -424,13 +420,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
             stack: Stack::new(),
             policy,
             pc_tag,
-            defining: None,
-            functions: HashMap::new(),
-            downgraders: HashMap::new(),
-            current_downgrader: None,
+            context: VerificationContext::TopLevel,
             downgrader_calls: HashMap::new(),
             in_conditional_branch: false,
-            in_uncertain_branch: false,
         })
     }
 
@@ -449,16 +441,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// Calculates ccd(left, right).
     fn combine_tags(&self, left: Tag, right: Tag) -> Result<Tag, VerifierError<Tag>> {
         self.policy.ccd(left, right).map_err(VerifierError::Flow)
-    }
-
-    /// Tag applied to a function's synthetic declared arguments during analysis. Inside
-    /// a downgrader this is the connection's `source`, so the computed result
-    /// matches `source` and passes the implicit-retag source check. Otherwise
-    /// it is the policy default (non-downgrader functions are unaffected).
-    fn arg_tag(&self) -> Tag {
-        self.current_downgrader
-            .map(|c| c.source)
-            .unwrap_or_else(|| self.policy.default_tag())
     }
 
     /// Pushes a newly-created value, including the current control-flow tag.
@@ -531,26 +513,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
     /// Runs a counted block while scoping its value/tag cells and program data.
     /// Returns `(last_value, last_tag, body_stack_size)`.
-    ///
-    /// `defining` and `functions` are NOT scoped here; callers that need that
-    /// (e.g. `evaluate_block`) save and restore them around the call.
     fn run_nested(
         &mut self,
         argument_count: CellAmount,
         instrs: Rc<[Instruction<Tag>]>,
     ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
         self.stack.enter_block(argument_count)?;
-        self.run_entered_block(instrs)
-    }
-
-    /// Runs a block using synthetic argument cells. Definition analysis uses
-    /// this path because its declared parameters have no concrete caller yet.
-    fn run_nested_with_arguments(
-        &mut self,
-        arguments: Vec<Cell<ValueSpan, Tag>>,
-        instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
-        self.stack.enter_block_with_arguments(arguments);
         self.run_entered_block(instrs)
     }
 
@@ -585,15 +553,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
         condition_tag: Tag,
-        condition_is_known: bool,
     ) -> Result<(), VerifierError<Tag>> {
-        let saved_defining = self.defining.clone();
         let saved_pc_tag = self.pc_tag;
         let saved_in_conditional_branch = self.in_conditional_branch;
-        let saved_in_uncertain = self.in_uncertain_branch;
         self.pc_tag = self.combine_tags(self.pc_tag, condition_tag)?;
         self.in_conditional_branch = true;
-        self.in_uncertain_branch = saved_in_uncertain || !condition_is_known;
 
         let saved_program =
             std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
@@ -601,16 +565,13 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         self.machine.program_data = saved_program;
         self.pc_tag = saved_pc_tag;
-        self.defining = saved_defining;
         self.in_conditional_branch = saved_in_conditional_branch;
-        self.in_uncertain_branch = saved_in_uncertain;
 
         exec_result
     }
 
-    /// Verifies the body of a `FunctionDefine`. The function is registered
-    /// globally by `common_function_logic` and its body is analyzed by
-    /// [`analyze_definition_body`](Self::analyze_definition_body).
+    /// Registers an ordinary function without interpreting its body. The body
+    /// is checked with actual abstract arguments when called globally.
     fn verify_function_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
         if self.in_conditional_branch {
             return Err(ConditionalDefinition {
@@ -618,16 +579,13 @@ impl<Tag: TagTrait> Verifier<Tag> {
             });
         }
         self.ensure_not_nested(fun)?;
-
-        let info = self.analyze_definition_body(fun, false)?;
-        self.publish_function_facts(fun, info, false);
+        self.machine.common_function_logic(fun)?;
         Ok(())
     }
 
-    /// Verifies a `Downgrader` definition: analyzes the body with the
-    /// connection `source` applied to its declared arguments, then performs
-    /// the definition-time implicit retag — the return tag must match `source`
-    /// and is recorded as `target`, so call sites publish the downgraded tag.
+    /// Registers a downgrader without interpreting its body. Policy membership
+    /// is still validated at the definition; source/target semantics are
+    /// checked when the downgrader is called globally.
     fn verify_downgrader_definition(&mut self, fun: &str) -> Result<(), VerifierError<Tag>> {
         if self.in_conditional_branch {
             return Err(ConditionalDefinition {
@@ -636,36 +594,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
         }
         self.ensure_not_nested(fun)?;
 
-        let Some(downgrader) = self.policy.downgrader(fun) else {
+        if self.policy.downgrader(fun).is_none() {
             return Err(VerifierError::Flow(FlowError::DowngraderUndefined {
                 name: fun.to_owned(),
             }));
-        };
-        let connection = downgrader.connection;
-
-        // Establish the downgrader context so the body's arguments carry the
-        // connection `source`. No stack is needed: nested definitions are
-        // forbidden, so at most one downgrader is under analysis at a time.
-        let saved_downgrader = self.current_downgrader;
-        self.current_downgrader = Some(connection);
-        let analysis = self.analyze_definition_body(fun, true);
-        self.current_downgrader = saved_downgrader;
-        let mut info = analysis?;
-
-        match info.return_tag {
-            Some(tag) if tag == connection.source => info.return_tag = Some(connection.target),
-            Some(tag) => {
-                return Err(VerifierError::Flow(
-                    FlowError::DowngraderReturnTagMismatch {
-                        found: tag,
-                        expected: connection.source,
-                    },
-                ));
-            }
-            None => {}
         }
-
-        self.publish_function_facts(fun, info, true);
+        self.machine.common_downgrader_logic(fun)?;
         Ok(())
     }
 
@@ -673,137 +607,83 @@ impl<Tag: TagTrait> Verifier<Tag> {
     /// with recursion (the function would be redefined on the second recursion
     /// step) and would force cloning `function_data` per definition.
     fn ensure_not_nested(&self, inner: &str) -> Result<(), VerifierError<Tag>> {
-        if let Some(ref outer) = self.defining {
+        if let Some(outer) = self.context.enclosing_name() {
             return Err(NestedFunctionDefinition {
-                outer_function: outer.name.clone(),
+                outer_function: outer.to_owned(),
                 inner_function: inner.to_owned(),
             });
         }
         Ok(())
     }
 
-    /// Analyzes a definition body in an isolated stack initialized with one
-    /// unbounded cell per declared argument. Partial arity facts are published
-    /// before body analysis so recursive calls can resolve without a marker
-    /// instruction inside the body.
-    fn analyze_definition_body(
-        &mut self,
-        fun: &str,
+    /// Resolves a function-like body and validates its block shape. Empty
+    /// bodies are rejected when called, matching concrete call behavior.
+    fn callable_body(
+        &self,
+        function_name: &str,
         is_downgrader: bool,
-    ) -> Result<FunctionFacts<Tag>, VerifierError<Tag>> {
-        if is_downgrader {
-            self.machine.common_downgrader_logic(fun)?
+    ) -> Result<CallableBody<Tag>, VerifierError<Tag>> {
+        let body = if is_downgrader {
+            self.machine.downgrader_get(function_name)?
         } else {
-            self.machine.common_function_logic(fun)?
-        }
+            self.machine.function_get(function_name)?
+        };
 
-        let (argument_count, to_check) = match self.machine.program_data.get_current()? {
-            Instruction::Block(argument_count, inner) => {
-                (usize::from(*argument_count), Rc::clone(inner))
+        match body {
+            Instruction::Block(_, instrs) if instrs.is_empty() => Err(EmptyBlock),
+            Instruction::Block(argument_count, instrs) => Ok((*argument_count, Rc::clone(instrs))),
+            _ => Err(CoreError::InvalidFunctionBody {
+                name: function_name.to_owned(),
             }
-            _ => {
-                return Err(CoreError::InvalidFunctionBody {
-                    name: fun.to_owned(),
-                }
-                .into());
-            }
-        };
-        if to_check.is_empty() {
-            return Err(EmptyBlock);
+            .into()),
         }
-
-        let partial = FunctionFacts {
-            argument_count,
-            return_value: None,
-            return_tag: None,
-        };
-        if is_downgrader {
-            self.downgraders.insert(fun.to_owned(), partial);
-        } else {
-            self.functions.insert(fun.to_owned(), partial);
-        }
-
-        let saved_defining = self.defining.replace(DefinitionInProgress {
-            name: fun.to_owned(),
-        });
-
-        let argument_tag = self.combine_tags(self.arg_tag(), self.pc_tag)?;
-        let arguments = (0..argument_count)
-            .map(|_| Cell::new(ValueSpan::inf(), argument_tag))
-            .collect();
-        let run_result = self.run_nested_with_arguments(arguments, to_check);
-
-        self.defining
-            .take()
-            .expect("definition analysis state must still be present");
-        self.defining = saved_defining;
-
-        let (return_value, return_tag) = match &run_result {
-            Ok((value, tag, _)) => (*value, *tag),
-            Err(_) => (None, None),
-        };
-
-        run_result?;
-        Ok(FunctionFacts {
-            argument_count,
-            return_value,
-            return_tag,
-        })
     }
 
-    /// Publishes a function's discovered facts under its name.
-    fn publish_function_facts(
-        &mut self,
-        fun: &str,
-        facts: FunctionFacts<Tag>,
-        is_downgrader: bool,
-    ) {
-        trace!("Finished verifying function definition for '{}'", fun);
-        trace!(
-            "Declared argument count for '{}': {}",
-            fun, facts.argument_count
-        );
-
-        let destination = if is_downgrader {
-            &mut self.downgraders
-        } else {
-            &mut self.functions
-        };
-        destination.insert(fun.to_string(), facts);
+    fn ensure_call_arguments(&self, argument_count: CellAmount) -> Result<(), VerifierError<Tag>> {
+        let required = usize::from(argument_count);
+        let available = self.stack.len();
+        if required > available {
+            return Err(CoreError::NotEnoughArguments {
+                required,
+                available,
+            }
+            .into());
+        }
+        Ok(())
     }
 
-    /// Verifies an ordinary `FunctionCall` site and pushes the callee's
-    /// recorded return span/tag.
+    /// Interprets an ordinary function at a global call site. Calls reached
+    /// inside an ordinary function are not traversed; after
+    /// declaration/shape/arity checks they publish a conservative result.
+    /// Ordinary calls inside downgraders are prohibited by the verifier.
     fn verify_function_call(&mut self, function_name: &str) -> Result<(), VerifierError<Tag>> {
-        // Direct recursion while analyzing the current function's body.
-        if self
-            .defining
-            .as_ref()
-            .is_some_and(|d| d.name == function_name)
-        {
-            if self.in_uncertain_branch {
-                warn!(
-                    "Recursive call to '{}' inside an uncertain conditional branch may be infinite",
-                    function_name
-                );
-                self.functions
-                    .entry(function_name.to_owned())
-                    .or_insert_with(|| FunctionFacts {
-                        argument_count: 0,
-                        return_value: None,
-                        return_tag: None,
-                    });
-            } else {
-                return Err(InfiniteRecursion {
-                    function: function_name.to_owned(),
-                });
-            }
+        if let VerificationContext::Downgrader(downgrader) = &self.context {
+            return Err(FunctionCallInsideDowngrader {
+                function: function_name.to_owned(),
+                downgrader: downgrader.clone(),
+            });
         }
 
-        self.machine.function_get(function_name)?;
+        let (argument_count, body) = self.callable_body(function_name, false)?;
 
-        let (return_value, return_tag) = self.callee_return(function_name)?;
-        self.push_existing(return_value, return_tag);
+        if !self.context.is_top_level() {
+            self.ensure_call_arguments(argument_count)?;
+            self.push_existing(ValueSpan::inf(), self.policy.default_tag());
+            return Ok(());
+        }
+
+        let saved_context = std::mem::replace(
+            &mut self.context,
+            VerificationContext::Function(function_name.to_owned()),
+        );
+        let result = self.run_nested(argument_count, body);
+        self.context = saved_context;
+
+        match result? {
+            (Some(value), Some(tag), _) => self.push_existing(value, tag),
+            (Some(value), None, _) => self.push_existing(value, self.policy.default_tag()),
+            (None, _, _) => {}
+        }
         Ok(())
     }
 
@@ -818,8 +698,8 @@ impl<Tag: TagTrait> Verifier<Tag> {
         };
 
         // Downgrades must happen at the top level of the program: a `Downgrade`
-        // inside a function or downgrader body is rejected at definition time.
-        if self.defining.is_some() {
+        // reached while interpreting a function or downgrader body is rejected.
+        if !self.context.is_top_level() {
             return Err(VerifierError::Flow(FlowError::NestedDowngraderCall {
                 downgrader: function_name.to_owned(),
             }));
@@ -845,23 +725,13 @@ impl<Tag: TagTrait> Verifier<Tag> {
 
         // Re-execute the body with the actual top caller suffix. The counted
         // block clones values and tags together before isolating the body.
-        let body_instr = self.machine.downgrader_get(function_name)?.clone();
-        let (argument_count, body) = match body_instr {
-            Instruction::Block(argument_count @ 0.., inner) => (argument_count, inner),
-            _ => {
-                return Err(CoreError::InvalidFunctionBody {
-                    name: function_name.to_owned(),
-                }
-                .into());
-            }
-        };
-        if body.is_empty() {
-            return Err(EmptyBlock);
-        }
-
-        let saved_defining = self.defining.take();
+        let (argument_count, body) = self.callable_body(function_name, true)?;
+        let saved_context = std::mem::replace(
+            &mut self.context,
+            VerificationContext::Downgrader(function_name.to_owned()),
+        );
         let result = self.run_nested(argument_count, body);
-        self.defining = saved_defining;
+        self.context = saved_context;
 
         let connection = downgrader.connection;
         if let (Some(return_value), Some(return_tag), _) = result? {
@@ -876,51 +746,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
             self.push_existing(return_value, connection.target);
         }
         Ok(())
-    }
-
-    /// Looks up the callee's facts, checks its declared arity against the caller
-    /// stack, and returns its recorded return span/tag (defaults: unbounded
-    /// span, default tag).
-    fn callee_return(&self, function_name: &str) -> Result<(ValueSpan, Tag), VerifierError<Tag>> {
-        use FunctionDataError::FunctionUndefined;
-
-        let facts = self
-            .functions
-            .get(function_name)
-            .ok_or_else(|| VerifierError::from(FunctionUndefined(function_name.to_owned())))?;
-
-        trace!("Function facts for '{}': {:#?}", function_name, facts);
-
-        let stack_len = self.stack.len();
-        if facts.argument_count > stack_len {
-            return Err(CoreError::NotEnoughArguments {
-                required: facts.argument_count,
-                available: stack_len,
-            }
-            .into());
-        }
-
-        let return_value = facts.return_value.unwrap_or_else(ValueSpan::inf);
-        let mut return_tag = facts
-            .return_tag
-            .unwrap_or_else(|| self.policy.default_tag());
-
-        // Definition analysis uses synthetic argument tags. At an ordinary call
-        // site, conservatively join every declared caller argument into the
-        // cached return tag.
-        for index in stack_len - facts.argument_count..stack_len {
-            let argument_tag = self
-                .stack
-                .tag_at(index)
-                .expect("argument depth was checked above");
-            return_tag = self.combine_tags(return_tag, argument_tag)?;
-        }
-        debug!(
-            "callee_return: function={function_name:?}, caller_stack_tags={:?}, argument_count={}, cached_return_tag={return_tag:?}",
-            self.stack.tags(),
-            facts.argument_count,
-        );
-        Ok((return_value, return_tag))
     }
 
     /// Reads a cell's value and tag from the currently visible stack.
@@ -1113,11 +938,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         if instrs.is_empty() {
             return Err(EmptyBlock);
         }
-        // Scope only definition-analysis state; globally published function
-        // facts persist. Definitions in conditional branches are rejected.
-        let saved_defining = self.defining.clone();
         let result = self.run_nested(argument_count, instrs);
-        self.defining = saved_defining;
 
         match result? {
             (Some(val), Some(tag), _) => self.push_existing(val, tag),
@@ -1141,7 +962,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
                 let chosen = if taken { when_true } else { when_false };
-                self.run_ifelse_branch(chosen, condition_tag, true)?;
+                self.run_ifelse_branch(chosen, condition_tag)?;
             }
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a copy of the initial stack
@@ -1153,11 +974,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                 let initial = self.stack.slots().to_vec();
                 let initial_calls = self.downgrader_calls.clone();
 
-                self.run_ifelse_branch(when_true, condition_tag, false)?;
+                self.run_ifelse_branch(when_true, condition_tag)?;
                 let true_cells = self.stack.replace_slots(initial);
                 let true_calls = std::mem::replace(&mut self.downgrader_calls, initial_calls);
 
-                self.run_ifelse_branch(when_false, condition_tag, false)?;
+                self.run_ifelse_branch(when_false, condition_tag)?;
                 let false_cells = self.stack.take_slots();
 
                 for (name, count) in true_calls {

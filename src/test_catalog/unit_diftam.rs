@@ -7,8 +7,6 @@
 //! plain unmonitored runner). The shared `Confidentiality` / `Integrity`
 //! policies live in the parent module.
 
-use crate::types::Immediate;
-
 use super::Confidentiality::*;
 use super::Integrity::*;
 use super::*;
@@ -328,12 +326,37 @@ test_program! {
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
             (41, Secret),
-            (ValueSpan::new(Immediate::MIN + 1, Immediate::MAX), Secret),
+            (42, Secret),
         ]
     },
     executor: { tagged_stack with confidentiality_policy(), [
             (41, Secret),
             (42, Secret)
+        ]
+    },
+}
+
+test_program! {
+    /// A Secret argument that the function body never reads does not taint its
+    /// Public return. The verifier interprets the global call with the actual
+    /// argument cells and therefore matches the executor.
+    tags_remain_aligned_through_function_block_unused_arg,
+    program: vec![
+        add_instr!(fun FunctionDefine, "add_public"),
+        make_block!(1,
+            add_instr!(tag Push, 1, Public),
+        ),
+        add_instr!(tag Push, 41, Secret),
+        add_instr!(fun FunctionCall, "add_public"),
+    ],
+    verifier: { tagged_stack with confidentiality_policy(), [
+            (41, Secret),
+            (1, Public),
+        ]
+    },
+    executor: { tagged_stack with confidentiality_policy(), [
+            (41, Secret),
+            (1, Public)
         ]
     },
 }
@@ -664,14 +687,10 @@ mod downgraders {
     }
 
     test_program! {
-        /// Unlike a nested `Downgrade` (rejected as `NestedDowngraderCall`), an
-        /// ordinary `FunctionCall` inside a downgrader body is allowed: the
-        /// function runs normally and its return value flows through the
-        /// downgrader's implicit retag. Here `helper` returns a `Secret` value
-        /// (matching the connection source), which the `Secret ->> Public`
-        /// downgrader `d` then downgrades to `Public`. The final `5` on the
-        /// stack proves `helper` executed inside the downgrader body.
-        function_call_inside_downgrader_allowed,
+        /// The verifier rejects an ordinary `FunctionCall` inside a downgrader
+        /// body rather than traversing or summarizing it. The executor retains
+        /// its concrete behavior and executes the helper normally.
+        function_call_inside_downgrader_rejected_by_verifier,
         program: vec![
             add_instr!(fun FunctionDefine, "helper"),
             make_block!(0,
@@ -684,10 +703,10 @@ mod downgraders {
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "d"),
         ],
-        verifier: { tagged_stack with downgrader_policy("d", Some(1)), [
-                (0, Secret),
-                (5, Public)
-            ]
+        split,
+        verifier: { error with downgrader_policy("d", Some(1)),
+            VerifierError::FunctionCallInsideDowngrader { function, downgrader }
+                if function == "helper" && downgrader == "d"
         },
         executor: { tagged_stack with downgrader_policy("d", Some(1)), [
                 (0, Secret),
@@ -773,7 +792,7 @@ mod downgraders {
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
                 (0, Public),
-                (ValueSpan::new(0, 1), Public)
+                (1, Public)
             ]
         },
         executor: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
