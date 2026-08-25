@@ -575,15 +575,15 @@ impl<Tag: TagTrait> Verifier<Tag> {
         Ok((last_value, last_tag, body_size))
     }
 
-    /// Verifies a single ifelse-branch instruction on the parent stack. Cells
-    /// are mutated in place, while definitions are rejected as conditional. A
-    /// branch instruction that is a block applies its own declared semantics.
+    /// Verifies an ifelse branch sequence on the parent stack. Cells are
+    /// mutated in place, while definitions are rejected as conditional. A
+    /// block within the sequence applies its own declared semantics.
     ///
     /// The `condition_tag` is combined with the current `pc_tag` so that all
     /// values pushed inside the branch carry the condition's taint.
     fn run_ifelse_branch(
         &mut self,
-        instr: &Instruction<Tag>,
+        instrs: Rc<[Instruction<Tag>]>,
         condition_tag: Tag,
         condition_is_known: bool,
     ) -> Result<(), VerifierError<Tag>> {
@@ -595,8 +595,11 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.in_conditional_branch = true;
         self.in_uncertain_branch = saved_in_uncertain || !condition_is_known;
 
-        let exec_result = self.evaluate_instruction(instr);
+        let saved_program =
+            std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
+        let exec_result = self.run_loop();
 
+        self.machine.program_data = saved_program;
         self.pc_tag = saved_pc_tag;
         self.defining = saved_defining;
         self.in_conditional_branch = saved_in_conditional_branch;
@@ -780,7 +783,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         {
             if self.in_uncertain_branch {
                 warn!(
-                    "Recursive call to '{}' inside an uncertain conditional branch may not be infinite",
+                    "Recursive call to '{}' inside an uncertain conditional branch may be infinite",
                     function_name
                 );
                 self.functions
@@ -1127,8 +1130,8 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<Tag>>,
-        when_false: Rc<Instruction<Tag>>,
+        when_true: Rc<[Instruction<Tag>]>,
+        when_false: Rc<[Instruction<Tag>]>,
     ) -> Result<(), Self::Error> {
         let (condition, condition_tag) = self.read(cond_idx)?;
         let known_truth_value = Self::known_truth_value(&condition);
@@ -1138,7 +1141,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
             // mutates the parent stack directly (no comparison needed).
             Some(taken) => {
                 let chosen = if taken { when_true } else { when_false };
-                self.run_ifelse_branch(&chosen, condition_tag, true)?;
+                self.run_ifelse_branch(chosen, condition_tag, true)?;
             }
             // Condition is unknown: both branches are explored. They each mutate
             // the parent stack in place, so we keep a copy of the initial stack
@@ -1150,11 +1153,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
                 let initial = self.stack.slots().to_vec();
                 let initial_calls = self.downgrader_calls.clone();
 
-                self.run_ifelse_branch(&when_true, condition_tag, false)?;
+                self.run_ifelse_branch(when_true, condition_tag, false)?;
                 let true_cells = self.stack.replace_slots(initial);
                 let true_calls = std::mem::replace(&mut self.downgrader_calls, initial_calls);
 
-                self.run_ifelse_branch(&when_false, condition_tag, false)?;
+                self.run_ifelse_branch(when_false, condition_tag, false)?;
                 let false_cells = self.stack.take_slots();
 
                 for (name, count) in true_calls {

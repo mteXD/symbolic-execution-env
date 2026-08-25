@@ -216,8 +216,8 @@ trait Evaluate<Tag: Debug = ()> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<Tag>>,
-        when_false: Rc<Instruction<Tag>>,
+        when_true: Rc<[Instruction<Tag>]>,
+        when_false: Rc<[Instruction<Tag>]>,
     ) -> Result<(), Self::Error>;
 }
 

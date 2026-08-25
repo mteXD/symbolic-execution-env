@@ -526,8 +526,8 @@ fn validate_instruction_tags<Tag: TagTrait>(
         }
         Instruction::Block(_, body) => validate_program_tags(body, policy)?,
         Instruction::IfElse(_, when_true, when_false) => {
-            validate_instruction_tags(when_true, policy)?;
-            validate_instruction_tags(when_false, policy)?;
+            validate_program_tags(when_true, policy)?;
+            validate_program_tags(when_false, policy)?;
         }
         _ => {}
     }

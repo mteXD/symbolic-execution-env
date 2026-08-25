@@ -311,6 +311,80 @@ mod ifelse {
     }
 
     test_program! {
+        /// [POSITIVE] Both statically selected branches accept ordered instruction
+        /// sequences. Direct pushes and pops remain visible on the surrounding
+        /// stack, while nested blocks retain isolated result-collapse behavior.
+        multiple_instructions_known_branches,
+        program: vec![
+            add_instr!(Push, 1),
+            add_instr!(ifelse 0,
+                [
+                    add_instr!(Push, 10),
+                    add_instr!(Push, 20),
+                    add_instr!(R Pop, 1),
+                    make_block!(1,
+                        add_instr!(Push, 5),
+                        add_instr!(Add, 0, 1)
+                    ),
+                ],
+                [],
+            ),
+            add_instr!(Push, 0),
+            add_instr!(ifelse 3,
+                [],
+                [
+                    add_instr!(Push, 30),
+                    add_instr!(Push, 40),
+                    add_instr!(R Pop, 1),
+                    make_block!(1,
+                        add_instr!(Push, 7),
+                        add_instr!(Add, 0, 1)
+                    ),
+                ],
+            ),
+        ],
+        verifier: { stack [1, 10, 15, 0, 30, 37] },
+        executor: { stack [1, 10, 15, 0, 30, 37] },
+    }
+
+    test_program! {
+        /// [POSITIVE] An unknown condition explores every instruction in both
+        /// balanced sequences before merging their resulting cells.
+        multiple_instructions_unknown_balanced,
+        program: vec![
+            add_instr!(Input),
+            add_instr!(ifelse 0,
+                [
+                    add_instr!(Push, 10),
+                    add_instr!(Push, 11),
+                ],
+                [
+                    add_instr!(Push, 20),
+                    add_instr!(Push, 21),
+                ],
+            ),
+        ],
+        verifier: { stack [ValueSpan::inf(), ValueSpan::new(10, 20), ValueSpan::new(11, 21)] },
+        executor: { cases {
+            input [1] => stack [1, 10, 11];
+            input [0] => stack [0, 20, 21]
+        } },
+    }
+
+    test_program! {
+        /// [POSITIVE] Empty branch lists are no-ops. This also exercises empty
+        /// list inference and trailing commas in the bracket-list macro form.
+        empty_branches_are_noops,
+        program: vec![
+            add_instr!(Push, 1),
+            add_instr!(ifelse 0, [], [],),
+            add_instr!(Push, 2),
+        ],
+        verifier: { stack [1, 2] },
+        executor: { stack [1, 2] },
+    }
+
+    test_program! {
         /// [POSITIVE] An ifelse with an unknown condition but balanced branches.
         unknown_balanced,
         program: vec![

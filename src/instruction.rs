@@ -88,7 +88,12 @@ pub enum Instruction<Tag = ()> {
     /// preserves their original order, and isolates the body from the caller.
     /// The block collapses to the body's top cell when it returns.
     Block(CellAmount, Rc<[Instruction<Tag>]>),
-    IfElse(CellIndex, Rc<Instruction<Tag>>, Rc<Instruction<Tag>>),
+    /// Non-isolating conditional instruction sequences.
+    ///
+    /// Only the selected branch runs. Its instructions execute in order on the
+    /// surrounding stack, and either branch may be empty (a no-op). A [`Block`]
+    /// within a branch still applies its own isolated semantics.
+    IfElse(CellIndex, Rc<[Instruction<Tag>]>, Rc<[Instruction<Tag>]>),
 }
 
 /// Convenience constructor for a single [`Instruction`].
@@ -134,11 +139,22 @@ macro_rules! add_instr {
             String::from($name),
         )
     };
-    (ifelse $cond:expr, $when_true:expr, $when_false:expr) => {
+    (ifelse $cond:expr,
+        [ $( $when_true:expr ),* $(,)? ],
+        [ $( $when_false:expr ),* $(,)? ]
+        $(,)?
+    ) => {
         $crate::instruction::Instruction::IfElse(
             $cond,
-            std::rc::Rc::new($when_true),
-            std::rc::Rc::new($when_false),
+            std::rc::Rc::from(vec![ $( $when_true ),* ]),
+            std::rc::Rc::from(vec![ $( $when_false ),* ]),
+        )
+    };
+    (ifelse $cond:expr, $when_true:expr, $when_false:expr $(,)?) => {
+        $crate::instruction::Instruction::IfElse(
+            $cond,
+            std::rc::Rc::from(vec![$when_true]),
+            std::rc::Rc::from(vec![$when_false]),
         )
     };
 }

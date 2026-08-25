@@ -216,8 +216,8 @@ impl<Tag: TagTrait> Executor<Tag> {
         Ok(result)
     }
 
-    /// Runs one ifelse branch inline on the current stack. A branch instruction
-    /// that is itself a `Block` applies its declared isolated argument scope.
+    /// Runs one ifelse branch inline on the current stack. A `Block` within the
+    /// sequence applies its declared isolated argument scope.
     fn run_ifelse_branch(
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
@@ -569,8 +569,8 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
     fn evaluate_ifelse(
         &mut self,
         cond_idx: CellIndex,
-        when_true: Rc<Instruction<Tag>>,
-        when_false: Rc<Instruction<Tag>>,
+        when_true: Rc<[Instruction<Tag>]>,
+        when_false: Rc<[Instruction<Tag>]>,
     ) -> ExecutorResult<(), Tag> {
         let (condition, condition_tag) = self.read_entry(cond_idx)?;
 
@@ -580,7 +580,6 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
             _other => todo!("This will eventually be a TypeError, in case types get implemented."),
         };
 
-        let branch_program = Rc::from(vec![branch.as_ref().clone()]);
-        self.run_ifelse_branch(branch_program, condition_tag)
+        self.run_ifelse_branch(branch, condition_tag)
     }
 }

@@ -281,6 +281,37 @@ mod implicit_flow {
             ]
         },
     }
+
+    test_program! {
+        /// A secret condition taints every newly-created value in a selected
+        /// multi-instruction branch, not only the branch's first instruction.
+        ifelse_sequence_taints_every_instruction,
+        program: vec![
+            add_instr!(tag Push, 1, Secret),
+            add_instr!(ifelse 0,
+                [
+                    add_instr!(tag Push, 7, Public),
+                    add_instr!(tag Push, 8, Public),
+                ],
+                [],
+            ),
+            add_instr!(tag Push, 9, Public),
+        ],
+        verifier: { tagged_stack with confidentiality_policy(), [
+                (1, Secret),
+                (7, Secret),
+                (8, Secret),
+                (9, Public)
+            ]
+        },
+        executor: { tagged_stack with confidentiality_policy(), [
+                (1, Secret),
+                (7, Secret),
+                (8, Secret),
+                (9, Public)
+            ]
+        },
+    }
 }
 
 test_program! {
@@ -316,6 +347,28 @@ test_program! {
     /// rejected at construction time.
     invalid_embedded_tag_rejected_at_construction,
     program: vec![add_instr!(tag Push, 42, Confidential)],
+    verifier: { error with limited_policy(),
+        VerifierError::Flow(FlowError::UnknownTag(Confidential))
+    },
+    executor: { error with limited_policy(),
+        ExecutorError::Flow(FlowError::UnknownTag(Confidential))
+    },
+}
+
+test_program! {
+    /// Tag validation traverses every instruction in an ifelse branch sequence,
+    /// including instructions after an otherwise valid first element.
+    invalid_embedded_tag_later_in_ifelse_sequence,
+    program: vec![
+        add_instr!(Push, 1),
+        add_instr!(ifelse 0,
+            [
+                add_instr!(tag Push, 1, Public),
+                add_instr!(tag Push, 42, Confidential),
+            ],
+            [],
+        ),
+    ],
     verifier: { error with limited_policy(),
         VerifierError::Flow(FlowError::UnknownTag(Confidential))
     },
@@ -531,8 +584,8 @@ mod downgraders {
         /// Exploring both branches of an unknown condition must not double-charge
         /// the call limit: at runtime only one branch executes, so the verifier merges
         /// the two branches' call counts with MAX, not their sum. Here each branch
-        /// downgrades once (merged count: 1) and a final top-level downgrade makes
-        /// it 2, exactly within `max_calls = 2`.
+        /// reaches one downgrade after an earlier no-op (merged count: 1), and a
+        /// final top-level downgrade makes it 2, exactly within `max_calls = 2`.
         call_limit_ifelse,
         program: vec![
             add_instr!(fun Downgrader, "is_empty"),
@@ -543,8 +596,14 @@ mod downgraders {
             add_instr!(Input), // unknown condition
             add_instr!(tag Push, 0, Secret),
             add_instr!(ifelse 0,
-                add_instr!(fun Downgrade, "is_empty"),
-                add_instr!(fun Downgrade, "is_empty")
+                [
+                    add_instr!(Nop),
+                    add_instr!(fun Downgrade, "is_empty"),
+                ],
+                [
+                    add_instr!(Nop),
+                    add_instr!(fun Downgrade, "is_empty"),
+                ],
             ),
             add_instr!(tag Push, 0, Secret),
             add_instr!(fun Downgrade, "is_empty"),
