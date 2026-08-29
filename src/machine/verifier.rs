@@ -109,7 +109,11 @@ impl From<Immediate> for ValueSpan {
 }
 
 impl ValueSpan {
-    pub(crate) fn new(min: Immediate, max: Immediate) -> Self {
+    /// Creates an inclusive interval of values the verifier may produce.
+    ///
+    /// This is useful when inspecting verifier results in external tools and
+    /// integration tests. Panics if `min` is greater than `max`.
+    pub fn new(min: Immediate, max: Immediate) -> Self {
         if min > max {
             panic!(
                 "ValueSpan cannot have min greater than max. Got min: {}, max: {}",
@@ -119,7 +123,10 @@ impl ValueSpan {
         Self { min, max }
     }
 
-    pub(crate) fn inf() -> Self {
+    /// Returns the interval containing every representable [`Immediate`].
+    ///
+    /// The verifier uses this span for values whose concrete value is unknown.
+    pub fn inf() -> Self {
         Self {
             min: Immediate::MIN,
             max: Immediate::MAX,

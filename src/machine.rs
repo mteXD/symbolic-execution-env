@@ -21,7 +21,10 @@ pub enum CoreError {
     FunctionDataError(FunctionDataError),
     ProgramDataError(ProgramDataError),
     /// When there isn't enough values on stack for Block to copy.
-    NotEnoughArguments { required: usize, available: usize },
+    NotEnoughArguments {
+        required: usize,
+        available: usize,
+    },
     /// When there are problems with the buffer
     IoReadError,
 }

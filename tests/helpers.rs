@@ -1,27 +1,23 @@
-//! Unified declarative test catalog.
+//! Shared helpers for the declarative integration tests.
 //!
 //! Each VM program is written inline and paired with *both* its verifier and
 //! executor expectations in one place via the [`test_program!`] macro, so
 //! adding a program forces a statement of what both runners should do.
-//!
-//! The catalog is split into four groups:
-//! - [`unit`] — unit tests for core VM behavior.
-//! - [`unit_diftam`] — unit tests exercising tagged (DIFTAM) information flow.
-//! - [`showcases`] — larger, more realistic programs.
-//! - [`showcases_diftam`] — placeholder; no DIFTAM showcase programs exist yet.
+
+#![allow(dead_code, unused_imports, unused_macros)]
 
 // Shared prelude, re-exported so the group submodules can `use super::*`.
-pub(crate) use crate::{
+pub(crate) use virtual_machine::{
     add_instr,
     information_flow::{FlowError, SecurityPolicy, Topology},
     instruction::Instruction,
     machine::{
-        CoreError,
+        self, CoreError,
         executor::{Executor, ExecutorError},
         verifier::{ValueSpan, Verifier, VerifierError},
     },
     make_block,
-    types::{FunctionDataError, IoBuffer, Value},
+    types::{self, FunctionDataError, IoBuffer, Value},
 };
 
 // ---------------------------------------------------------------------------
@@ -96,7 +92,7 @@ macro_rules! verify_expect {
             .unwrap_or_else(|error| panic!("verifier should accept program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::machine::verifier::ValueSpan> =
             ::std::vec![ $( $crate::machine::verifier::ValueSpan::from($e) ),* ];
-        $crate::test_catalog::check_verifier_stack(verifier, expected);
+        $crate::check_verifier_stack(verifier, expected);
     }};
     (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {{
         let verifier = $crate::machine::verifier::Verifier::with_policy($prog, $policy)
@@ -153,7 +149,7 @@ macro_rules! exec_expect {
             .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::types::Value> =
             ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
-        $crate::test_catalog::check_executor_stack(executor, expected);
+        $crate::check_executor_stack(executor, expected);
     }};
     (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {{
         let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
@@ -204,7 +200,7 @@ macro_rules! exec_expect {
             .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
         let expected: ::std::vec::Vec<$crate::types::Value> =
             ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
-        $crate::test_catalog::check_executor_stack(executor, expected);
+        $crate::check_executor_stack(executor, expected);
     }};
     (($prog:expr) input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]) => {{
         let out_buf = $crate::types::IoBuffer::new(::std::vec![]);
@@ -217,10 +213,10 @@ macro_rules! exec_expect {
         assert_eq!(*out_buf.borrow(), expected);
     }};
     (($prog:expr) cases { $($cases:tt)* }) => {
-        $crate::test_catalog::exec_expect!(@cases ($prog) $($cases)*);
+        $crate::exec_expect!(@cases ($prog) $($cases)*);
     };
     (($prog:expr) cases with $policy:expr, { $($cases:tt)* }) => {
-        $crate::test_catalog::exec_expect!(@tagged_cases ($prog) ($policy) $($cases)*);
+        $crate::exec_expect!(@tagged_cases ($prog) ($policy) $($cases)*);
     };
     // Internal `tagged_cases` muncher: each case is `input [..] => tagged_stack [..]`,
     // separated/terminated by `;`. The program and policy are re-evaluated for each case.
@@ -241,7 +237,7 @@ macro_rules! exec_expect {
             assert_eq!(executor.values(), expected_values, "executor values mismatch");
             assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
         }
-        $( $crate::test_catalog::exec_expect!(@tagged_cases ($prog) ($policy) $($rest)*); )?
+        $( $crate::exec_expect!(@tagged_cases ($prog) ($policy) $($rest)*); )?
     };
     // Internal `cases` muncher: each case is `input [..] => stack [..]` or
     // `input [..] => output [..]`, separated/terminated by `;`. The program
@@ -258,9 +254,9 @@ macro_rules! exec_expect {
                 .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
             let expected: ::std::vec::Vec<$crate::types::Value> =
                 ::std::vec![ $( $crate::types::Value::Integer($e) ),* ];
-            $crate::test_catalog::check_executor_stack(executor, expected);
+            $crate::check_executor_stack(executor, expected);
         }
-        $( $crate::test_catalog::exec_expect!(@cases ($prog) $($rest)*); )?
+        $( $crate::exec_expect!(@cases ($prog) $($rest)*); )?
     };
     (@cases ($prog:expr)
         input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]
@@ -276,7 +272,7 @@ macro_rules! exec_expect {
             let expected: ::std::vec::Vec<$crate::types::Immediate> = ::std::vec![ $($o),* ];
             assert_eq!(*out_buf.borrow(), expected);
         }
-        $( $crate::test_catalog::exec_expect!(@cases ($prog) $($rest)*); )?
+        $( $crate::exec_expect!(@cases ($prog) $($rest)*); )?
     };
 }
 
@@ -298,8 +294,8 @@ macro_rules! test_program {
         $(#[$meta])*
         #[test]
         fn $name() {
-            $crate::test_catalog::verify_expect!(($prog) $($v)*);
-            $crate::test_catalog::exec_expect!(($prog) $($e)*);
+            $crate::verify_expect!(($prog) $($v)*);
+            $crate::exec_expect!(($prog) $($e)*);
         }
     };
 
@@ -316,12 +312,12 @@ macro_rules! test_program {
         verifier: { $($v:tt)* },
         executor: { $($e:tt)* } $(,)?
     ) => {
-        $crate::test_catalog::test_program!(@gen_v [$(#[$meta])*] $name ($prog) [] $($v)*);
-        $crate::test_catalog::test_program!(@gen_e [$(#[$meta])*] $name ($prog) [] $($e)*);
+        $crate::test_program!(@gen_v [$(#[$meta])*] $name ($prog) [] $($v)*);
+        $crate::test_program!(@gen_e [$(#[$meta])*] $name ($prog) [] $($e)*);
     };
 
     (@gen_v [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
-        $crate::test_catalog::test_program!(
+        $crate::test_program!(
             @gen_v [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
         );
     };
@@ -331,13 +327,13 @@ macro_rules! test_program {
             $($attrs)*
             #[test]
             fn [<$name _verifier>]() {
-                $crate::test_catalog::verify_expect!(($prog) $($body)*);
+                $crate::verify_expect!(($prog) $($body)*);
             }
         }
     };
 
     (@gen_e [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
-        $crate::test_catalog::test_program!(
+        $crate::test_program!(
             @gen_e [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
         );
     };
@@ -347,7 +343,7 @@ macro_rules! test_program {
             $($attrs)*
             #[test]
             fn [<$name _executor>]() {
-                $crate::test_catalog::exec_expect!(($prog) $($body)*);
+                $crate::exec_expect!(($prog) $($body)*);
             }
         }
     };
@@ -362,7 +358,7 @@ macro_rules! test_program {
         $(#[$meta])*
         #[test]
         fn $name() {
-            $crate::test_catalog::verify_expect!(($prog) $($v)*);
+            $crate::verify_expect!(($prog) $($v)*);
         }
     };
 
@@ -376,7 +372,7 @@ macro_rules! test_program {
         $(#[$meta])*
         #[test]
         fn $name() {
-            $crate::test_catalog::exec_expect!(($prog) $($e)*);
+            $crate::exec_expect!(($prog) $($e)*);
         }
     };
 }
@@ -384,7 +380,3 @@ macro_rules! test_program {
 pub(crate) use exec_expect;
 pub(crate) use test_program;
 pub(crate) use verify_expect;
-
-mod showcases;
-mod regular;
-mod diftam;

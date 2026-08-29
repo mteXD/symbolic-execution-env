@@ -1,7 +1,9 @@
-//! Unit tests for core VM behavior.
+//! Integration tests for core VM behavior.
 
-use super::*;
-use crate::types::Immediate;
+mod helpers;
+
+use helpers::*;
+use virtual_machine::types::Immediate;
 
 // ---------------------------------------------------------------------------
 // Stack operations

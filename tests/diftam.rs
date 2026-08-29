@@ -1,4 +1,4 @@
-//! Unit tests with inline tagged (DIFTAM) programs.
+//! Integration tests with inline tagged (DIFTAM) programs.
 //!
 //! These exercise dynamic information-flow tracking and monitoring. Each test
 //! inlines a tagged program and states both runners' expectations with the
@@ -7,9 +7,11 @@
 //! plain unmonitored runner). The shared `Confidentiality` / `Integrity`
 //! policies live in the parent module.
 
-use super::Confidentiality::*;
-use super::Integrity::*;
-use super::*;
+mod helpers;
+
+use helpers::Confidentiality::*;
+use helpers::Integrity::*;
+use helpers::*;
 
 // ---------------------------------------------------------------------------
 // Policy helpers
@@ -43,7 +45,7 @@ fn public_input_policy() -> SecurityPolicy<Confidentiality> {
 
 mod tag_propagation {
     use super::*;
-    use crate::information_flow::DisjointTag;
+    use virtual_machine::information_flow::DisjointTag;
 
     /// A policy that combines the `Confidentiality` and `Integrity` lattices
     /// as a disjoint union, so `Left(...)` and `Right(...)` tags never share a

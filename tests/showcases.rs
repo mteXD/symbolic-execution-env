@@ -1,10 +1,12 @@
-//! Showcase tests: larger, more realistic programs.
+//! Showcase integration tests: larger, more realistic programs.
 //!
 //! Both sides use `custom` bodies: the verifier asserts the program is
 //! accepted, and the executor runs it on a concrete input and checks the
 //! top-of-stack result against a reference implementation.
 
-use super::*;
+mod helpers;
+
+use helpers::*;
 
 /// Reference factorial used to check executor results.
 const fn factorial_helper(n: i64) -> i64 {

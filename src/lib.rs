@@ -18,6 +18,3 @@ pub mod information_flow;
 pub mod instruction;
 pub mod machine;
 pub mod types;
-
-#[cfg(test)]
-mod test_catalog;
