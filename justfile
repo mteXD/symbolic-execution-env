@@ -35,13 +35,3 @@ clean:
     rm flamegraph.svg
     rm perf.data
     rm perf.data.old
-
-# Benchmarking recipes
-
-[group('benchmarking')]
-bench: check
-    cargo bench
-
-[group('benchmarking')]
-flamegraph test:
-    cargo flamegraph --dev --unit-test virtual_machine -- tests::{{test}}

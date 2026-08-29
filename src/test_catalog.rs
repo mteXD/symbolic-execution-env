@@ -386,6 +386,5 @@ pub(crate) use test_program;
 pub(crate) use verify_expect;
 
 mod showcases;
-mod showcases_diftam;
-mod unit;
-mod unit_diftam;
+mod regular;
+mod diftam;

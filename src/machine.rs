@@ -78,14 +78,10 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         Ok(())
     }
 
-    /// Registers the block immediately following a `FunctionDefine` as the
-    /// body of `function_name`. A missing or non-block instruction returns
-    /// `FunctionMissingBody`.
     pub fn common_function_logic(&mut self, function_name: &str) -> CoreResult<()> {
         self.common_definition_logic(function_name, false)
     }
 
-    /// Registers a downgrader separately from ordinary function data.
     pub fn common_downgrader_logic(&mut self, function_name: &str) -> CoreResult<()> {
         self.common_definition_logic(function_name, true)
     }

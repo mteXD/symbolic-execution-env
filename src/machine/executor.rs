@@ -26,13 +26,13 @@ pub enum ExecutorError<Tag = ()>
 where
     Tag: TagTrait,
 {
-    DivisionByZero,
-    ArithmeticOverflow,
+    Core(CoreError),
     StackUnderflow,
     InvalidCell,
+    ArithmeticOverflow,
+    DivisionByZero,
     BlockHasEmptyStack,
     EmptyBlock,
-    Core(CoreError),
     Flow(FlowError<Tag>),
     DebugError(&'static str),
 }

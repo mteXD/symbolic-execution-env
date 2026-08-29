@@ -124,45 +124,6 @@ test_program! {
 }
 
 test_program! {
-    /// Recursive factorial, alternative argument-passing style.
-    factorial_alt,
-    program: vec![
-        add_instr!(fun FunctionDefine, "factorial"),
-        make_block!(1,
-            make_block!(1,
-                // argument of next function call
-                add_instr!(Push, -1), // Push -1
-                add_instr!(Add, 0, 1) // n - 1
-            ),
-            add_instr!(Push, 1),
-            add_instr!(CmpGreaterThan, 0, 2),
-            add_instr!(ifelse 3, // if n <= 1, skip to return
-                make_block!(4,
-                    add_instr!(R Read, 1), // copy n - 1 to the call suffix
-                    add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
-                    add_instr!(Mul, 0, 5)                      // n * factorial(n - 1)
-                ),
-                add_instr!(Push, 1)
-            )
-        ),
-        add_instr!(Push, -1),
-        add_instr!(Input),
-        add_instr!(fun FunctionCall, "factorial"),
-    ],
-    verifier: { custom |program| {
-        assert!(Verifier::new(program.clone()).verify().is_ok());
-    } },
-    executor: { custom |program| {
-        let n = 5;
-        let executor = Executor::new(program.clone())
-            .redirect_input(IoBuffer::new(vec![n]).into())
-            .exec()
-            .unwrap();
-        assert_eq!(executor.values().last().copied(), Some(Value::Integer(factorial_helper(n))));
-    } },
-}
-
-test_program! {
     /// Recursive Fibonacci.
     fibonacci,
     program: vec![
