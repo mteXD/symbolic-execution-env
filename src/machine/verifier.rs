@@ -133,11 +133,6 @@ impl ValueSpan {
         }
     }
 
-    #[inline]
-    fn is_unbounded(&self) -> bool {
-        self.min == Immediate::MIN || self.max == Immediate::MAX
-    }
-
     fn disjunct(&self, other: &ValueSpan) -> bool {
         self.max < other.min || other.max < self.min
     }
@@ -186,14 +181,20 @@ impl ValueSpan {
         }
     }
 
-    /// Interval model of `Add`: saturating on the raw bounds. `None` means
-    /// two exact operands overflowed.
+    /// Interval model of `Add`. Exact operands use checked arithmetic so a
+    /// representable boundary result is not confused with overflow; wider
+    /// intervals saturate their raw bounds. `None` means two exact operands
+    /// overflowed.
     fn add_span(self, other: Self) -> Option<Self> {
-        let result = ValueSpan::new(
-            self.min.saturating_add(other.min),
-            self.max.saturating_add(other.max),
-        );
-        Self::check_overflow(self, other, result)
+        if self.is_single_value() && other.is_single_value() {
+            let result = self.min.checked_add(other.min)?;
+            Some(Self::new(result, result))
+        } else {
+            Some(Self::new(
+                self.min.saturating_add(other.min),
+                self.max.saturating_add(other.max),
+            ))
+        }
     }
 
     /// Interval model of `Sub`: the lowest result uses the left lower bound
@@ -211,16 +212,22 @@ impl ValueSpan {
         }
     }
 
-    /// Interval model of `Mul`: the span covering all four corner products.
-    /// `None` means two exact operands overflowed.
+    /// Interval model of `Mul`. Exact operands use checked arithmetic; wider
+    /// intervals cover all four corner products and widen conservatively when
+    /// a corner overflows. `None` means two exact operands overflowed.
     fn mul_span(self, other: Self) -> Option<Self> {
-        let candidates = [
-            self.min.checked_mul(other.min),
-            self.min.checked_mul(other.max),
-            self.max.checked_mul(other.min),
-            self.max.checked_mul(other.max),
-        ];
-        Self::check_overflow(self, other, Self::from_candidates(candidates))
+        if self.is_single_value() && other.is_single_value() {
+            let result = self.min.checked_mul(other.min)?;
+            Some(Self::new(result, result))
+        } else {
+            let candidates = [
+                self.min.checked_mul(other.min),
+                self.min.checked_mul(other.max),
+                self.max.checked_mul(other.min),
+                self.max.checked_mul(other.max),
+            ];
+            Some(Self::from_candidates(candidates))
+        }
     }
 
     /// Interval model of `Div`, assuming `other` is not exactly zero (the
@@ -244,7 +251,7 @@ impl ValueSpan {
                 self.max.checked_div(other.min),
                 self.max.checked_div(other.max),
             ];
-            Self::check_overflow(self, other, Self::from_candidates(candidates))
+            Some(Self::from_candidates(candidates))
         }
     }
 
@@ -261,8 +268,8 @@ impl ValueSpan {
     }
 
     /// Builds the span covering all four candidate corner results; a `None`
-    /// candidate (its checked arithmetic overflowed) widens that side to the
-    /// corresponding limit.
+    /// candidate (its checked arithmetic overflowed) widens the result to both
+    /// representable limits.
     fn from_candidates(candidates: [Option<Immediate>; 4]) -> Self {
         let min = candidates
             .iter()
@@ -275,16 +282,6 @@ impl ValueSpan {
             .max()
             .expect("Array cannot be empty");
         ValueSpan::new(min, max)
-    }
-
-    /// Rejects a result that degenerated to unbounded even though both
-    /// operands were exact values — the only overflow detectable today.
-    fn check_overflow(a: Self, b: Self, result: Self) -> Option<Self> {
-        if a.is_single_value() && b.is_single_value() && result.is_unbounded() {
-            None
-        } else {
-            Some(result)
-        }
     }
 
     fn chck_eq(&self, other: &Self) -> Self {

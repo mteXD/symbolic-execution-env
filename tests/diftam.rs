@@ -1,17 +1,47 @@
 //! Integration tests with inline tagged (DIFTAM) programs.
-//!
-//! These exercise dynamic information-flow tracking and monitoring. Each test
-//! inlines a tagged program and states both runners' expectations with the
-//! declarative `tagged_stack with <policy>, …` / `error with <policy>, …`
-//! forms. A `custom` body remains only where the grammar cannot reach (the
-//! plain unmonitored runner). The shared `Confidentiality` / `Integrity`
-//! policies live in the parent module.
 
-mod helpers;
+use virtual_machine::{
+    add_instr,
+    information_flow::{DisjointTag, FlowError, SecurityPolicy, Topology},
+    machine::{
+        CoreError,
+        executor::ExecutorError,
+        verifier::{ValueSpan, VerifierError},
+    },
+    make_block, test_program,
+    types::FunctionDataError,
+};
 
-use helpers::Confidentiality::*;
-use helpers::Integrity::*;
-use helpers::*;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Confidentiality {
+    Public,
+    Confidential,
+    Secret,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Integrity {
+    Low,
+    Medium,
+    High,
+}
+
+use Confidentiality::*;
+use Integrity::*;
+
+fn confidentiality_policy() -> SecurityPolicy<Confidentiality> {
+    SecurityPolicy::new(
+        Topology::linear([Public, Confidential, Secret]),
+        Public,
+        Secret,
+        Public,
+    )
+    .unwrap()
+}
+
+fn integrity_policy() -> SecurityPolicy<Integrity> {
+    SecurityPolicy::new(Topology::linear([Low, Medium, High]), Low, Low, High).unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // Policy helpers
@@ -45,7 +75,6 @@ fn public_input_policy() -> SecurityPolicy<Confidentiality> {
 
 mod tag_propagation {
     use super::*;
-    use virtual_machine::information_flow::DisjointTag;
 
     /// A policy that combines the `Confidentiality` and `Integrity` lattices
     /// as a disjoint union, so `Left(...)` and `Right(...)` tags never share a
@@ -418,6 +447,8 @@ test_program! {
 
 mod downgraders {
     use super::*;
+
+    const OUTER: &str = "outer";
 
     test_program! {
         /// Declaring a downgrader does not change oblivious flow (usual behavior)

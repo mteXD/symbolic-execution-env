@@ -18,3 +18,6 @@ pub mod information_flow;
 pub mod instruction;
 pub mod machine;
 pub mod types;
+
+#[doc(hidden)]
+pub mod test_helpers;
