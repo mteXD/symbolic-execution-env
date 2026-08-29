@@ -230,8 +230,12 @@ mod pgs {
             add_instr!(tag Push, 1, Secret),
             add_instr!(tag Push, 42, Public),
             add_instr!(ifelse 0,
-                add_instr!(R Print, 1),
-                add_instr!(Nop)
+                [
+                    add_instr!(R Print, 1),
+                ],
+                [
+                    add_instr!(Nop),
+                ],
             ),
         ],
         verifier: { error with confidentiality_policy(),
@@ -273,8 +277,12 @@ mod implicit_flow {
         program: vec![
             add_instr!(tag Push, 1, Secret),
             add_instr!(ifelse 0,
-                add_instr!(tag Push, 7, Public),
-                add_instr!(tag Push, 9, Public)
+                [
+                    add_instr!(tag Push, 7, Public),
+                ],
+                [
+                    add_instr!(tag Push, 9, Public),
+                ],
             ),
             add_instr!(tag Push, 11, Public),
         ],
@@ -300,8 +308,12 @@ mod implicit_flow {
         program: vec![
             add_instr!(Input),
             add_instr!(ifelse 0,
-                add_instr!(tag Push, 7, Public),
-                add_instr!(tag Push, 9, Confidential)
+                [
+                    add_instr!(tag Push, 7, Public),
+                ],
+                [
+                    add_instr!(tag Push, 9, Confidential),
+                ],
             ),
         ],
         verifier_only: { tagged_stack with public_input_policy(), [

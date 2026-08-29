@@ -214,8 +214,12 @@ mod arith {
             add_instr!(Push, 0),
             add_instr!(CmpGreaterThan, 0, 1),
             add_instr!(ifelse 2,
-                add_instr!(Push, -2),
-                add_instr!(Push, 4)
+                [
+                    add_instr!(Push, -2),
+                ],
+                [
+                    add_instr!(Push, 4),
+                ],
             ),
             add_instr!(R Not, 3),
         ],
@@ -356,8 +360,12 @@ mod ifelse {
             add_instr!(Push, 5),
             add_instr!(CmpGreaterThan, 0, 1), // 10 > 5 -> known true
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // taken
-                add_instr!(Push, 0)   // not taken
+                [
+                    add_instr!(Push, 42), // taken
+                ],
+                [
+                    add_instr!(Push, 0), // not taken
+                ],
             ),
         ],
         verifier: { stack [10, 5, 1, 42] },
@@ -372,8 +380,12 @@ mod ifelse {
             add_instr!(Push, 5),
             add_instr!(CmpGreaterThan, 0, 1), // 3 > 5 -> known false
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // not taken
-                add_instr!(Push, 0)   // taken
+                [
+                    add_instr!(Push, 42), // not taken
+                ],
+                [
+                    add_instr!(Push, 0), // taken
+                ],
             ),
         ],
         verifier: { stack [3, 5, 0, 0] },
@@ -462,8 +474,12 @@ mod ifelse {
             add_instr!(Push, 5),
             add_instr!(CmpGreaterThan, 0, 1), // unknown condition
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // +1 cell if taken
-                add_instr!(Push, 0)   // +1 cell if not taken (balanced)
+                [
+                    add_instr!(Push, 42), // +1 cell if taken
+                ],
+                [
+                    add_instr!(Push, 0), // +1 cell if not taken (balanced)
+                ],
             ),
         ],
         verifier: { stack [ValueSpan::inf(), 5, ValueSpan::new(0, 1), ValueSpan::new(0, 42)] },
@@ -481,8 +497,12 @@ mod ifelse {
             add_instr!(Push, 3),
             add_instr!(CmpGreaterThan, 0, 1), // 10 > 3 -> known true
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // taken: +1 cell
-                add_instr!(R Pop, 2)  // dead:  would be -2 cells
+                [
+                    add_instr!(Push, 42), // taken: +1 cell
+                ],
+                [
+                    add_instr!(R Pop, 2), // dead:  would be -2 cells
+                ],
             ),
         ],
         verifier: { stack [10, 3, 1, 42] },
@@ -497,8 +517,12 @@ mod ifelse {
             add_instr!(Push, 3),
             add_instr!(CmpGreaterThan, 0, 1), // 3 > 10 -> known false
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // dead
-                add_instr!(R Pop, 2)  // taken: +1 cell
+                [
+                    add_instr!(Push, 42), // dead
+                ],
+                [
+                    add_instr!(R Pop, 2), // taken: +1 cell
+                ],
             ),
         ],
         verifier: { stack [0] },
@@ -516,8 +540,12 @@ mod ifelse {
             add_instr!(Push, 5),
             add_instr!(CmpGreaterThan, 0, 1), // unknown condition
             add_instr!(ifelse 2,
-                add_instr!(Push, 42), // +1 cell if taken
-                add_instr!(R Pop, 1)  // -1 cell if not taken (unbalanced)
+                [
+                    add_instr!(Push, 42), // +1 cell if taken
+                ],
+                [
+                    add_instr!(R Pop, 1), // -1 cell if not taken (unbalanced)
+                ],
             ),
         ],
         verifier: { error VerifierError::CondUnequalStackSizes {
@@ -537,8 +565,12 @@ mod ifelse {
         no_condition,
         program: vec![
             add_instr!(ifelse 0,
-                add_instr!(Push, 1),
-                add_instr!(Push, 2)
+                [
+                    add_instr!(Push, 1),
+                ],
+                [
+                    add_instr!(Push, 2),
+                ],
             )
         ],
         verifier: { error VerifierError::InvalidCell { .. } },
@@ -556,8 +588,12 @@ mod ifelse {
             make_block!(0,
                 add_instr!(Push, 1),
                 add_instr!(ifelse 0,
-                    add_instr!(Push, 2),
-                    add_instr!(Push, 3)
+                    [
+                        add_instr!(Push, 2),
+                    ],
+                    [
+                        add_instr!(Push, 3),
+                    ],
                 )
             )
         ],
@@ -750,14 +786,18 @@ mod blocks {
             add_instr!(Push, 5),
             add_instr!(CmpGreaterThan, 0, 1),
             add_instr!(ifelse 2,
-                make_block!(0,
-                    add_instr!(Push, 10),
-                    add_instr!(Add, 0, 0) // 10 + 10 = 20
-                ),
-                make_block!(0,
-                    add_instr!(Push, 20),
-                    add_instr!(Add, 0, 0) // 20 + 20 = 40
-                )
+                [
+                    make_block!(0,
+                        add_instr!(Push, 10),
+                        add_instr!(Add, 0, 0) // 10 + 10 = 20
+                    ),
+                ],
+                [
+                    make_block!(0,
+                        add_instr!(Push, 20),
+                        add_instr!(Add, 0, 0) // 20 + 20 = 40
+                    ),
+                ],
             ),
         ],
         verifier: { stack [10, 5, 1, 20] },
@@ -772,8 +812,12 @@ mod blocks {
             make_block!(1,
                 add_instr!(Push, 1),
                 add_instr!(ifelse 1,
-                    add_instr!(Push, 2),
-                    add_instr!(Push, 3)
+                    [
+                        add_instr!(Push, 2),
+                    ],
+                    [
+                        add_instr!(Push, 3),
+                    ],
                 ),
                 make_block!(2,
                     add_instr!(Add, 0, 1) // 1 + 2 = 3
@@ -866,8 +910,12 @@ mod functions {
                 add_instr!(Push, 5),
                 add_instr!(CmpGreaterThan, 0, 1),
                 add_instr!(ifelse 2,
-                    add_instr!(fun FunctionCall, "f"),
-                    add_instr!(Push, 0)
+                    [
+                        add_instr!(fun FunctionCall, "f"),
+                    ],
+                    [
+                        add_instr!(Push, 0),
+                    ],
                 )
             ),
             add_instr!(fun FunctionCall, "f"),
@@ -886,8 +934,12 @@ mod functions {
                 add_instr!(Push, 0),
                 add_instr!(CmpGreaterThan, 0, 1),
                 add_instr!(ifelse 2,
-                    add_instr!(fun FunctionCall, "f"),
-                    add_instr!(Push, 0)
+                    [
+                        add_instr!(fun FunctionCall, "f"),
+                    ],
+                    [
+                        add_instr!(Push, 0),
+                    ],
                 )
             ),
             add_instr!(fun FunctionCall, "f"),
@@ -1017,14 +1069,18 @@ mod functions {
         program: vec![
             add_instr!(Push, 1),
             add_instr!(ifelse 0,
-                make_block!(0,
-                    add_instr!(fun FunctionDefine, FUNC_NAME),
+                [
                     make_block!(0,
-                        add_instr!(Push, 42)
+                        add_instr!(fun FunctionDefine, FUNC_NAME),
+                        make_block!(0,
+                            add_instr!(Push, 42)
+                        ),
+                        add_instr!(Push, 7)
                     ),
-                    add_instr!(Push, 7)
-                ),
-                add_instr!(Push, 7)
+                ],
+                [
+                    add_instr!(Push, 7),
+                ],
             ),
             add_instr!(fun FunctionCall, FUNC_NAME),
         ],
@@ -1043,8 +1099,12 @@ mod functions {
             make_block!(1,
                 add_instr!(Push, 1),
                 add_instr!(ifelse 0,
-                    add_instr!(R Read, 0), // reads the declared argument
-                    add_instr!(Nop)
+                    [
+                        add_instr!(R Read, 0), // reads the declared argument
+                    ],
+                    [
+                        add_instr!(Nop),
+                    ],
                 )
             ),
             // No caller cells provided at all.
@@ -1165,13 +1225,17 @@ mod showcases {
                 add_instr!(Push, 1),              // 1
                 add_instr!(CmpGreaterThan, 0, 1), // n > 1
                 add_instr!(ifelse 2, // if n <= 1, skip to return
-                    make_block!(3,
-                        add_instr!(Push, -1),
-                        add_instr!(Add, 0, 3), // n - 1
-                        add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
-                        add_instr!(Mul, 0, 5)                      // n * factorial(n - 1)
-                    ),
-                    add_instr!(Push, 1)
+                    [
+                        make_block!(3,
+                            add_instr!(Push, -1),
+                            add_instr!(Add, 0, 3), // n - 1
+                            add_instr!(fun FunctionCall, "factorial"), // else, factorial(n - 1)
+                            add_instr!(Mul, 0, 5)                      // n * factorial(n - 1)
+                        ),
+                    ],
+                    [
+                        add_instr!(Push, 1),
+                    ],
                 )
             ),
             add_instr!(Input),
@@ -1199,15 +1263,19 @@ mod showcases {
                 add_instr!(Push, 1),              // 2
                 add_instr!(CmpGreaterThan, 0, 1), // n > 2
                 add_instr!(ifelse 2, // if n <= 1, skip to return
-                    make_block!(3,
-                        add_instr!(Push, -1),
-                        add_instr!(Add, 0, 3), // n - 1
-                        add_instr!(fun FunctionCall, "fibonacci"), // fibonacci(n - 1)
-                        add_instr!(Add, 4, 3),                     // (n - 1) - 1 = n - 2
-                        add_instr!(fun FunctionCall, "fibonacci"), // fibonacci(n - 2)
-                        add_instr!(Add, 5, 7) // fibonacci(n - 1) + fibonacci(n - 2)
-                    ),
-                    add_instr!(Push, 1)
+                    [
+                        make_block!(3,
+                            add_instr!(Push, -1),
+                            add_instr!(Add, 0, 3), // n - 1
+                            add_instr!(fun FunctionCall, "fibonacci"), // fibonacci(n - 1)
+                            add_instr!(Add, 4, 3),                     // (n - 1) - 1 = n - 2
+                            add_instr!(fun FunctionCall, "fibonacci"), // fibonacci(n - 2)
+                            add_instr!(Add, 5, 7) // fibonacci(n - 1) + fibonacci(n - 2)
+                        ),
+                    ],
+                    [
+                        add_instr!(Push, 1),
+                    ],
                 )
             ),
             add_instr!(Input),
@@ -1239,20 +1307,24 @@ mod showcases {
                 add_instr!(Push, 0),
                 add_instr!(CmpEqual, 0, 2), // remaining == 0
                 add_instr!(ifelse 3,
-                    add_instr!(R Read, 1), // return reversed
-                    make_block!(4,
-                        add_instr!(Push, 10),
-                        add_instr!(Div, 0, 4), // quotient = remaining / 10
-                        add_instr!(Mul, 5, 4), // quotient * 10
-                        add_instr!(Push, -1),
-                        add_instr!(Mul, 6, 7), // -(quotient * 10)
-                        add_instr!(Add, 0, 8), // digit = remaining % 10
-                        add_instr!(Mul, 1, 4), // reversed * 10
-                        add_instr!(Add, 10, 9), // reversed * 10 + digit
-                        add_instr!(R Read, 5), // next remaining (quotient)
-                        add_instr!(R Read, 11), // next reversed
-                        add_instr!(fun FunctionCall, "reverse_digits")
-                    )
+                    [
+                        add_instr!(R Read, 1), // return reversed
+                    ],
+                    [
+                        make_block!(4,
+                            add_instr!(Push, 10),
+                            add_instr!(Div, 0, 4), // quotient = remaining / 10
+                            add_instr!(Mul, 5, 4), // quotient * 10
+                            add_instr!(Push, -1),
+                            add_instr!(Mul, 6, 7), // -(quotient * 10)
+                            add_instr!(Add, 0, 8), // digit = remaining % 10
+                            add_instr!(Mul, 1, 4), // reversed * 10
+                            add_instr!(Add, 10, 9), // reversed * 10 + digit
+                            add_instr!(R Read, 5), // next remaining (quotient)
+                            add_instr!(R Read, 11), // next reversed
+                            add_instr!(fun FunctionCall, "reverse_digits")
+                        ),
+                    ],
                 )
             ),
             // is_palindrome(x) rejects negative values, reverses non-negative x,
@@ -1262,13 +1334,17 @@ mod showcases {
                 add_instr!(Push, 0),
                 add_instr!(CmpLessThan, 0, 1), // x < 0
                 add_instr!(ifelse 2,
-                    add_instr!(Push, 0),
-                    make_block!(3,
-                        add_instr!(R Read, 0), // remaining
-                        add_instr!(Push, 0),   // reversed
-                        add_instr!(fun FunctionCall, "reverse_digits"),
-                        add_instr!(CmpEqual, 0, 5)
-                    )
+                    [
+                        add_instr!(Push, 0),
+                    ],
+                    [
+                        make_block!(3,
+                            add_instr!(R Read, 0), // remaining
+                            add_instr!(Push, 0),   // reversed
+                            add_instr!(fun FunctionCall, "reverse_digits"),
+                            add_instr!(CmpEqual, 0, 5)
+                        ),
+                    ],
                 )
             ),
             add_instr!(Input),
@@ -1301,17 +1377,21 @@ mod showcases {
                 add_instr!(Push, 0),          // cell 2: zero constant
                 add_instr!(CmpEqual, 1, 2),   // cell 3: second operand == 0
                 add_instr!(ifelse 3,
-                    add_instr!(R Read, 0), // cell 4: return first operand
-                    make_block!(4,
-                        add_instr!(Div, 0, 1), // cell 4: quotient
-                        add_instr!(Mul, 4, 1), // cell 5: quotient * divisor
-                        add_instr!(Push, -1), // cell 6: negation constant
-                        add_instr!(Mul, 5, 6), // cell 7: -(quotient * divisor)
-                        add_instr!(Add, 0, 7), // cell 8: remainder
-                        add_instr!(R Read, 1), // cell 9: next first argument
-                        add_instr!(R Read, 8), // cell 10: next second argument
-                        add_instr!(fun FunctionCall, "gcd") // cell 11: recursive result
-                    )
+                    [
+                        add_instr!(R Read, 0), // cell 4: return first operand
+                    ],
+                    [
+                        make_block!(4,
+                            add_instr!(Div, 0, 1), // cell 4: quotient
+                            add_instr!(Mul, 4, 1), // cell 5: quotient * divisor
+                            add_instr!(Push, -1), // cell 6: negation constant
+                            add_instr!(Mul, 5, 6), // cell 7: -(quotient * divisor)
+                            add_instr!(Add, 0, 7), // cell 8: remainder
+                            add_instr!(R Read, 1), // cell 9: next first argument
+                            add_instr!(R Read, 8), // cell 10: next second argument
+                            add_instr!(fun FunctionCall, "gcd") // cell 11: recursive result
+                        ),
+                    ],
                 )
             ),
             add_instr!(Input), // cell 0: first operand
@@ -1345,23 +1425,31 @@ mod showcases {
                 add_instr!(Push, 0),          // cell 2: zero constant
                 add_instr!(CmpEqual, 1, 2),   // cell 3: exponent == 0
                 add_instr!(ifelse 3,
-                    add_instr!(Push, 1), // cell 4: base-case result
-                    make_block!(4,
-                        add_instr!(Push, 2), // cell 4: divisor
-                        add_instr!(Div, 1, 4), // cell 5: half-exponent
-                        add_instr!(R Read, 0), // cell 6: recursive base argument
-                        add_instr!(R Read, 5), // cell 7: recursive exponent argument
-                        add_instr!(fun FunctionCall, "power"), // cell 8: half-power
-                        add_instr!(Mul, 8, 8), // cell 9: squared half-power
-                        add_instr!(Mul, 5, 4), // cell 10: twice half-exponent
-                        add_instr!(Push, -1), // cell 11: negation constant
-                        add_instr!(Mul, 10, 11), // cell 12: negated doubled value
-                        add_instr!(Add, 1, 12), // cell 13: oddness (zero or one)
-                        add_instr!(ifelse 13,
-                            add_instr!(Mul, 9, 0), // cell 14: odd result
-                            add_instr!(R Read, 9) // cell 14: even result
-                        )
-                    )
+                    [
+                        add_instr!(Push, 1), // cell 4: base-case result
+                    ],
+                    [
+                        make_block!(4,
+                            add_instr!(Push, 2), // cell 4: divisor
+                            add_instr!(Div, 1, 4), // cell 5: half-exponent
+                            add_instr!(R Read, 0), // cell 6: recursive base argument
+                            add_instr!(R Read, 5), // cell 7: recursive exponent argument
+                            add_instr!(fun FunctionCall, "power"), // cell 8: half-power
+                            add_instr!(Mul, 8, 8), // cell 9: squared half-power
+                            add_instr!(Mul, 5, 4), // cell 10: twice half-exponent
+                            add_instr!(Push, -1), // cell 11: negation constant
+                            add_instr!(Mul, 10, 11), // cell 12: negated doubled value
+                            add_instr!(Add, 1, 12), // cell 13: oddness (zero or one)
+                            add_instr!(ifelse 13,
+                                [
+                                    add_instr!(Mul, 9, 0), // cell 14: odd result
+                                ],
+                                [
+                                    add_instr!(R Read, 9), // cell 14: even result
+                                ],
+                            )
+                        ),
+                    ],
                 )
             ),
             add_instr!(Input), // cell 0: base
@@ -1395,14 +1483,18 @@ mod showcases {
                 add_instr!(Push, 0),          // cell 1: zero constant
                 add_instr!(CmpEqual, 0, 1),   // cell 2: remaining bits == 0
                 add_instr!(ifelse 2,
-                    add_instr!(Push, 0), // cell 3: base-case count
-                    make_block!(3,
-                        add_instr!(Push, 1), // cell 3: mask and shift amount
-                        add_instr!(And, 0, 3), // cell 4: low bit
-                        add_instr!(ShiftRightLogical, 0, 3), // cell 5: remaining bits
-                        add_instr!(fun FunctionCall, "popcount"), // cell 6: recursive count
-                        add_instr!(Add, 4, 6) // cell 7: population count
-                    )
+                    [
+                        add_instr!(Push, 0), // cell 3: base-case count
+                    ],
+                    [
+                        make_block!(3,
+                            add_instr!(Push, 1), // cell 3: mask and shift amount
+                            add_instr!(And, 0, 3), // cell 4: low bit
+                            add_instr!(ShiftRightLogical, 0, 3), // cell 5: remaining bits
+                            add_instr!(fun FunctionCall, "popcount"), // cell 6: recursive count
+                            add_instr!(Add, 4, 6) // cell 7: population count
+                        ),
+                    ],
                 )
             ),
             add_instr!(Input), // cell 0: input value
@@ -1435,25 +1527,33 @@ mod showcases {
                 add_instr!(Div, 0, 1),        // cell 2: number / divisor
                 add_instr!(CmpGreaterThan, 1, 2), // cell 3: divisor > quotient
                 add_instr!(ifelse 3,
-                    add_instr!(Push, 1), // cell 4: no divisor remains
-                    make_block!(4,
-                        add_instr!(Mul, 2, 1), // cell 4: quotient * divisor
-                        add_instr!(Push, -1), // cell 5: negation constant
-                        add_instr!(Mul, 4, 5), // cell 6: negated product
-                        add_instr!(Add, 0, 6), // cell 7: derived remainder
-                        add_instr!(Push, 0), // cell 8: zero constant
-                        add_instr!(CmpEqual, 7, 8), // cell 9: divisible
-                        add_instr!(ifelse 9,
-                            add_instr!(Push, 0), // cell 10: composite result
-                            make_block!(10,
-                                add_instr!(Push, 1), // cell 10: increment constant
-                                add_instr!(Add, 1, 10), // cell 11: next divisor
-                                add_instr!(R Read, 0), // cell 12: recursive number argument
-                                add_instr!(R Read, 11), // cell 13: recursive divisor argument
-                                add_instr!(fun FunctionCall, "is_prime_trial") // cell 14: result
+                    [
+                        add_instr!(Push, 1), // cell 4: no divisor remains
+                    ],
+                    [
+                        make_block!(4,
+                            add_instr!(Mul, 2, 1), // cell 4: quotient * divisor
+                            add_instr!(Push, -1), // cell 5: negation constant
+                            add_instr!(Mul, 4, 5), // cell 6: negated product
+                            add_instr!(Add, 0, 6), // cell 7: derived remainder
+                            add_instr!(Push, 0), // cell 8: zero constant
+                            add_instr!(CmpEqual, 7, 8), // cell 9: divisible
+                            add_instr!(ifelse 9,
+                                [
+                                    add_instr!(Push, 0), // cell 10: composite result
+                                ],
+                                [
+                                    make_block!(10,
+                                        add_instr!(Push, 1), // cell 10: increment constant
+                                        add_instr!(Add, 1, 10), // cell 11: next divisor
+                                        add_instr!(R Read, 0), // cell 12: recursive number argument
+                                        add_instr!(R Read, 11), // cell 13: recursive divisor argument
+                                        add_instr!(fun FunctionCall, "is_prime_trial") // cell 14: result
+                                    ),
+                                ],
                             )
-                        )
-                    )
+                        ),
+                    ],
                 )
             ),
             add_instr!(fun FunctionDefine, "is_prime"),
@@ -1461,12 +1561,16 @@ mod showcases {
                 add_instr!(Push, 2),          // cell 1: minimum prime/divisor
                 add_instr!(CmpLessThan, 0, 1), // cell 2: number < 2
                 add_instr!(ifelse 2,
-                    add_instr!(Push, 0), // cell 3: below-two result
-                    make_block!(3,
-                        add_instr!(R Read, 0), // cell 3: trial number argument
-                        add_instr!(Push, 2), // cell 4: initial divisor argument
-                        add_instr!(fun FunctionCall, "is_prime_trial") // cell 5: result
-                    )
+                    [
+                        add_instr!(Push, 0), // cell 3: below-two result
+                    ],
+                    [
+                        make_block!(3,
+                            add_instr!(R Read, 0), // cell 3: trial number argument
+                            add_instr!(Push, 2), // cell 4: initial divisor argument
+                            add_instr!(fun FunctionCall, "is_prime_trial") // cell 5: result
+                        ),
+                    ],
                 )
             ),
             add_instr!(Input), // cell 0: number

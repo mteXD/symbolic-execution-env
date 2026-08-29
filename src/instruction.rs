@@ -90,9 +90,10 @@ pub enum Instruction<Tag = ()> {
     Block(CellAmount, Rc<[Instruction<Tag>]>),
     /// Non-isolating conditional instruction sequences.
     ///
-    /// Only the selected branch runs. Its instructions execute in order on the
-    /// surrounding stack, and either branch may be empty (a no-op). A [`Block`]
-    /// within a branch still applies its own isolated semantics.
+    /// Each branch is supplied as a bracketed instruction sequence. Only the
+    /// selected branch runs. Its instructions execute in order on the surrounding
+    /// stack, and either branch may be empty (a no-op). A [`Block`] within a branch
+    /// still applies its own isolated semantics.
     IfElse(CellIndex, Rc<[Instruction<Tag>]>, Rc<[Instruction<Tag>]>),
 }
 
@@ -148,13 +149,6 @@ macro_rules! add_instr {
             $cond,
             std::rc::Rc::from(vec![ $( $when_true ),* ]),
             std::rc::Rc::from(vec![ $( $when_false ),* ]),
-        )
-    };
-    (ifelse $cond:expr, $when_true:expr, $when_false:expr $(,)?) => {
-        $crate::instruction::Instruction::IfElse(
-            $cond,
-            std::rc::Rc::from(vec![$when_true]),
-            std::rc::Rc::from(vec![$when_false]),
         )
     };
 }

@@ -21,98 +21,81 @@ macro_rules! verify_expect {
     (($prog:expr) error with $policy:expr, $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::verifier::Verifier::with_policy($prog, $policy)
             .and_then(|verifier| verifier.verify());
-        match result {
-            Err($pat) $(if $guard)? => {}
-            Err(other) => panic!(
-                "\nEXPECTED verifier Err({})\nACTUAL Err\n{:#?}",
-                stringify!($pat),
-                other
-            ),
-            Ok(_) => panic!(
-                "\nEXPECTED verifier Err({})\nACTUAL Ok(..)",
-                stringify!($pat)
-            ),
-        }
+        $crate::verify_expect!(@error_result verifier (result), $pat $(if $guard)?);
     }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::verifier::Verifier::new($prog).verify();
-        match result {
-            Err($pat) $(if $guard)? => {}
-            other => panic!(
-                "\nEXPECTED verifier Err({})\nACTUAL\n{:#?}",
-                stringify!($pat),
-                other
-            ),
-        }
+        $crate::verify_expect!(@error_result verifier (result), $pat $(if $guard)?);
     }};
     (($prog:expr) custom |$program:ident| $body:block) => {{
         let $program = $prog;
         $body
+    }};
+    (@error_result $runner:ident ($result:expr), $pat:pat $(if $guard:expr)?) => {{
+        match $result {
+            Err($pat) $(if $guard)? => {}
+            Err(other) => panic!(
+                "\nEXPECTED {} Err({})\nACTUAL Err\n{:#?}",
+                stringify!($runner),
+                stringify!($pat),
+                other
+            ),
+            Ok(_) => panic!(
+                "\nEXPECTED {} Err({})\nACTUAL Ok(..)",
+                stringify!($runner),
+                stringify!($pat)
+            ),
+        }
     }};
 }
 
 #[macro_export]
 macro_rules! exec_expect {
-    (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {{
-        let executor = $crate::machine::executor::Executor::new($prog)
-            .exec()
-            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-        let expected: ::std::vec::Vec<$crate::types::Value> =
-            ::std::vec![$($crate::types::Value::Integer($e)),*];
-        assert_eq!(executor.values(), expected);
-    }};
-    (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {{
-        let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
-            .expect("executor construction should succeed")
-            .exec()
-            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-        let expected_values = ::std::vec![$($crate::types::Value::Integer($v)),*];
-        let expected_tags = ::std::vec![$($t),*];
-        assert_eq!(executor.values(), expected_values, "executor values mismatch");
-        assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
-    }};
+    (($prog:expr) stack [ $($e:expr),* $(,)? ]) => {
+        $crate::exec_expect!(
+            @stack ($crate::machine::executor::Executor::new($prog)),
+            [$($e),*]
+        );
+    };
+    (($prog:expr) tagged_stack with $policy:expr, [ $(($v:expr, $t:expr)),* $(,)? ]) => {
+        $crate::exec_expect!(
+            @tagged_stack (
+                $crate::machine::executor::Executor::with_policy($prog, $policy)
+                    .expect("executor construction should succeed")
+            ),
+            [$(($v, $t)),*]
+        );
+    };
     (($prog:expr) error with $policy:expr, $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::executor::Executor::with_policy($prog, $policy)
             .and_then(|executor| executor.exec());
-        match result {
-            Err($pat) $(if $guard)? => {}
-            Err(other) => panic!(
-                "\nEXPECTED executor Err({})\nACTUAL Err\n{:#?}",
-                stringify!($pat),
-                other
-            ),
-            Ok(_) => panic!(
-                "\nEXPECTED executor Err({})\nACTUAL Ok(..)",
-                stringify!($pat)
-            ),
-        }
+        $crate::verify_expect!(@error_result executor (result), $pat $(if $guard)?);
     }};
     (($prog:expr) error $pat:pat $(if $guard:expr)?) => {{
         let result = $crate::machine::executor::Executor::new($prog).exec();
-        match result {
-            Err($pat) $(if $guard)? => {}
-            other => panic!(
-                "\nEXPECTED executor Err({})\nACTUAL\n{:#?}",
-                stringify!($pat),
-                other
-            ),
-        }
+        $crate::verify_expect!(@error_result executor (result), $pat $(if $guard)?);
     }};
     (($prog:expr) custom |$program:ident| $body:block) => {{
         let $program = $prog;
         $body
     }};
-    (($prog:expr) input [ $($in:expr),* $(,)? ] => stack [ $($e:expr),* $(,)? ]) => {{
-        let executor = $crate::machine::executor::Executor::new($prog)
-            .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
+    (($prog:expr) input [ $($in:expr),* $(,)? ] => stack [ $($e:expr),* $(,)? ]) => {
+        $crate::exec_expect!(
+            @stack (
+                $crate::machine::executor::Executor::new($prog)
+                    .redirect_input($crate::types::IoBuffer::new(::std::vec![$($in),*]).into())
+            ),
+            [$($e),*]
+        );
+    };
+    (($prog:expr) input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]) => {{
+        let output = $crate::types::IoBuffer::new(::std::vec![]);
+        $crate::machine::executor::Executor::new($prog)
+            .redirect_input($crate::types::IoBuffer::new(::std::vec![$($in),*]).into())
+            .redirect_output(output.clone().into())
             .exec()
             .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-        let expected: ::std::vec::Vec<$crate::types::Value> =
-            ::std::vec![$($crate::types::Value::Integer($e)),*];
-        assert_eq!(executor.values(), expected);
-    }};
-    (($prog:expr) input [ $($in:expr),* $(,)? ] => output [ $($o:expr),* $(,)? ]) => {{
-        $crate::exec_expect!(@input_output ($prog) [$($in),*] [$($o),*]);
+        assert_eq!(*output.borrow(), ::std::vec![$($o),*]);
     }};
     (($prog:expr) cases { $($cases:tt)* }) => {
         $crate::exec_expect!(@cases ($prog) $($cases)*);
@@ -126,15 +109,14 @@ macro_rules! exec_expect {
         $(; $($rest:tt)*)?
     ) => {
         {
-            let executor = $crate::machine::executor::Executor::with_policy($prog, $policy)
-                .expect("executor construction should succeed")
-                .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
-                .exec()
-                .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-            let expected_values = ::std::vec![$($crate::types::Value::Integer($v)),*];
-            let expected_tags = ::std::vec![$($t),*];
-            assert_eq!(executor.values(), expected_values, "executor values mismatch");
-            assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
+            $crate::exec_expect!(
+                @tagged_stack (
+                    $crate::machine::executor::Executor::with_policy($prog, $policy)
+                        .expect("executor construction should succeed")
+                        .redirect_input($crate::types::IoBuffer::new(::std::vec![$($in),*]).into())
+                ),
+                [$(($v, $t)),*]
+            );
         }
         $( $crate::exec_expect!(@tagged_cases ($prog) ($policy) $($rest)*); )?
     };
@@ -144,13 +126,7 @@ macro_rules! exec_expect {
         $(; $($rest:tt)*)?
     ) => {
         {
-            let executor = $crate::machine::executor::Executor::new($prog)
-                .redirect_input($crate::types::IoBuffer::new(::std::vec![ $($in),* ]).into())
-                .exec()
-                .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-            let expected: ::std::vec::Vec<$crate::types::Value> =
-                ::std::vec![$($crate::types::Value::Integer($e)),*];
-            assert_eq!(executor.values(), expected);
+            $crate::exec_expect!(($prog) input [$($in),*] => stack [$($e),*]);
         }
         $( $crate::exec_expect!(@cases ($prog) $($rest)*); )?
     };
@@ -159,18 +135,26 @@ macro_rules! exec_expect {
         $(; $($rest:tt)*)?
     ) => {
         {
-            $crate::exec_expect!(@input_output ($prog) [$($in),*] [$($o),*]);
+            $crate::exec_expect!(($prog) input [$($in),*] => output [$($o),*]);
         }
         $( $crate::exec_expect!(@cases ($prog) $($rest)*); )?
     };
-    (@input_output ($prog:expr) [$($in:expr),*] [$($out:expr),*]) => {{
-        let output = $crate::types::IoBuffer::new(::std::vec![]);
-        $crate::machine::executor::Executor::new($prog)
-            .redirect_input($crate::types::IoBuffer::new(::std::vec![$($in),*]).into())
-            .redirect_output(output.clone().into())
+    (@stack ($executor:expr), [$($e:expr),* $(,)?]) => {{
+        let executor = ($executor)
             .exec()
             .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
-        assert_eq!(*output.borrow(), ::std::vec![$($out),*]);
+        let expected: ::std::vec::Vec<$crate::types::Value> =
+            ::std::vec![$($crate::types::Value::Integer($e)),*];
+        assert_eq!(executor.values(), expected);
+    }};
+    (@tagged_stack ($executor:expr), [$(($v:expr, $t:expr)),* $(,)?]) => {{
+        let executor = ($executor)
+            .exec()
+            .unwrap_or_else(|error| panic!("executor should run program, but returned: {error:#?}"));
+        let expected_values = ::std::vec![$($crate::types::Value::Integer($v)),*];
+        let expected_tags = ::std::vec![$($t),*];
+        assert_eq!(executor.values(), expected_values, "executor values mismatch");
+        assert_eq!(executor.tags(), expected_tags, "executor tags mismatch");
     }};
 }
 
@@ -199,38 +183,32 @@ macro_rules! test_program {
         verifier: { $($v:tt)* },
         executor: { $($e:tt)* } $(,)?
     ) => {
-        $crate::test_program!(@gen_v [$(#[$meta])*] $name ($prog) [] $($v)*);
-        $crate::test_program!(@gen_e [$(#[$meta])*] $name ($prog) [] $($e)*);
-    };
-
-    (@gen_v [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
         $crate::test_program!(
-            @gen_v [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
+            @gen [verifier => verify_expect] [$(#[$meta])*] $name ($prog) [] $($v)*
+        );
+        $crate::test_program!(
+            @gen [executor => exec_expect] [$(#[$meta])*] $name ($prog) [] $($e)*
         );
     };
-    (@gen_v [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] $($body:tt)*) => {
+
+    (@gen [$suffix:ident => $expect:ident]
+        [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*]
+        #[$m:meta] $($rest:tt)*
+    ) => {
+        $crate::test_program!(
+            @gen [$suffix => $expect]
+            [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
+        );
+    };
+    (@gen [$suffix:ident => $expect:ident]
+        [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] $($body:tt)*
+    ) => {
         ::paste::paste! {
             $($outer)*
             $($attrs)*
             #[test]
-            fn [<$name _verifier>]() {
-                $crate::verify_expect!(($prog) $($body)*);
-            }
-        }
-    };
-
-    (@gen_e [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] #[$m:meta] $($rest:tt)*) => {
-        $crate::test_program!(
-            @gen_e [$($outer)*] $name ($prog) [$($attrs)* #[$m]] $($rest)*
-        );
-    };
-    (@gen_e [$($outer:tt)*] $name:ident ($prog:expr) [$($attrs:tt)*] $($body:tt)*) => {
-        ::paste::paste! {
-            $($outer)*
-            $($attrs)*
-            #[test]
-            fn [<$name _executor>]() {
-                $crate::exec_expect!(($prog) $($body)*);
+            fn [<$name _ $suffix>]() {
+                $crate::$expect!(($prog) $($body)*);
             }
         }
     };
@@ -241,11 +219,9 @@ macro_rules! test_program {
         program: $prog:expr,
         verifier_only: { $($v:tt)* } $(,)?
     ) => {
-        $(#[$meta])*
-        #[test]
-        fn $name() {
-            $crate::verify_expect!(($prog) $($v)*);
-        }
+        $crate::test_program!(
+            @single [verify_expect] [$(#[$meta])*] $name ($prog) $($v)*
+        );
     };
 
     (
@@ -254,10 +230,16 @@ macro_rules! test_program {
         program: $prog:expr,
         executor_only: { $($e:tt)* } $(,)?
     ) => {
-        $(#[$meta])*
+        $crate::test_program!(
+            @single [exec_expect] [$(#[$meta])*] $name ($prog) $($e)*
+        );
+    };
+
+    (@single [$expect:ident] [$($outer:tt)*] $name:ident ($prog:expr) $($body:tt)*) => {
+        $($outer)*
         #[test]
         fn $name() {
-            $crate::exec_expect!(($prog) $($e)*);
+            $crate::$expect!(($prog) $($body)*);
         }
     };
 }
