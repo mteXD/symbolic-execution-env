@@ -111,7 +111,7 @@ macro_rules! add_instr {
         // for immediate
         $crate::instruction::Instruction::UnaryImm($crate::instruction::UnaryOpImm::$op, $a)
     };
-    (tag Push, $value:expr, $tag:expr) => {
+    (TaggedPush, $value:expr, $tag:expr) => {
         $crate::instruction::Instruction::UnaryImm(
             $crate::instruction::UnaryOpImm::TaggedPush($tag),
             $value,
