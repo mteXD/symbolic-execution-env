@@ -779,7 +779,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
 impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
     type Error = VerifierError<Tag>;
 
-    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
+    fn evaluate_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error> {
         use NullaryOp::*;
 
         match instr {
@@ -792,7 +792,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_alu_unary_imm(
+    fn evaluate_unary_imm(
         &mut self,
         instr: &UnaryOpImm<Tag>,
         arg: Immediate,
@@ -807,7 +807,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_alu_unary_cell(
+    fn evaluate_unary_cell(
         &mut self,
         instr: &UnaryOpCell,
         arg: CellIndex,
@@ -848,7 +848,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_alu_unary_cell_amnt(
+    fn evaluate_unary_cell_amnt(
         &mut self,
         instr: &UnaryOpCellAmnt,
         amount: CellAmount,
@@ -869,7 +869,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_alu_unary_string(
+    fn evaluate_unary_string(
         &mut self,
         instr: &UnaryOpString,
         name: &str,
@@ -886,7 +886,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         Ok(())
     }
 
-    fn evaluate_alu_binary(
+    fn evaluate_binary(
         &mut self,
         instr: &BinaryOp,
         arg1: CellIndex,

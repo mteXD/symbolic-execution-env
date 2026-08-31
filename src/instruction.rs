@@ -83,17 +83,8 @@ pub enum Instruction<Tag = ()> {
     UnaryString(UnaryOpString, String),
     Binary(BinaryOp, CellIndex, CellIndex),
     /// A structured block and its argument count.
-    ///
-    /// The count clones that many cells from the top of the caller's stack,
-    /// preserves their original order, and isolates the body from the caller.
-    /// The block collapses to the body's top cell when it returns.
     Block(CellAmount, Rc<[Instruction<Tag>]>),
-    /// Non-isolating conditional instruction sequences.
-    ///
-    /// Each branch is supplied as a bracketed instruction sequence. Only the
-    /// selected branch runs. Its instructions execute in order on the surrounding
-    /// stack, and either branch may be empty (a no-op). A [`Block`] within a branch
-    /// still applies its own isolated semantics.
+    /// Conditional branch instruction
     IfElse(CellIndex, Rc<[Instruction<Tag>]>, Rc<[Instruction<Tag>]>),
 }
 

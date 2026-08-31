@@ -129,27 +129,27 @@ trait Evaluate<Tag: Debug = ()> {
         match instr {
             Nullary(instr) => {
                 debug!("Evaling: {:?}", instr);
-                self.evaluate_alu_nullary(instr)
+                self.evaluate_nullary(instr)
             }
             UnaryImm(instr, imm) => {
                 debug!("Evaling: {:?}, imm: {:?}", instr, imm);
-                self.evaluate_alu_unary_imm(instr, *imm)
+                self.evaluate_unary_imm(instr, *imm)
             }
             UnaryCell(instr, cell) => {
                 debug!("Evaling: {:?}, cell: {:?}", instr, cell);
-                self.evaluate_alu_unary_cell(instr, *cell)
+                self.evaluate_unary_cell(instr, *cell)
             }
             UnaryCellAmnt(instr, amount) => {
                 debug!("Evaling: {:?}, amount: {:?}", instr, amount);
-                self.evaluate_alu_unary_cell_amnt(instr, *amount)
+                self.evaluate_unary_cell_amnt(instr, *amount)
             }
             UnaryString(instr, name) => {
                 debug!("Evaling: {:?}, name: '{}'", instr, name);
-                self.evaluate_alu_unary_string(instr, name)
+                self.evaluate_unary_string(instr, name)
             }
             Binary(instr, arg1, arg2) => {
                 debug!("Evaling: {:?}; args: {:?}, {:?}", instr, arg1, arg2);
-                self.evaluate_alu_binary(instr, *arg1, *arg2)
+                self.evaluate_binary(instr, *arg1, *arg2)
             }
             Block(argument_count, instrs) => {
                 debug!("Entering block with argument count {argument_count}...");
@@ -164,28 +164,28 @@ trait Evaluate<Tag: Debug = ()> {
         Ok(())
     }
 
-    fn evaluate_alu_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error>;
-    fn evaluate_alu_unary_imm(
+    fn evaluate_nullary(&mut self, instr: &NullaryOp) -> Result<(), Self::Error>;
+    fn evaluate_unary_imm(
         &mut self,
         instr: &UnaryOpImm<Tag>,
         arg: Immediate,
     ) -> Result<(), Self::Error>;
-    fn evaluate_alu_unary_cell(
+    fn evaluate_unary_cell(
         &mut self,
         instr: &UnaryOpCell,
         arg: CellIndex,
     ) -> Result<(), Self::Error>;
-    fn evaluate_alu_unary_cell_amnt(
+    fn evaluate_unary_cell_amnt(
         &mut self,
         instr: &UnaryOpCellAmnt,
         amount: CellAmount,
     ) -> Result<(), Self::Error>;
-    fn evaluate_alu_unary_string(
+    fn evaluate_unary_string(
         &mut self,
         instr: &UnaryOpString,
         name: &str,
     ) -> Result<(), Self::Error>;
-    fn evaluate_alu_binary(
+    fn evaluate_binary(
         &mut self,
         instr: &BinaryOp,
         arg1: CellIndex,
