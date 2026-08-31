@@ -1,14 +1,14 @@
 //! Integration tests with inline tagged (DIFTAM) programs.
 
 use virtual_machine::{
-    add_instr,
+    instr,
     information_flow::{DisjointTag, FlowError, SecurityPolicy, Topology},
     machine::{
         CoreError,
         executor::ExecutorError,
         verifier::{ValueSpan, VerifierError},
     },
-    make_block, test_program,
+    block, test_program,
     types::FunctionDataError,
 };
 
@@ -96,9 +96,9 @@ mod tag_propagation {
         /// result inherits the more restrictive tag.
         confidentiality_ift,
         program: vec![
-            add_instr!(Push, 10),
-            add_instr!(TaggedPush, 20, Secret),
-            add_instr!(Add, 0, 1),
+            instr!(Push, 10),
+            instr!(TaggedPush, 20, Secret),
+            instr!(Add, 0, 1),
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
                 (10, Public),
@@ -119,9 +119,9 @@ mod tag_propagation {
         /// more restrictive tag.
         integrity_ift,
         program: vec![
-            add_instr!(TaggedPush, 10, Low),
-            add_instr!(TaggedPush, 20, High),
-            add_instr!(Add, 0, 1),
+            instr!(TaggedPush, 10, Low),
+            instr!(TaggedPush, 20, High),
+            instr!(Add, 0, 1),
         ],
         verifier: { tagged_stack with integrity_policy(), [
                 (10, Low),
@@ -141,11 +141,11 @@ mod tag_propagation {
         /// Taint flows through an intermediate confidentiality level.
         confidentiality_ift_through_intermediate_level,
         program: vec![
-            add_instr!(Push, 1),
-            add_instr!(TaggedPush, 2, Confidential),
-            add_instr!(Add, 0, 1),
-            add_instr!(TaggedPush, 3, Secret),
-            add_instr!(Add, 2, 3),
+            instr!(Push, 1),
+            instr!(TaggedPush, 2, Confidential),
+            instr!(Add, 0, 1),
+            instr!(TaggedPush, 3, Secret),
+            instr!(Add, 2, 3),
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
                 (1, Public),
@@ -170,7 +170,7 @@ mod tag_propagation {
         /// program-counter tag: there is no common descendant.
         no_ccd,
         program: vec![
-            add_instr!(TaggedPush, 42, DisjointTag::Left(Public)),
+            instr!(TaggedPush, 42, DisjointTag::Left(Public)),
         ],
         verifier: { error with disjoint_policy(),
             VerifierError::Flow(FlowError::NoCommonDescendant { .. })
@@ -189,7 +189,7 @@ mod pgs {
         /// `Input` receives the policy's configured input perimeter guard's tag.
         input_receives_input_tag,
         program: vec![
-            add_instr!(Input)
+            instr!(Input)
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
                 (ValueSpan::inf(), Secret)
@@ -207,7 +207,7 @@ mod pgs {
         /// The output perimeter guard rejects printing a secret value; nothing is
         /// written before the rejection.
         output_rejected,
-        program: vec![add_instr!(TaggedPush, 42, Secret), add_instr!(R Print, 0)],
+        program: vec![instr!(TaggedPush, 42, Secret), instr!(R Print, 0)],
         verifier: { error with confidentiality_policy(),
             VerifierError::Flow(FlowError::PGViolation {
                 found: Secret,
@@ -227,14 +227,14 @@ mod pgs {
         /// because the effective tag becomes secret.
         output_rejected_implicit,
         program: vec![
-            add_instr!(TaggedPush, 1, Secret),
-            add_instr!(TaggedPush, 42, Public),
-            add_instr!(ifelse 0,
+            instr!(TaggedPush, 1, Secret),
+            instr!(TaggedPush, 42, Public),
+            instr!(ifelse 0,
                 [
-                    add_instr!(R Print, 1),
+                    instr!(R Print, 1),
                 ],
                 [
-                    add_instr!(Nop),
+                    instr!(Nop),
                 ],
             ),
         ],
@@ -256,8 +256,8 @@ mod pgs {
         /// A public value can be printed through the output perimeter.
         output_accepted,
         program: vec![
-            add_instr!(Push, 42),
-            add_instr!(R Print, 0)
+            instr!(Push, 42),
+            instr!(R Print, 0)
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
             (42, Public)
@@ -275,16 +275,16 @@ mod implicit_flow {
         /// A secret condition taints values pushed inside the taken branch.
         ifelse_known,
         program: vec![
-            add_instr!(TaggedPush, 1, Secret),
-            add_instr!(ifelse 0,
+            instr!(TaggedPush, 1, Secret),
+            instr!(ifelse 0,
                 [
-                    add_instr!(TaggedPush, 7, Public),
+                    instr!(TaggedPush, 7, Public),
                 ],
                 [
-                    add_instr!(TaggedPush, 9, Public),
+                    instr!(TaggedPush, 9, Public),
                 ],
             ),
-            add_instr!(TaggedPush, 11, Public),
+            instr!(TaggedPush, 11, Public),
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
                 (1, Secret),
@@ -306,13 +306,13 @@ mod implicit_flow {
         /// branch and cannot observe the merge.
         ifelse_unknown,
         program: vec![
-            add_instr!(Input),
-            add_instr!(ifelse 0,
+            instr!(Input),
+            instr!(ifelse 0,
                 [
-                    add_instr!(TaggedPush, 7, Public),
+                    instr!(TaggedPush, 7, Public),
                 ],
                 [
-                    add_instr!(TaggedPush, 9, Confidential),
+                    instr!(TaggedPush, 9, Confidential),
                 ],
             ),
         ],
@@ -328,15 +328,15 @@ mod implicit_flow {
         /// multi-instruction branch, not only the branch's first instruction.
         ifelse_sequence_taints_every_instruction,
         program: vec![
-            add_instr!(TaggedPush, 1, Secret),
-            add_instr!(ifelse 0,
+            instr!(TaggedPush, 1, Secret),
+            instr!(ifelse 0,
                 [
-                    add_instr!(TaggedPush, 7, Public),
-                    add_instr!(TaggedPush, 8, Public),
+                    instr!(TaggedPush, 7, Public),
+                    instr!(TaggedPush, 8, Public),
                 ],
                 [],
             ),
-            add_instr!(TaggedPush, 9, Public),
+            instr!(TaggedPush, 9, Public),
         ],
         verifier: { tagged_stack with confidentiality_policy(), [
                 (1, Secret),
@@ -357,15 +357,15 @@ mod implicit_flow {
 
 test_program! {
     /// Tags stay aligned with values across an isolated function call and pop.
-    tags_remain_aligned_through_function_block,
+    function_block,
     program: vec![
-        add_instr!(fun FunctionDefine, "add_public"),
-        make_block!(1,
-            add_instr!(TaggedPush, 1, Public),
-            add_instr!(Add, 0, 1)
+        instr!(fun FunctionDefine, "add_public"),
+        block!(1,
+            instr!(TaggedPush, 1, Public),
+            instr!(Add, 0, 1)
         ),
-        add_instr!(TaggedPush, 41, Secret),
-        add_instr!(fun FunctionCall, "add_public"),
+        instr!(TaggedPush, 41, Secret),
+        instr!(fun FunctionCall, "add_public"),
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
             (41, Secret),
@@ -385,12 +385,12 @@ test_program! {
     /// argument cells and therefore matches the executor.
     tags_remain_aligned_through_function_block_unused_arg,
     program: vec![
-        add_instr!(fun FunctionDefine, "add_public"),
-        make_block!(1,
-            add_instr!(TaggedPush, 1, Public),
+        instr!(fun FunctionDefine, "add_public"),
+        block!(1,
+            instr!(TaggedPush, 1, Public),
         ),
-        add_instr!(TaggedPush, 41, Secret),
-        add_instr!(fun FunctionCall, "add_public"),
+        instr!(TaggedPush, 41, Secret),
+        instr!(fun FunctionCall, "add_public"),
     ],
     verifier: { tagged_stack with confidentiality_policy(), [
             (41, Secret),
@@ -412,7 +412,7 @@ test_program! {
     /// A tag embedded in the program but absent from the policy graph is
     /// rejected at construction time.
     invalid_embedded_tag_rejected_at_construction,
-    program: vec![add_instr!(TaggedPush, 42, Confidential)],
+    program: vec![instr!(TaggedPush, 42, Confidential)],
     verifier: { error with limited_policy(),
         VerifierError::Flow(FlowError::UnknownTag(Confidential))
     },
@@ -426,11 +426,11 @@ test_program! {
     /// including instructions after an otherwise valid first element.
     invalid_embedded_tag_later_in_ifelse_sequence,
     program: vec![
-        add_instr!(Push, 1),
-        add_instr!(ifelse 0,
+        instr!(Push, 1),
+        instr!(ifelse 0,
             [
-                add_instr!(TaggedPush, 1, Public),
-                add_instr!(TaggedPush, 42, Confidential),
+                instr!(TaggedPush, 1, Public),
+                instr!(TaggedPush, 42, Confidential),
             ],
             [],
         ),
@@ -452,9 +452,9 @@ mod downgraders {
         /// Declaring a downgrader does not change oblivious flow (usual behavior)
         oblivious_flow_unaffected,
         program: vec![
-            add_instr!(Push, 1),
-            add_instr!(TaggedPush, 2, Secret),
-            add_instr!(Add, 0, 1),
+            instr!(Push, 1),
+            instr!(TaggedPush, 2, Secret),
+            instr!(Add, 0, 1),
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
                 (1, Public),
@@ -475,14 +475,14 @@ mod downgraders {
         /// Downgrader reads a secret value and transforms it into a public result.
         basic,
         program: vec![
-            add_instr!(fun Downgrader, "is_zero"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_zero"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_zero"),
-            add_instr!(R Print, 1),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_zero"),
+            instr!(R Print, 1),
         ],
         // The downgrader's result carries the connection target (Public).
         verifier: { tagged_stack with downgrader_policy("is_zero", Some(1)), [
@@ -502,12 +502,12 @@ mod downgraders {
         /// rejected if called on B; where A, B, C are tags.
         no_implicit_retag,
         program: vec![
-            add_instr!(fun Downgrader, "leak"),
-            make_block!(1,
-                add_instr!(TaggedPush, 5, Secret)
+            instr!(fun Downgrader, "leak"),
+            block!(1,
+                instr!(TaggedPush, 5, Secret)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "leak"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "leak"),
         ],
         verifier: { error with confidentiality_policy()
                 .with_downgrader("leak", Confidential, Public, Some(1))
@@ -533,12 +533,12 @@ mod downgraders {
         /// source is Secret.
         wrong_argument_tag,
         program: vec![
-            add_instr!(fun Downgrader, "is_zero"),
-            make_block!(1,
-                add_instr!(Nop)
+            instr!(fun Downgrader, "is_zero"),
+            block!(1,
+                instr!(Nop)
             ),
-            add_instr!(Push, 0),
-            add_instr!(fun Downgrade, "is_zero"),
+            instr!(Push, 0),
+            instr!(fun Downgrade, "is_zero"),
         ],
         verifier: { error with downgrader_policy("is_zero", Some(1)),
             VerifierError::Flow(FlowError::DowngraderReturnTagMismatch {
@@ -558,15 +558,15 @@ mod downgraders {
         /// Downgraders usually should come with a call limit, which is tested here.
         call_limit,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_empty"),
-            add_instr!(R Pop, 1),
-            add_instr!(fun Downgrade, "is_empty"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_empty"),
+            instr!(R Pop, 1),
+            instr!(fun Downgrade, "is_empty"),
         ],
         verifier: { error with downgrader_policy("is_empty", Some(1)),
             VerifierError::Flow(FlowError::DowngraderCallLimitExceeded { limit: 1, .. })
@@ -580,15 +580,15 @@ mod downgraders {
         /// Another test for the downgrader call limit, this time with 2 allowed calls.
         call_limit_2,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_empty"),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_empty"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_empty"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_empty"),
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
                 (0, Secret),
@@ -610,17 +610,17 @@ mod downgraders {
         /// A downgrader with no call limit
         no_call_limit,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_empty"),
-            add_instr!(R Pop, 1),
-            add_instr!(fun Downgrade, "is_empty"),
-            add_instr!(R Pop, 1),
-            add_instr!(fun Downgrade, "is_empty"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_empty"),
+            instr!(R Pop, 1),
+            instr!(fun Downgrade, "is_empty"),
+            instr!(R Pop, 1),
+            instr!(fun Downgrade, "is_empty"),
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", None), [
                 (0, Secret),
@@ -642,25 +642,25 @@ mod downgraders {
         /// final top-level downgrade makes it 2, exactly within `max_calls = 2`.
         call_limit_ifelse,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(Input), // unknown condition
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(ifelse 0,
+            instr!(Input), // unknown condition
+            instr!(TaggedPush, 0, Secret),
+            instr!(ifelse 0,
                 [
-                    add_instr!(Nop),
-                    add_instr!(fun Downgrade, "is_empty"),
+                    instr!(Nop),
+                    instr!(fun Downgrade, "is_empty"),
                 ],
                 [
-                    add_instr!(Nop),
-                    add_instr!(fun Downgrade, "is_empty"),
+                    instr!(Nop),
+                    instr!(fun Downgrade, "is_empty"),
                 ],
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "is_empty"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "is_empty"),
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(2)), [
                 (ValueSpan::inf(), Secret),
@@ -692,18 +692,18 @@ mod downgraders {
         /// Downgraders cannot be called from inside another downgrader or another ordinary function.
         nested_rejected,
         program: vec![
-            add_instr!(fun Downgrader, "inner"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "inner"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(fun Downgrader, "outer"),
-            make_block!(1,
-                add_instr!(TaggedPush, 0, Secret),
-                add_instr!(fun Downgrade, "inner") // FAILS: nested call
+            instr!(fun Downgrader, "outer"),
+            block!(1,
+                instr!(TaggedPush, 0, Secret),
+                instr!(fun Downgrade, "inner") // FAILS: nested call
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "outer"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "outer"),
         ],
         verifier: { error with downgrader_policy("inner", Some(1))
                 .with_downgrader("outer", Secret, Public, Some(1))
@@ -723,18 +723,17 @@ mod downgraders {
         /// its concrete behavior and executes the helper normally.
         function_call_inside_downgrader_rejected_by_verifier,
         program: vec![
-            add_instr!(fun FunctionDefine, "helper"),
-            make_block!(0,
-                add_instr!(TaggedPush, 5, Secret)
+            instr!(fun FunctionDefine, "helper"),
+            block!(0,
+                instr!(TaggedPush, 5, Secret)
             ),
-            add_instr!(fun Downgrader, "d"),
-            make_block!(1,
-                add_instr!(fun FunctionCall, "helper")
+            instr!(fun Downgrader, "d"),
+            block!(1,
+                instr!(fun FunctionCall, "helper")
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun Downgrade, "d"),
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun Downgrade, "d"),
         ],
-        split,
         verifier: { error with downgrader_policy("d", Some(1)),
             VerifierError::FunctionCallInsideDowngrader { function, downgrader }
                 if function == "helper" && downgrader == "d"
@@ -751,13 +750,13 @@ mod downgraders {
         /// it must use `Downgrade`. Both runners reject the call as `DowngraderUndefined`.
         function_call_rejected,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(TaggedPush, 0, Secret),
-            add_instr!(fun FunctionCall, "is_empty"), // FAILS: must use Downgrade
+            instr!(TaggedPush, 0, Secret),
+            instr!(fun FunctionCall, "is_empty"), // FAILS: must use Downgrade
         ],
         verifier: { error with downgrader_policy("is_empty", Some(1)),
             // VerifierError::Flow(FlowError::DowngraderUndefined { .. })
@@ -774,11 +773,11 @@ mod downgraders {
         /// Pointing it at an ordinary function is rejected as `DowngraderUndefined`.
         normal_function_rejected,
         program: vec![
-            add_instr!(fun FunctionDefine, "helper"),
-            make_block!(0,
-                add_instr!(Push, 5)
+            instr!(fun FunctionDefine, "helper"),
+            block!(0,
+                instr!(Push, 5)
             ),
-            add_instr!(fun Downgrade, "helper"),
+            instr!(fun Downgrade, "helper"),
         ],
         verifier: { error with confidentiality_policy(),
             VerifierError::Flow(FlowError::DowngraderUndefined { .. })
@@ -792,9 +791,9 @@ mod downgraders {
         /// A downgrader must be specified with the security policy.
         undefined_in_policy,
         program: vec![
-            add_instr!(fun Downgrader, "helper"),
-            make_block!(0,
-                add_instr!(Push, 5)
+            instr!(fun Downgrader, "helper"),
+            block!(0,
+                instr!(Push, 5)
             ),
         ],
         verifier: { error with confidentiality_policy(),
@@ -809,17 +808,17 @@ mod downgraders {
         /// Functions and downgraders have separate namespaces.
         function_no_clash,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(0,
-                add_instr!(Nop)
+            instr!(fun Downgrader, "is_empty"),
+            block!(0,
+                instr!(Nop)
             ),
-            add_instr!(fun FunctionDefine, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun FunctionDefine, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(Push, 0),
-            add_instr!(fun FunctionCall, "is_empty"),
+            instr!(Push, 0),
+            instr!(fun FunctionCall, "is_empty"),
         ],
         verifier: { tagged_stack with downgrader_policy("is_empty", Some(1)), [
                 (0, Public),
@@ -839,18 +838,17 @@ mod downgraders {
         /// catch this and runs the body when `outer` is called.
         nested_define_rejected,
         program: vec![
-            add_instr!(fun FunctionDefine, OUTER),
-            make_block!(0,
-                add_instr!(fun Downgrader, "is_empty"),
-                make_block!(1,
-                    add_instr!(Push, 0),
-                    add_instr!(CmpEqual, 0, 1)
+            instr!(fun FunctionDefine, OUTER),
+            block!(0,
+                instr!(fun Downgrader, "is_empty"),
+                block!(1,
+                    instr!(Push, 0),
+                    instr!(CmpEqual, 0, 1)
                 ),
-                add_instr!(Push, 42)
+                instr!(Push, 42)
             ),
-            add_instr!(fun FunctionCall, OUTER),
+            instr!(fun FunctionCall, OUTER),
         ],
-        split,
         verifier: { error with downgrader_policy("is_empty", Some(1)),
             VerifierError::NestedFunctionDefinition { .. }
         },
@@ -866,17 +864,17 @@ mod downgraders {
         /// runs.
         inside_function_rejected,
         program: vec![
-            add_instr!(fun Downgrader, "is_empty"),
-            make_block!(1,
-                add_instr!(Push, 0),
-                add_instr!(CmpEqual, 0, 1)
+            instr!(fun Downgrader, "is_empty"),
+            block!(1,
+                instr!(Push, 0),
+                instr!(CmpEqual, 0, 1)
             ),
-            add_instr!(fun FunctionDefine, "wrapper"),
-            make_block!(0,
-                add_instr!(TaggedPush, 0, Secret),
-                add_instr!(fun Downgrade, "is_empty")
+            instr!(fun FunctionDefine, "wrapper"),
+            block!(0,
+                instr!(TaggedPush, 0, Secret),
+                instr!(fun Downgrade, "is_empty")
             ),
-            add_instr!(fun FunctionCall, "wrapper"),
+            instr!(fun FunctionCall, "wrapper"),
         ],
         verifier: { error with downgrader_policy("is_empty", Some(1)),
             VerifierError::Flow(FlowError::NestedDowngraderCall { .. })
@@ -890,13 +888,13 @@ mod downgraders {
         /// A downgrader defined twice under the same name is a redefinition.
         redefinition_rejected,
         program: vec![
-            add_instr!(fun Downgrader, "foo"),
-            make_block!(0,
-                add_instr!(TaggedPush, 0, Secret)
+            instr!(fun Downgrader, "foo"),
+            block!(0,
+                instr!(TaggedPush, 0, Secret)
             ),
-            add_instr!(fun Downgrader, "foo"),
-            make_block!(0,
-                add_instr!(TaggedPush, 0, Secret)
+            instr!(fun Downgrader, "foo"),
+            block!(0,
+                instr!(TaggedPush, 0, Secret)
             ),
         ],
         verifier: { error with downgrader_policy("foo", Some(1)),

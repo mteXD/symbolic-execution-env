@@ -94,7 +94,7 @@ pub enum Instruction<Tag = ()> {
 /// callers need only `use crate::add_instr;` (no [`Instruction`] variant or op
 /// enum imports required).
 #[macro_export]
-macro_rules! add_instr {
+macro_rules! instr {
     ($op:ident) => {
         $crate::instruction::Instruction::Nullary($crate::instruction::NullaryOp::$op)
     };
@@ -150,7 +150,7 @@ macro_rules! add_instr {
 /// block. The instruction list may be empty, although both runners reject an
 /// empty block when processing it.
 #[macro_export]
-macro_rules! make_block {
+macro_rules! block {
     ($argument_count:expr $(, $instr:expr)* $(,)?) => {
         $crate::instruction::Instruction::Block(
             $argument_count,
