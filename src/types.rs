@@ -92,12 +92,6 @@ impl TryInto<usize> for Address {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FdEntry<Tag = ()> {
-    Str(String),
-    Inst(Instruction<Tag>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionDataError {
     FunctionRedefinition(String),
     FunctionUndefined(String),
@@ -107,7 +101,7 @@ use FunctionDataError::*;
 
 #[derive(Debug, Clone)]
 pub struct FunctionData<Tag = ()> {
-    pub function_table: HashMap<String, FdEntry<Tag>>,
+    function_table: HashMap<String, Instruction<Tag>>,
 }
 
 impl<Tag> Default for FunctionData<Tag> {
@@ -119,37 +113,28 @@ impl<Tag> Default for FunctionData<Tag> {
 }
 
 impl<Tag> FunctionData<Tag> {
-    pub fn insert(&mut self, name: String, entry: FdEntry<Tag>) -> Result<(), FunctionDataError> {
+    pub fn insert(
+        &mut self,
+        name: String,
+        instruction: Instruction<Tag>,
+    ) -> Result<(), FunctionDataError> {
         if self.function_table.contains_key(&name) {
             return Err(FunctionRedefinition(name));
         }
 
-        self.function_table.insert(name, entry);
+        self.function_table.insert(name, instruction);
 
         Ok(())
     }
 
-    fn entry(&self, name: &str) -> Result<&FdEntry<Tag>, FunctionDataError> {
+    fn entry(&self, name: &str) -> Result<&Instruction<Tag>, FunctionDataError> {
         self.function_table
             .get(name)
             .ok_or(FunctionUndefined(name.to_owned()))
     }
 
     pub fn get(&self, name: &str) -> Result<&Instruction<Tag>, FunctionDataError> {
-        let mut entry = self.entry(name)?;
-        let mut aliases_followed = 0;
-
-        loop {
-            match entry {
-                FdEntry::Str(alias) => entry = self.entry(alias)?,
-                FdEntry::Inst(instruction) => return Ok(instruction),
-            }
-
-            aliases_followed += 1;
-            if aliases_followed > self.function_table.len() {
-                panic!("Cyclic function definition detected for '{name}'");
-            }
-        }
+        self.entry(name)
     }
 }
 

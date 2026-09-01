@@ -1,14 +1,15 @@
 //! Integration tests with inline tagged (DIFTAM) programs.
 
 use virtual_machine::{
-    instr,
+    block,
     information_flow::{DisjointTag, FlowError, SecurityPolicy, Topology},
+    instr,
     machine::{
         CoreError,
         executor::ExecutorError,
         verifier::{ValueSpan, VerifierError},
     },
-    block, test_program,
+    test_program,
     types::FunctionDataError,
 };
 

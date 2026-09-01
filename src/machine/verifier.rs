@@ -516,8 +516,6 @@ impl<Tag: TagTrait> Verifier<Tag> {
         }
     }
 
-    // ---- Core execution -----------------------------------------------------
-
     fn run_loop(&mut self) -> Result<(), VerifierError<Tag>> {
         while let Some(instr) = self.machine.next() {
             self.evaluate_instruction(&instr)?;

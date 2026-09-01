@@ -1104,11 +1104,7 @@ mod functions {
 }
 
 mod showcases {
-    use virtual_machine::{
-        block, instr,
-        machine::verifier::{ValueSpan},
-        test_program,
-    };
+    use virtual_machine::{block, instr, machine::verifier::ValueSpan, test_program};
 
     /// Helper function to compute factorial recursively.
     const fn factorial_helper(n: i64) -> i64 {

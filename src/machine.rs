@@ -8,7 +8,7 @@ use crate::{
         NullaryOp, UnaryOpCell, UnaryOpCellAmnt, UnaryOpImm, UnaryOpString,
     },
     types::{
-        CellAmount, CellIndex, FdEntry, FunctionData, FunctionDataError, Immediate, Input, Output,
+        CellAmount, CellIndex, FunctionData, FunctionDataError, Immediate, Input, Output,
         ProgramData, ProgramDataError,
     },
 };
@@ -67,8 +67,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         self.function_data.get(name).map_err(Into::into)
     }
 
-    pub fn function_insert(&mut self, name: String, entry: FdEntry<Tag>) -> CoreResult<()> {
-        self.function_data.insert(name, entry)?;
+    pub fn function_insert(
+        &mut self,
+        name: String,
+        instruction: Instruction<Tag>,
+    ) -> CoreResult<()> {
+        self.function_data.insert(name, instruction)?;
         Ok(())
     }
 
@@ -76,8 +80,12 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         self.downgrader_data.get(name).map_err(Into::into)
     }
 
-    pub fn downgrader_insert(&mut self, name: String, entry: FdEntry<Tag>) -> CoreResult<()> {
-        self.downgrader_data.insert(name, entry)?;
+    pub fn downgrader_insert(
+        &mut self,
+        name: String,
+        instruction: Instruction<Tag>,
+    ) -> CoreResult<()> {
+        self.downgrader_data.insert(name, instruction)?;
         Ok(())
     }
 
@@ -101,9 +109,9 @@ impl<Tag: Clone + Debug> CoreMachine<Tag> {
         let function_name = function_name.to_owned();
         debug!("Function '{}' will point to {:?}", function_name, current);
         if is_downgrader {
-            self.downgrader_insert(function_name, FdEntry::Inst(current))?;
+            self.downgrader_insert(function_name, current)?;
         } else {
-            self.function_insert(function_name, FdEntry::Inst(current))?;
+            self.function_insert(function_name, current)?;
         }
 
         Ok(())
