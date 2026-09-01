@@ -43,10 +43,6 @@ fn integrity_policy() -> SecurityPolicy<Integrity> {
     SecurityPolicy::new(Topology::linear([Low, Medium, High]), Low, Low, High).unwrap()
 }
 
-// ---------------------------------------------------------------------------
-// Policy helpers
-// ---------------------------------------------------------------------------
-
 /// Confidentiality policy extended with a single `Secret ->> Public`
 /// downgrader named `name`, with a total call limit of `max_calls` for the
 /// whole program run.
@@ -69,10 +65,6 @@ fn public_input_policy() -> SecurityPolicy<Confidentiality> {
     SecurityPolicy::new(topology, Public, Public, Public).unwrap()
 }
 
-// ---------------------------------------------------------------------------
-// Tag propagation
-// ---------------------------------------------------------------------------
-
 mod tag_propagation {
     use super::*;
 
@@ -92,32 +84,9 @@ mod tag_propagation {
     }
 
     test_program! {
-        /// Tag propagation with one default tag and one explicit tag: the `Add`
-        /// result inherits the more restrictive tag.
-        confidentiality_ift,
-        program: vec![
-            instr!(Push, 10),
-            instr!(TaggedPush, 20, Secret),
-            instr!(Add, 0, 1),
-        ],
-        verifier: { tagged_stack with confidentiality_policy(), [
-                (10, Public),
-                (20, Secret),
-                (30, Secret)
-            ]
-        },
-        executor: { tagged_stack with confidentiality_policy(), [
-                (10, Public),
-                (20, Secret),
-                (30, Secret)
-            ]
-        },
-    }
-
-    test_program! {
         /// Tag propagation with two explicit tags: the `Add` result inherits the
         /// more restrictive tag.
-        integrity_ift,
+        integrity,
         program: vec![
             instr!(TaggedPush, 10, Low),
             instr!(TaggedPush, 20, High),
@@ -139,7 +108,7 @@ mod tag_propagation {
 
     test_program! {
         /// Taint flows through an intermediate confidentiality level.
-        confidentiality_ift_through_intermediate_level,
+        confidentiality,
         program: vec![
             instr!(Push, 1),
             instr!(TaggedPush, 2, Confidential),
@@ -187,7 +156,7 @@ mod pgs {
 
     test_program! {
         /// `Input` receives the policy's configured input perimeter guard's tag.
-        input_receives_input_tag,
+        input,
         program: vec![
             instr!(Input)
         ],
@@ -207,7 +176,10 @@ mod pgs {
         /// The output perimeter guard rejects printing a secret value; nothing is
         /// written before the rejection.
         output_rejected,
-        program: vec![instr!(TaggedPush, 42, Secret), instr!(R Print, 0)],
+        program: vec![
+            instr!(TaggedPush, 42, Secret),
+            instr!(R Print, 0)
+            ],
         verifier: { error with confidentiality_policy(),
             VerifierError::Flow(FlowError::PGViolation {
                 found: Secret,
@@ -229,7 +201,7 @@ mod pgs {
         program: vec![
             instr!(TaggedPush, 1, Secret),
             instr!(TaggedPush, 42, Public),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(R Print, 1),
                 ],
@@ -276,7 +248,7 @@ mod implicit_flow {
         ifelse_known,
         program: vec![
             instr!(TaggedPush, 1, Secret),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(TaggedPush, 7, Public),
                 ],
@@ -307,7 +279,7 @@ mod implicit_flow {
         ifelse_unknown,
         program: vec![
             instr!(Input),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(TaggedPush, 7, Public),
                 ],
@@ -316,11 +288,21 @@ mod implicit_flow {
                 ],
             ),
         ],
-        verifier_only: { tagged_stack with public_input_policy(), [
+        verifier: { tagged_stack with public_input_policy(), [
                 (ValueSpan::inf(), Public),
                 (ValueSpan::new(7, 9), Confidential)
             ]
         },
+        executor: { cases with public_input_policy(), {
+            input [1] => tagged_stack [
+                (1, Public),
+                (7, Public)
+            ];
+            input [0] => tagged_stack [
+                (0, Public),
+                (9, Confidential)
+            ]
+        } },
     }
 
     test_program! {
@@ -329,7 +311,7 @@ mod implicit_flow {
         ifelse_sequence_taints_every_instruction,
         program: vec![
             instr!(TaggedPush, 1, Secret),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(TaggedPush, 7, Public),
                     instr!(TaggedPush, 8, Public),
@@ -427,7 +409,7 @@ test_program! {
     invalid_embedded_tag_later_in_ifelse_sequence,
     program: vec![
         instr!(Push, 1),
-        instr!(ifelse 0,
+        instr!(IfElse 0,
             [
                 instr!(TaggedPush, 1, Public),
                 instr!(TaggedPush, 42, Confidential),
@@ -649,7 +631,7 @@ mod downgraders {
             ),
             instr!(Input), // unknown condition
             instr!(TaggedPush, 0, Secret),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(Nop),
                     instr!(fun Downgrade, "is_empty"),

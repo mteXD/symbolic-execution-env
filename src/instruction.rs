@@ -131,7 +131,7 @@ macro_rules! instr {
             String::from($name),
         )
     };
-    (ifelse $cond:expr,
+    (IfElse $cond:expr,
         [ $( $when_true:expr ),* $(,)? ],
         [ $( $when_false:expr ),* $(,)? ]
         $(,)?

@@ -205,7 +205,7 @@ mod arith {
             instr!(Input),
             instr!(Push, 0),
             instr!(CmpGreaterThan, 0, 1),
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, -2),
                 ],
@@ -347,7 +347,7 @@ mod ifelse {
             instr!(Push, 10),
             instr!(Push, 5),
             instr!(CmpGreaterThan, 0, 1), // 10 > 5 -> known true
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // taken
                 ],
@@ -367,7 +367,7 @@ mod ifelse {
             instr!(Push, 3),
             instr!(Push, 5),
             instr!(CmpGreaterThan, 0, 1), // 3 > 5 -> known false
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // not taken
                 ],
@@ -387,7 +387,7 @@ mod ifelse {
         multiple_instructions_known_branches,
         program: vec![
             instr!(Push, 1),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(Push, 10),
                     instr!(Push, 20),
@@ -400,7 +400,7 @@ mod ifelse {
                 [],
             ),
             instr!(Push, 0),
-            instr!(ifelse 3,
+            instr!(IfElse 3,
                 [],
                 [
                     instr!(Push, 30),
@@ -423,7 +423,7 @@ mod ifelse {
         multiple_instructions_unknown_balanced,
         program: vec![
             instr!(Input),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(Push, 10),
                     instr!(Push, 11),
@@ -447,7 +447,7 @@ mod ifelse {
         empty_branches_are_noops,
         program: vec![
             instr!(Push, 1),
-            instr!(ifelse 0, [], [],),
+            instr!(IfElse 0, [], [],),
             instr!(Push, 2),
         ],
         verifier: { stack [1, 2] },
@@ -461,7 +461,7 @@ mod ifelse {
             instr!(Input), // [?]
             instr!(Push, 5),
             instr!(CmpGreaterThan, 0, 1), // unknown condition
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // +1 cell if taken
                 ],
@@ -484,7 +484,7 @@ mod ifelse {
             instr!(Push, 10),
             instr!(Push, 3),
             instr!(CmpGreaterThan, 0, 1), // 10 > 3 -> known true
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // taken: +1 cell
                 ],
@@ -504,7 +504,7 @@ mod ifelse {
             instr!(Push, 0),
             instr!(Push, 3),
             instr!(CmpGreaterThan, 0, 1), // 3 > 10 -> known false
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // dead
                 ],
@@ -527,7 +527,7 @@ mod ifelse {
             instr!(Input), // [?]
             instr!(Push, 5),
             instr!(CmpGreaterThan, 0, 1), // unknown condition
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     instr!(Push, 42), // +1 cell if taken
                 ],
@@ -552,7 +552,7 @@ mod ifelse {
         /// [NEGATIVE] No condition on the stack at all when ifelse runs.
         no_condition,
         program: vec![
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     instr!(Push, 1),
                 ],
@@ -575,7 +575,7 @@ mod ifelse {
         program: vec![
             block!(0,
                 instr!(Push, 1),
-                instr!(ifelse 0,
+                instr!(IfElse 0,
                     [
                         instr!(Push, 2),
                     ],
@@ -769,7 +769,7 @@ mod blocks {
             instr!(Push, 10),
             instr!(Push, 5),
             instr!(CmpGreaterThan, 0, 1),
-            instr!(ifelse 2,
+            instr!(IfElse 2,
                 [
                     block!(0,
                         instr!(Push, 10),
@@ -795,7 +795,7 @@ mod blocks {
             instr!(Push, 10),
             block!(1,
                 instr!(Push, 1),
-                instr!(ifelse 1,
+                instr!(IfElse 1,
                     [
                         instr!(Push, 2),
                     ],
@@ -889,7 +889,7 @@ mod functions {
                 instr!(Push, 10),
                 instr!(Push, 5),
                 instr!(CmpGreaterThan, 0, 1),
-                instr!(ifelse 2,
+                instr!(IfElse 2,
                     [
                         instr!(fun FunctionCall, "f"),
                     ],
@@ -913,7 +913,7 @@ mod functions {
                 instr!(Input),
                 instr!(Push, 0),
                 instr!(CmpGreaterThan, 0, 1),
-                instr!(ifelse 2,
+                instr!(IfElse 2,
                     [
                         instr!(fun FunctionCall, "f"),
                     ],
@@ -1047,7 +1047,7 @@ mod functions {
         defined_inside_branch,
         program: vec![
             instr!(Push, 1),
-            instr!(ifelse 0,
+            instr!(IfElse 0,
                 [
                     block!(0,
                         instr!(fun FunctionDefine, FUNC_NAME),
@@ -1076,7 +1076,7 @@ mod functions {
             instr!(fun FunctionDefine, FUNC_NAME),
             block!(1,
                 instr!(Push, 1),
-                instr!(ifelse 0,
+                instr!(IfElse 0,
                     [
                         instr!(R Read, 0), // reads the declared argument
                     ],
@@ -1106,7 +1106,7 @@ mod functions {
 mod showcases {
     use virtual_machine::{
         block, instr,
-        machine::verifier::{ValueSpan, Verifier},
+        machine::verifier::{ValueSpan},
         test_program,
     };
 
@@ -1135,7 +1135,7 @@ mod showcases {
             block!(1,
                 instr!(Push, 1),              // 1
                 instr!(CmpGreaterThan, 0, 1), // n > 1
-                instr!(ifelse 2, // if n <= 1, skip to return
+                instr!(IfElse 2, // if n <= 1, skip to return
                     [
                         block!(3,
                             instr!(Push, -1),
@@ -1165,7 +1165,7 @@ mod showcases {
             block!(1,
                 instr!(Push, 1),              // 2
                 instr!(CmpGreaterThan, 0, 1), // n > 2
-                instr!(ifelse 2, // if n <= 1, skip to return
+                instr!(IfElse 2, // if n <= 1, skip to return
                     [
                         block!(3,
                             instr!(Push, -1),
