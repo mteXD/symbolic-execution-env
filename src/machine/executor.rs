@@ -412,21 +412,13 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
 
         match instr {
             Neg => {
-                let (val, tag) = self.read_entry(arg)?;
-                if let Integer(val) = val {
-                    let result = val.checked_neg().ok_or(ArithmeticOverflow)?;
-                    self.push_new_value(Integer(result), tag)?;
-                } else {
-                    todo!("This will eventually be a TypeError, in case types get implemented.")
-                }
+                let (Integer(val), tag) = self.read_entry(arg)?;
+                let result = val.checked_neg().ok_or(ArithmeticOverflow)?;
+                self.push_new_value(Integer(result), tag)?;
             }
             Not => {
-                let (val, tag) = self.read_entry(arg)?;
-                if let Integer(val) = val {
-                    self.push_new_value(Integer(!val), tag)?;
-                } else {
-                    todo!("This will eventually be a TypeError, in case types get implemented.")
-                }
+                let (Integer(val), tag) = self.read_entry(arg)?;
+                self.push_new_value(Integer(!val), tag)?;
             }
             Read => {
                 let (val, tag) = self.read_entry(arg)?;
@@ -444,7 +436,7 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
                 match &mut self.machine.output {
                     types::Output::Stdout => print!("{value}"),
                     types::Output::Buffer(_) => {
-                        let immediate = value.into_immediate().map_err(|_| InvalidCell)?;
+                        let immediate = value.into_immediate();
                         self.machine.output.write(&[immediate]);
                     }
                 }
@@ -503,23 +495,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         arg1: CellIndex,
         arg2: CellIndex,
     ) -> ExecutorResult<(), Tag> {
-        let (left, left_tag) = self.read_entry(arg1)?;
-        let (right, right_tag) = self.read_entry(arg2)?;
+        let (Integer(left), left_tag) = self.read_entry(arg1)?;
+        let (Integer(right), right_tag) = self.read_entry(arg2)?;
         let result_tag = self.combine_tags(left_tag, right_tag)?;
 
         debug!("Evaluating binary: {:?} {:?} {:?}", left, instr, right);
-
-        let expect_integer = |cell: Value| -> ExecutorResult<i64, Tag> {
-            match cell {
-                Integer(value) => Ok(value),
-                _found => {
-                    todo!("This will eventually be a TypeError, in case types get implemented.")
-                }
-            }
-        };
-
-        let left = expect_integer(left)?;
-        let right = expect_integer(right)?;
         let result = {
             use BinaryOp::*;
 
@@ -572,12 +552,11 @@ impl<Tag: TagTrait> Evaluate<Tag> for Executor<Tag> {
         when_true: Rc<[Instruction<Tag>]>,
         when_false: Rc<[Instruction<Tag>]>,
     ) -> ExecutorResult<(), Tag> {
-        let (condition, condition_tag) = self.read_entry(cond_idx)?;
+        let (Integer(condition), condition_tag) = self.read_entry(cond_idx)?;
 
         let branch = match condition {
-            Integer(0) => when_false,
-            Integer(_) => when_true,
-            _other => todo!("This will eventually be a TypeError, in case types get implemented."),
+            0 => when_false,
+            _ => when_true,
         };
 
         self.run_ifelse_branch(branch, condition_tag)

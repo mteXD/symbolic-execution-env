@@ -11,13 +11,21 @@ release: clean
     @echo "Building the project in release mode..."
     cargo build --release
     @echo "Release build completed successfully."
+
+[group('building')]
+doc: clean
+    cargo doc
     
 [group('dev')]
 check:
-    cargo check --tests
+    cargo check --all-targets
 
 [group('dev')]
-test arg="":
+clippy:
+    cargo clippy --all-targets
+
+[group('dev')]
+test arg="": check clippy
     cargo test {{arg}} --
 
 [group('dev')]

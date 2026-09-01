@@ -15,10 +15,10 @@ pub type CellIndex = u16;
 pub type CellAmount = u16;
 pub type Immediate = i64;
 
+/// The integer value stored in a concrete executor cell.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum Value {
     Integer(Immediate),
-    Text(char),
 }
 
 impl PartialEq<Immediate> for Value {
@@ -27,17 +27,14 @@ impl PartialEq<Immediate> for Value {
 
         match self {
             Integer(i) => i == other,
-            Text(_) => false,
         }
     }
 }
 
 impl Value {
-    pub fn into_immediate(self) -> Result<Immediate, &'static str> {
-        match self {
-            Value::Integer(i) => Ok(i),
-            Value::Text(c) => Ok(c as Immediate),
-        }
+    pub fn into_immediate(self) -> Immediate {
+        let Value::Integer(immediate) = self;
+        immediate
     }
 }
 
@@ -47,7 +44,6 @@ impl Display for Value {
 
         match self {
             Integer(i) => write!(f, "{}", i),
-            Text(s) => write!(f, "{}", s),
         }
     }
 }
