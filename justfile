@@ -13,19 +13,16 @@ release: clean
     @echo "Release build completed successfully."
 
 [group('building')]
-doc: clean
-    cargo doc
+doc arg="": clean
+    cargo doc {{arg}} --no-deps
     
 [group('dev')]
 check:
+    cargo clippy --all-targets
     cargo check --all-targets
 
 [group('dev')]
-clippy:
-    cargo clippy --all-targets
-
-[group('dev')]
-test arg="": check clippy
+test arg="": check
     cargo test {{arg}} --
 
 [group('dev')]
@@ -40,6 +37,3 @@ refactor:
 [group('cleaning')]
 clean:
     cargo clean
-    rm flamegraph.svg
-    rm perf.data
-    rm perf.data.old

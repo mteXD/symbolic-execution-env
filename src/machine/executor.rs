@@ -209,7 +209,7 @@ impl<Tag: TagTrait> Executor<Tag> {
         let run_result = self.run();
 
         self.machine.program_data = saved_program;
-        let (slot, _) = self.stack.exit_block();
+        let slot = self.stack.exit_block();
         let result = slot.map(|s| (s.value, s.tag));
 
         run_result?;

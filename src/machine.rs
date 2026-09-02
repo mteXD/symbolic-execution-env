@@ -215,20 +215,15 @@ trait Evaluate<Tag: Debug = ()> {
 // =============================================================================
 // Shared frame-stack mechanics used by both Executor and Verifier.
 //
-// Every frame owns the hidden caller stack while the body runs solely on cloned
-// argument cells. On exit, locals are discarded and the caller is restored
-// unchanged.
+// Every suspended frame is the hidden caller stack while the body runs solely
+// on cloned argument cells. On exit, locals are discarded and the caller is
+// restored unchanged.
 // =============================================================================
-
-#[derive(Clone, Debug)]
-pub struct Frame<V, T> {
-    caller: Vec<Cell<V, T>>,
-}
 
 #[derive(Clone, Debug)]
 pub struct Stack<V, T> {
     cells: Vec<Cell<V, T>>,
-    frames: Vec<Frame<V, T>>,
+    frames: Vec<Vec<Cell<V, T>>>,
 }
 
 impl<V: Clone, T: Clone> Default for Stack<V, T> {
@@ -273,26 +268,17 @@ impl<V: Clone, T: Clone> Stack<V, T> {
 
         let arguments = self.cells[available - required..].to_vec();
         let caller = std::mem::replace(&mut self.cells, arguments);
-        self.frames.push(Frame { caller });
+        self.frames.push(caller);
         Ok(())
     }
 
-    /// Enters an isolated block with explicit cells instead of cloning them
-    /// from the caller. Used by definition-time abstract analysis, where the
-    /// declared parameters are represented by synthetic cells.
-    pub fn enter_block_with_arguments(&mut self, arguments: Vec<Cell<V, T>>) {
-        let caller = std::mem::replace(&mut self.cells, arguments);
-        self.frames.push(Frame { caller });
-    }
-
     /// Ends the current block, restores its caller environment, and returns
-    /// `(last_cell_at_end_of_body, body_stack_size)`.
-    pub fn exit_block(&mut self) -> (Option<Cell<V, T>>, usize) {
-        let Frame { caller } = self.frames.pop().expect("exit_block: no frame");
-        let body_stack_size = self.cells.len();
+    /// the last cell at the end of the body.
+    pub fn exit_block(&mut self) -> Option<Cell<V, T>> {
+        let caller = self.frames.pop().expect("exit_block: no frame");
         let result = self.cells.last().cloned();
         self.cells = caller;
-        (result, body_stack_size)
+        result
     }
 
     /// A "getter" method for cells' length

@@ -524,12 +524,12 @@ impl<Tag: TagTrait> Verifier<Tag> {
     }
 
     /// Runs a counted block while scoping its value/tag cells and program data.
-    /// Returns `(last_value, last_tag, body_stack_size)`.
+    /// Returns `(last_value, last_tag)`.
     fn run_nested(
         &mut self,
         argument_count: CellAmount,
         instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
+    ) -> Result<(Option<ValueSpan>, Option<Tag>), VerifierError<Tag>> {
         self.stack.enter_block(argument_count)?;
         self.run_entered_block(instrs)
     }
@@ -539,20 +539,20 @@ impl<Tag: TagTrait> Verifier<Tag> {
     fn run_entered_block(
         &mut self,
         instrs: Rc<[Instruction<Tag>]>,
-    ) -> Result<(Option<ValueSpan>, Option<Tag>, usize), VerifierError<Tag>> {
+    ) -> Result<(Option<ValueSpan>, Option<Tag>), VerifierError<Tag>> {
         let saved_pd = std::mem::replace(&mut self.machine.program_data, ProgramData::new(instrs));
 
         let exec_result = self.run_loop();
 
         self.machine.program_data = saved_pd;
-        let (last, body_size) = self.stack.exit_block();
+        let last = self.stack.exit_block();
         let (last_value, last_tag) = match last {
             Some(slot) => (Some(slot.value), Some(slot.tag)),
             None => (None, None),
         };
 
         exec_result?;
-        Ok((last_value, last_tag, body_size))
+        Ok((last_value, last_tag))
     }
 
     /// Verifies an ifelse branch sequence on the parent stack. Cells are
@@ -675,9 +675,9 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.context = saved_context;
 
         match result? {
-            (Some(value), Some(tag), _) => self.push_existing(value, tag),
-            (Some(value), None, _) => self.push_existing(value, self.policy.default_tag()),
-            (None, _, _) => {}
+            (Some(value), Some(tag)) => self.push_existing(value, tag),
+            (Some(value), None) => self.push_existing(value, self.policy.default_tag()),
+            (None, _) => {}
         }
         Ok(())
     }
@@ -729,7 +729,7 @@ impl<Tag: TagTrait> Verifier<Tag> {
         self.context = saved_context;
 
         let connection = downgrader.connection;
-        if let (Some(return_value), Some(return_tag), _) = result? {
+        if let (Some(return_value), Some(return_tag)) = result? {
             if return_tag != connection.source {
                 return Err(VerifierError::Flow(
                     FlowError::DowngraderReturnTagMismatch {
@@ -936,9 +936,9 @@ impl<Tag: TagTrait> Evaluate<Tag> for Verifier<Tag> {
         let result = self.run_nested(argument_count, instrs);
 
         match result? {
-            (Some(val), Some(tag), _) => self.push_existing(val, tag),
-            (Some(val), None, _) => self.push_existing(val, self.policy.default_tag()),
-            (None, _, _) => return Err(BlockHasEmptyStack),
+            (Some(val), Some(tag)) => self.push_existing(val, tag),
+            (Some(val), None) => self.push_existing(val, self.policy.default_tag()),
+            (None, _) => return Err(BlockHasEmptyStack),
         }
         Ok(())
     }
