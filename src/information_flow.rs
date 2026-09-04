@@ -1,11 +1,6 @@
 //! Dynamic information-flow tags, graphs, and executor policies.
 //!
-//! A tag describes where a value may flow. The graph's directed edges are
-//! written in the same direction as allowed information flow:
-//!
-//! ```text
-//! Public -> Constrained -> Secret
-//! ```
+//! Tags are attached to data. Their propagation is defined with topologies.
 //!
 //! Perimeter guards define how data enters and exits the system, e.g. no data
 //! tagged `Secret` may flow to `Public` outputs.
@@ -23,7 +18,7 @@
 //!
 //! # Examples
 //!
-//! See the tests in this module and the DIFTAM tests in the test catalog.
+//! See the integration tests
 
 use std::{
     collections::{HashMap, HashSet},
@@ -34,11 +29,10 @@ use std::{
 use crate::instruction::{Instruction, UnaryOpImm};
 
 type TagIndex = usize;
-type ReachabilityMatrix = Vec<Vec<bool>>;
 
 /// Trait bound required of a tag type (the set of tags a policy is built over).
 ///
-/// This trait has a blanket implementation, so any small enum deriving
+/// With this blanket implementation, any enum deriving
 /// `Copy`, `Eq`, `Hash`, and `Debug` can be used directly as a tag type.
 pub trait TagTrait: Copy + Eq + Hash + Debug {}
 
@@ -63,25 +57,19 @@ pub enum FlowError<Tag: TagTrait> {
     },
     ReflexiveAwareConnection(Tag),
     DuplicateDowngrader(String),
-    /// A `Downgrader`/`Downgrade` instruction named something not registered
-    /// as a downgrader in the policy.
     DowngraderUndefined {
         name: String,
     },
-    /// A downgrader's body returned a value whose tag is not its connection
-    /// `source`, so the implicit retag to `target` is rejected.
+    /// Downgrader tried to perform a retag on a value whose tag was different from the expected
+    /// `source` tag.
     DowngraderReturnTagMismatch {
         found: Tag,
         expected: Tag,
     },
-    /// A `Downgrade` occurred inside a function or downgrader body. Downgrader
-    /// calls must happen at the top level of the program, so downgrades are
-    /// explicit, non-transitive, and countable.
+    /// A `Downgrade` occurred inside a function or downgrader body.
     NestedDowngraderCall {
         downgrader: String,
     },
-    /// The downgrader was called more times than its total `max_calls` call
-    /// limit for the program run allows.
     DowngraderCallLimitExceeded {
         downgrader: String,
         limit: usize,
@@ -246,10 +234,8 @@ impl<Tag: TagTrait> Topology<Tag> {
 /// a pair later returns [`FlowError::NoCommonDescendant`].
 #[derive(Debug, Clone)]
 struct PolicyGraph<Tag: TagTrait> {
-    /// Maps tag values to indices used by the graph matrices.
+    /// Maps tag values to indices used by the CCD matrix.
     indices: HashMap<Tag, TagIndex>,
-    /// `reachable[a][b]` == true iff `a` may flow to `b`.
-    reachable: ReachabilityMatrix,
     /// Precomputed closest common descendant for every pair of tags.
     ccd: Vec<Vec<Option<Tag>>>,
 }
@@ -331,11 +317,7 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
             }
         }
 
-        Ok(Self {
-            indices,
-            reachable,
-            ccd,
-        })
+        Ok(Self { indices, ccd })
     }
 
     /// Returns whether `tag` belongs to this graph.
@@ -347,7 +329,7 @@ impl<Tag: TagTrait> PolicyGraph<Tag> {
     fn can_flow(&self, from: Tag, to: Tag) -> Result<bool, FlowError<Tag>> {
         let from_index = self.index_of(from)?;
         let to_index = self.index_of(to)?;
-        Ok(self.reachable[from_index][to_index])
+        Ok(self.ccd[from_index][to_index] == Some(to))
     }
 
     /// Returns the closest common descendant of `left` and `right`, if it exists.
@@ -407,7 +389,7 @@ impl<Tag: TagTrait> SecurityPolicy<Tag> {
         })
     }
 
-    /// Registers an aware connection `source ->> target` behind a named
+    /// Registers an aware connection `source -> target` behind a named
     /// downgrader, returning the augmented policy for chaining.
     ///
     /// Rejects reflexive connections ([`FlowError::ReflexiveAwareConnection`]),
